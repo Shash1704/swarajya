@@ -58,10 +58,10 @@ export interface ModalButton {
   primary?: boolean;
 }
 
-export function showModal(title: string, body: Node | string, buttons: ModalButton[]) {
+export function showModal(title: string, body: Node | string, buttons: ModalButton[], opts: { wide?: boolean } = {}) {
   const m = clear(ui.modal);
   m.append(
-    h('div', { class: 'dialog', role: 'dialog', 'aria-modal': 'true' },
+    h('div', { class: `dialog${opts.wide ? ' wide' : ''}`, role: 'dialog', 'aria-modal': 'true' },
       h('h2', {}, title),
       typeof body === 'string' ? h('p', {}, body) : body,
       h('div', { class: 'actions' },
@@ -70,7 +70,7 @@ export function showModal(title: string, body: Node | string, buttons: ModalButt
     ),
   );
   m.classList.remove('hidden');
-  (m.querySelector('button.primary') as HTMLButtonElement | null)?.focus();
+  (m.querySelector('button.primary') as HTMLButtonElement | null)?.focus({ preventScroll: true });
 }
 
 export function hideModal() {

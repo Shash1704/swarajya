@@ -113,7 +113,12 @@ function turnToward(u: BUnit, ang: number, maxStep: number) {
   u.facing += Math.max(-maxStep, Math.min(maxStep, d));
 }
 
-export const radiusOf = (t: UnitType) => (t === 'elephant' ? 26 : t === 'cannon' ? 18 : 22);
+export const radiusOf = (t: UnitType) => {
+  const c = UNIT_STATS[t].cls;
+  return c === 'elephant' ? 26 : c === 'artillery' ? 18 : 22;
+};
+const cls = (u: BUnit) => UNIT_STATS[u.type].cls;
+const weapon = (u: BUnit) => UNIT_STATS[u.type].weapon;
 const canMountWalls = (t: UnitType) => {
   const c = UNIT_STATS[t].cls;
   return c === 'infantry' || c === 'missile';
@@ -481,7 +486,7 @@ export class Battle {
         vx += ((u.x - n.x) / d) * 0.7;
         vy += ((u.y - n.y) / d) * 0.7;
       }
-      if (u.type === 'elephant') {
+      if (cls(u) === 'elephant') {
         vx += Math.sin(this.time * 1.7 + u.id) * 0.9;
         for (const v of hittable) {
           if (v !== u && dist(u, v) < CONTACT) v.dmgMelee += (MELEE_RATE * u.men * st.melee * 0.5 * dt) / UNIT_STATS[v.type].defense;
@@ -507,7 +512,7 @@ export class Battle {
       if (!fear) continue;
       for (const v of live) {
         if (v.side === e.side || dist(v, e) > 85) continue;
-        const k = v.type === 'elephant' ? 0 : isLarge(v.type) ? 1.6 : v.type === 'spear' ? 0.5 : 1;
+        const k = cls(v) === 'elephant' ? 0 : isLarge(v.type) ? 1.6 : UNIT_STATS[v.type].role === 'pike' ? 0.5 : 1;
         v.moraleHit += fear * k * (e.men / e.maxMen) * dt;
       }
     }
@@ -580,12 +585,12 @@ export class Battle {
           u.morale = 0;
           u.climbing = false;
           u.order = { kind: 'hold' };
-          this.float(u.x, u.y, u.type === 'elephant' ? 'Amok!' : 'Routing!', '#ff8a7a');
+          this.float(u.x, u.y, cls(u) === 'elephant' ? 'Amok!' : 'Routing!', '#ff8a7a');
           this.moraleShock(u, 7);
         } else if (!u.fighting && u.calm > 1) {
           u.morale = Math.min(u.maxMorale, u.morale + 3 * dt);
         }
-      } else if (u.state === 'routing' && !u.rallied && u.type !== 'elephant' && u.calm > 6
+      } else if (u.state === 'routing' && !u.rallied && cls(u) !== 'elephant' && u.calm > 6
         && u.men > u.startMen * 0.25 && !this.nearestEnemy(u, 220)) {
         u.state = 'ok';
         u.rallied = true;
@@ -675,9 +680,9 @@ export class Battle {
     let dmg = st.gate * u.men * dt;
     if (seg.gate) {
       if (this.opts.ram && st.cls === 'infantry') dmg *= 6;
-      if (u.type === 'elephant' && W.level === 3) dmg *= 0.4; // spiked fort gates
+      if (cls(u) === 'elephant' && W.level === 3) dmg *= 0.4; // spiked fort gates
     } else {
-      dmg = u.type === 'elephant' ? dmg * 0.3 : 0; // only elephants can push over a wall
+      dmg = cls(u) === 'elephant' ? dmg * 0.3 : 0; // only elephants can push over a wall
     }
     if (dmg <= 0) return;
     turnToward(u, -Math.PI / 2, 4 * dt);
@@ -698,15 +703,15 @@ export class Battle {
     let m = 1;
     if (this.onWall(u)) m *= 1.2;
     if (this.height(u) > 0.4) m *= 1.1;
-    if (this.opts.rain && (u.type === 'archer' || u.type === 'horsearcher')) m *= 0.8;
+    if (this.opts.rain && weapon(u) === 'bow') m *= 0.8;
     return m;
   }
 
   private missileMod(u: BUnit, t: BUnit): number {
     const tt = UNIT_STATS[t.type];
-    const pierce = u.type === 'musket' ? 0.25 : u.type === 'cannon' ? 0 : 0.7;
+    const pierce = weapon(u) === 'gun' ? 0.25 : weapon(u) === 'cannon' ? 0 : 0.7;
     let m = (1 - tt.armor * pierce) / Math.max(1, tt.defense / 1.5);
-    if (u.type !== 'cannon' && this.inForest(t)) m *= 0.55;
+    if (weapon(u) !== 'cannon' && this.inForest(t)) m *= 0.55;
     if (this.walls && this.region(u.y) === 'out') {
       const rt = this.region(t.y);
       if (rt === 'band' && !t.climbing) m *= 0.5;
@@ -714,8 +719,8 @@ export class Battle {
     }
     if (t.climbing) m *= 1.3;
     if (this.opts.rain) {
-      if (u.type === 'archer' || u.type === 'horsearcher') m *= 0.6;
-      if (u.type === 'rocket') m *= 0.7;
+      if (weapon(u) === 'bow') m *= 0.6;
+      if (weapon(u) === 'rocket') m *= 0.7;
     }
     return m;
   }
@@ -729,7 +734,7 @@ export class Battle {
       if (c && c.state === 'ok' && dist(u, c) <= range) t = c;
     }
     if (!t && breachSeg < 0) {
-      t = u.type === 'rocket'
+      t = weapon(u) === 'rocket'
         ? this.nearestEnemy(u, range, (e) => isLarge(e.type)) ?? this.nearestEnemy(u, range)
         : this.nearestEnemy(u, range);
     }
@@ -754,12 +759,12 @@ export class Battle {
       return;
     }
     if (!t) return;
-    if (u.type === 'musket' && this.opts.rain && this.rng.chance(0.45)) {
+    if (weapon(u) === 'gun' && this.opts.rain && this.rng.chance(0.45)) {
       this.shots.push({ kind: 'fizzle', x0: u.x, y0: u.y, x1: t.x, y1: t.y, t: 0 });
       return;
     }
     let victim = t;
-    if (u.type === 'rocket') {
+    if (weapon(u) === 'rocket') {
       // Rockets wander: they often land on some other enemy nearby, or nowhere at all.
       const roll = this.rng.next();
       if (roll < 0.3) {
@@ -773,9 +778,9 @@ export class Battle {
     }
     const dmg = u.men * st.missile * this.missileMod(u, victim);
     victim.dmgMissile += dmg;
-    const shock = (dmg * 35) / victim.maxMen * (victim.type === 'elephant' ? 4 : isLarge(victim.type) ? 1.5 : 1);
-    if (u.type === 'musket' || u.type === 'rocket' || u.type === 'cannon') victim.moraleHit += shock;
-    this.shots.push({ kind: u.type === 'cannon' ? 'cannon' : u.type === 'rocket' ? 'rocket' : 'musket', x0: u.x, y0: u.y, x1: victim.x, y1: victim.y, t: 0 });
+    const shock = (dmg * 35) / victim.maxMen * (cls(victim) === 'elephant' ? 4 : isLarge(victim.type) ? 1.5 : 1);
+    if (weapon(u) !== 'bow') victim.moraleHit += shock;
+    this.shots.push({ kind: weapon(u) === 'cannon' ? 'cannon' : weapon(u) === 'rocket' ? 'rocket' : 'musket', x0: u.x, y0: u.y, x1: victim.x, y1: victim.y, t: 0 });
   }
 
   private melee(a: BUnit, t: BUnit, dt: number) {
@@ -876,7 +881,7 @@ export class Battle {
 
   private checkEnd() {
     // Gun crews alone cannot hold a field.
-    const alive = (s: number) => this.units.some((u) => u.side === s && u.state === 'ok' && u.type !== 'cannon');
+    const alive = (s: number) => this.units.some((u) => u.side === s && u.state === 'ok' && cls(u) !== 'artillery');
     const a0 = alive(0);
     const a1 = alive(1);
     if (!a0 && !a1) this.winner = this.defender;

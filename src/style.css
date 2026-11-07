@@ -31,6 +31,7 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   border-bottom: 1px solid var(--line);
   flex-wrap: wrap;
   min-height: 48px;
+  flex-shrink: 0;
 }
 #topbar .brand { font-weight: 700; color: var(--gold); letter-spacing: 0.04em; font-size: 16px; }
 #topbar .stat { display: flex; align-items: center; gap: 4px; }
@@ -140,7 +141,45 @@ kbd {
 .versus { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 10px; }
 
 @media (max-width: 820px) {
+  html, body { height: auto; }
   body { overflow: auto; }
-  #main { flex-direction: column; }
-  #side { width: auto; border-left: none; border-top: 1px solid var(--line); }
+  #topbar { gap: 8px 12px; padding: 6px 10px; }
+  #main { flex-direction: column; flex: none; }
+  /* The map keeps its 3:2 shape across the full width; the panel scrolls below it. */
+  #stage { flex: none; height: calc(min(100vw, 150vh) * 2 / 3); padding: 4px; }
+  #side { width: auto; border-left: none; border-top: 1px solid var(--line); overflow: visible; }
 }
+
+/* Unit symbols and tiers */
+.sym { display: inline-flex; vertical-align: middle; margin-right: 6px; flex-shrink: 0; }
+.sym svg { display: block; }
+.uname { display: inline-flex; align-items: center; gap: 0; }
+.tier {
+  display: inline-block;
+  min-width: 16px;
+  margin-left: 6px;
+  padding: 0 4px;
+  border-radius: 4px;
+  font: 700 10.5px/15px ui-sans-serif, system-ui, sans-serif;
+  text-align: center;
+  color: #1d160e;
+}
+.tier-S { background: #f1c75b; }
+.tier-A { background: #d7a3e8; }
+.tier-B { background: #9cc7ff; }
+.tier-C { background: #b8d98f; }
+.tier-D { background: #bdb3a0; }
+button.recruit { display: inline-flex; align-items: center; gap: 2px; }
+button.recruit .sym { margin-right: 4px; }
+button.recruit .muted { margin-left: 6px; }
+#modal .dialog.wide { max-width: 760px; }
+.tier-section { margin-top: 14px; }
+.tier-section h3 { margin: 0 0 8px; color: var(--gold); display: flex; align-items: center; gap: 6px; }
+.tier-section h3 .tier { margin-left: 0; font-size: 12px; line-height: 18px; min-width: 20px; }
+.troop { display: flex; gap: 12px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; margin-bottom: 6px; background: var(--panel2); }
+.troop.mine { border-color: #8a6a2a; }
+.troop .sym { margin-top: 2px; }
+.troop-body { flex: 1; min-width: 0; }
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 2px 12px; margin-top: 4px; }
+.stat-line { display: grid; grid-template-columns: 52px 1fr; align-items: center; gap: 6px; font-size: 11.5px; }
+.stat-line .bar { margin-top: 0; }

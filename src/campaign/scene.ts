@@ -2,44 +2,60 @@ import { app, type Scene, VIEW_H, VIEW_W } from '../app';
 import { bar, clear, h, hideModal, modalOpen, showModal, swatch, ui } from '../ui';
 import { CELL, MW, toWorld, WH, WW } from '../geo';
 import { FOREIGN_LABELS } from '../india';
-import { UNIT_STATS, wallName, type UnitType } from '../data';
+import { TIER_NAMES, TIERS, UNIT_STATS, UNIT_TYPES, wallName, type UnitType } from '../data';
+import { drawSymbol, inkFor, symbolEl, tierBadge } from '../symbols';
 import { MapRenderer } from './mapRender';
-import { Flow, type Hooks } from './flow';
+import { type BattleResult, type Hooks, World } from './world';
 import {
-  type Army, armyAt, autoResolve, autoResolveSiege, buildMarket, buildWalls, canBuild, type CUnit,
-  dateLabel, declareWar, factionStrength, type GameState, grossIncome, hostile, IND, isMonsoon, liftSiege, log,
-  makePeace, acceptsPeace, marketCost, MAX_UNITS, maxSupplies, maxWalls, maxWealth, netIncome, newGame, PLAYER,
-  type Province, provinceIncome, provincesOf, raid, recruit, regionOwners, seasonOf, unitsMen, unitsStrength,
-  upkeep, VICTORY_PROVINCES, wallFactor, wallsCost, type LogEntry,
+  acceptsPeace, type Army, armyAtTown, armyById, armySpeed, autoResolve, autoResolveSiege, buildMarket, buildWalls,
+  canBuild, type CUnit, dateLabel, declareWar, dist, eliteBlock, factionStrength, type GameState, grossIncome,
+  hostile, IND, isMonsoon, log, makePeace, marketCost, MAX_UNITS, maxSupplies, maxWalls, maxWealth, netIncome,
+  newGame, PLAYER, type Province, provinceIncome, provincesOf, provinceUnder, RAID_DAYS, recruit, regionOwners,
+  seasonOf, setGoal, siegeEquipment, townAt, unitsMen, unitsStrength, upkeep, VICTORY_PROVINCES, wallFactor,
+  wallsCost,
 } from './state';
 import { BattleScene } from '../battle/scene';
 import type { Terrain } from '../battle/battle';
 
 const MAX_ZOOM = 3;
+/** Game days that pass per real second at 1x speed. */
+const DAYS_PER_SEC = 1;
+const SPEEDS = [1, 2, 4];
 const fmt = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(Math.round(n)));
 const EQUIPMENT = ['none yet', 'ladders', 'ladders and a ram'];
 
 export class CampaignScene implements Scene {
   state: GameState;
-  private flow: Flow;
+  private world: World;
   private map: MapRenderer;
   private dirty = true;
   private cam = { x: 0, y: 0, z: 2.2 };
   private selProv = -1;
   private selArmy: Army | null = null;
-  private busy = false;
+  private paused = true;
+  private speed = 1;
   private ptr: { x: number; y: number; button: number; dragged: boolean } | null = null;
   private mouse = { x: -1, y: -1 };
   private hoverProv = -1;
   private keys = new Set<string>();
   private peaceTried = new Map<number, number>();
-  private dispatch: LogEntry[] = [];
   private centroids: { f: number; x: number; y: number; cells: number }[] = [];
+  /** Cached rendering of the map layer; redrawn only when the view or the realm changes. */
+  private layer = document.createElement('canvas');
+  private layerKey = '';
+  private version = 0;
+  private lastOwnerSig = '';
+  /** Side panel is rebuilt only when this changes; fast-moving numbers update in place. */
+  private uiSig = '';
+  private live: (() => void)[] = [];
+  private dateEl: HTMLElement | null = null;
+  private overShown = false;
+  private t = 0;
 
   constructor(state: GameState) {
     this.state = state;
-    this.map = new MapRenderer(state.map, state.seed);
-    this.flow = new Flow(state, this.hooks());
+    this.map = new MapRenderer(state.map, state.seed, state.provinces.length);
+    this.world = new World(state, this.hooks());
     const cap = state.provinces.find((p) => p.capitalOf === PLAYER)!;
     this.cam.x = cap.x - VIEW_W / 2 / this.cam.z + 140;
     this.cam.y = cap.y - VIEW_H / 2 / this.cam.z - 30;
@@ -48,7 +64,35 @@ export class CampaignScene implements Scene {
 
   enter() {
     this.dirty = true;
+    this.renderUI(true);
+  }
+
+  // ---------------------------------------------------------------- clock
+
+  update(dt: number) {
+    this.t += dt;
+    const k = this.keys;
+    const pan = (600 / this.cam.z) * dt;
+    if (k.has('arrowleft') || k.has('a')) this.cam.x -= pan;
+    if (k.has('arrowright') || k.has('d')) this.cam.x += pan;
+    if (k.has('arrowup') || k.has('w')) this.cam.y -= pan;
+    if (k.has('arrowdown') || k.has('s')) this.cam.y += pan;
+    if (k.size) this.clampCam();
+
+    const s = this.state;
+    if (!this.paused && !this.world.waiting && !modalOpen() && app.scene === this && !s.over) {
+      this.world.tick(dt * this.speed * DAYS_PER_SEC);
+    }
+    if (this.selArmy && !s.armies.includes(this.selArmy)) this.selArmy = null;
+    if (this.dateEl) this.dateEl.textContent = `${isMonsoon(s.day) ? '🌧 ' : ''}${dateLabel(s.day)}`;
+    for (const f of this.live) f();
     this.renderUI();
+    if (s.over && !this.overShown && !modalOpen()) this.showOver();
+  }
+
+  private setPaused(p: boolean) {
+    this.paused = p;
+    this.renderUI(true);
   }
 
   // ---------------------------------------------------------------- camera
@@ -82,26 +126,17 @@ export class CampaignScene implements Scene {
     this.clampCam();
   }
 
-  update(dt: number) {
-    const k = this.keys;
-    const speed = (600 / this.cam.z) * dt;
-    if (k.has('arrowleft') || k.has('a')) this.cam.x -= speed;
-    if (k.has('arrowright') || k.has('d')) this.cam.x += speed;
-    if (k.has('arrowup') || k.has('w')) this.cam.y -= speed;
-    if (k.has('arrowdown') || k.has('s')) this.cam.y += speed;
-    if (k.size) this.clampCam();
+  private centerOn(p: { x: number; y: number }) {
+    this.cam.x = p.x - VIEW_W / 2 / this.cam.z;
+    this.cam.y = p.y - VIEW_H / 2 / this.cam.z;
+    this.clampCam();
   }
 
   // ---------------------------------------------------------------- drawing
 
-  private moveTargets(): Set<number> {
-    const a = this.selArmy;
-    if (!a || a.owner !== PLAYER || a.mp <= 0 || this.busy) return new Set();
-    return new Set(this.state.provinces[a.province].neighbors);
-  }
-
-  private recomposite() {
-    this.map.composite(this.state, this.selProv, this.moveTargets());
+  private recompute() {
+    this.map.updateOwnership(this.state);
+    this.version++;
     const acc = new Map<number, { x: number; y: number; cells: number }>();
     for (const p of this.state.provinces) {
       if (p.owner === IND) continue;
@@ -114,24 +149,41 @@ export class CampaignScene implements Scene {
     this.centroids = [...acc].map(([f, c]) => ({ f, x: c.x / c.cells, y: c.y / c.cells, cells: c.cells }));
   }
 
-  draw(ctx: CanvasRenderingContext2D) {
-    if (this.dirty) {
-      this.recomposite();
+  private drawMapLayer(ctx: CanvasRenderingContext2D) {
+    const os = this.state.provinces.map((p) => `${p.owner}${p.siege ? 's' : ''}`).join(',');
+    if (this.dirty || os !== this.lastOwnerSig) {
+      this.lastOwnerSig = os;
+      this.recompute();
       this.dirty = false;
     }
-    const { z } = this.cam;
-    ctx.fillStyle = '#1a3a62';
-    ctx.fillRect(0, 0, VIEW_W, VIEW_H);
-    ctx.imageSmoothingEnabled = true;
-    const [ox, oy] = this.toScreen(0, 0);
-    ctx.drawImage(this.map.canvas, ox, oy, WW * z, WH * z);
+    const m = ctx.getTransform();
+    const w = Math.round(VIEW_W * m.a);
+    const hgt = Math.round(VIEW_H * m.d);
+    const c = this.cam;
+    const key = `${w}x${hgt}|${c.x.toFixed(2)},${c.y.toFixed(2)},${c.z.toFixed(4)}|${this.version}|${this.selProv}`;
+    if (key !== this.layerKey) {
+      this.layerKey = key;
+      if (this.layer.width !== w || this.layer.height !== hgt) {
+        this.layer.width = w;
+        this.layer.height = hgt;
+      }
+      const g = this.layer.getContext('2d')!;
+      g.setTransform(m.a, 0, 0, m.d, 0, 0);
+      g.fillStyle = '#26476e';
+      g.fillRect(0, 0, VIEW_W, VIEW_H);
+      this.map.draw(g, this.state, c, this.selProv, new Set());
+    }
+    ctx.drawImage(this.layer, 0, 0, VIEW_W, VIEW_H);
+  }
 
+  draw(ctx: CanvasRenderingContext2D) {
+    this.drawMapLayer(ctx);
+    const { z } = this.cam;
     const s = this.state;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.lineJoin = 'round';
 
-    // Seas and foreign lands.
     ctx.font = `italic 600 ${Math.round(Math.max(10, 13 * Math.min(1.3, z)))}px Georgia, serif`;
     for (const l of FOREIGN_LABELS) {
       const [sx, sy] = this.toScreen(...toWorld(...l.at));
@@ -139,14 +191,13 @@ export class CampaignScene implements Scene {
       ctx.fillText(l.name.split('').join(' '), sx, sy);
     }
 
-    // Realm names when zoomed out.
     if (z < 0.8) {
       ctx.save();
       ctx.globalAlpha = Math.min(1, (0.8 - z) * 4);
       for (const c of this.centroids) {
         const f = s.factions[c.f];
         const size = Math.min(34, Math.sqrt(c.cells) * 0.33 * z);
-        if (size < 9) continue; // tiny realms would only clutter the overview
+        if (size < 9) continue;
         const [sx, sy] = this.toScreen(c.x, c.y);
         ctx.font = `700 ${size}px Georgia, serif`;
         ctx.lineWidth = 4;
@@ -159,18 +210,7 @@ export class CampaignScene implements Scene {
       ctx.restore();
     }
 
-    // Movement arrows.
-    if (this.selArmy) {
-      const from = s.provinces[this.selArmy.province];
-      for (const n of this.moveTargets()) {
-        const to = s.provinces[n];
-        const occ = armyAt(s, n);
-        const enemy = (occ && occ.owner !== PLAYER) || (to.owner !== PLAYER);
-        const atPeace = enemy && !hostile(s, PLAYER, occ && occ.owner !== PLAYER ? occ.owner : to.owner);
-        const color = atPeace ? '#c9c2b0' : occ && occ.owner !== PLAYER ? '#ff6b5b' : enemy ? '#ffd27a' : '#ffffff';
-        this.drawArrow(ctx, from.x, from.y, to.x, to.y, color);
-      }
-    }
+    for (const a of s.armies) if (a.owner === PLAYER) this.drawRoute(ctx, a, a === this.selArmy);
 
     const icon = Math.max(6, Math.min(14, 5 + 4 * z));
     for (const p of s.provinces) {
@@ -187,32 +227,81 @@ export class CampaignScene implements Scene {
         ctx.fillText(p.name, sx, sy + icon + 7);
       }
     }
-    for (const a of s.armies) this.drawArmy(ctx, a, icon);
+
+    for (const c of this.world.clashes) this.drawClash(ctx, c.x, c.y);
+    const order = [...s.armies].sort((a, b) => (a === this.selArmy ? 1 : 0) - (b === this.selArmy ? 1 : 0));
+    for (const a of order) this.drawArmy(ctx, a, icon);
     this.drawTooltip(ctx);
+
+    if (this.paused && !modalOpen()) {
+      ctx.save();
+      ctx.font = '700 13px Georgia, serif';
+      const text = 'PAUSED · SPACE TO RESUME · RIGHT-CLICK TO ORDER THE SELECTED ARMY';
+      const w = ctx.measureText(text).width + 32;
+      ctx.fillStyle = 'rgba(30,22,12,0.85)';
+      ctx.beginPath();
+      ctx.roundRect(VIEW_W / 2 - w / 2, VIEW_H - 40, w, 28, 14);
+      ctx.fill();
+      ctx.fillStyle = '#f4e3b5';
+      ctx.fillText(text, VIEW_W / 2, VIEW_H - 25.5);
+      ctx.restore();
+    }
   }
 
-  private drawArrow(ctx: CanvasRenderingContext2D, x0: number, y0: number, x1: number, y1: number, color: string) {
-    const [ax, ay] = this.toScreen(x0 + (x1 - x0) * 0.2, y0 + (y1 - y0) * 0.2);
-    const [bx, by] = this.toScreen(x0 + (x1 - x0) * 0.72, y0 + (y1 - y0) * 0.72);
-    const ang = Math.atan2(by - ay, bx - ax);
+  private drawRoute(ctx: CanvasRenderingContext2D, a: Army, selected: boolean) {
+    const s = this.state;
+    const pts: [number, number][] = [this.toScreen(a.x, a.y)];
+    for (const id of a.route) pts.push(this.toScreen(s.provinces[id].x, s.provinces[id].y));
+    if (a.goal && (a.goal.kind === 'chase' || a.goal.kind === 'join')) {
+      const t = armyById(s, a.goal.army);
+      if (t) pts.push(this.toScreen(t.x, t.y));
+    }
+    if (pts.length < 2) return;
+    const g = a.goal;
+    const enemyEnd = g?.kind === 'chase' || g?.kind === 'siege' || g?.kind === 'raid'
+      || (g?.kind === 'go' && hostile(s, PLAYER, s.provinces[g.prov].owner));
     ctx.save();
     ctx.lineCap = 'round';
-    for (const [w, c] of [[6, 'rgba(20,15,10,0.6)'], [3, color]] as const) {
-      ctx.strokeStyle = c;
-      ctx.fillStyle = c;
-      ctx.lineWidth = w;
-      ctx.beginPath();
-      ctx.moveTo(ax, ay);
-      ctx.lineTo(bx, by);
-      ctx.stroke();
-      const hs = w === 6 ? 13 : 10;
-      ctx.beginPath();
-      ctx.moveTo(bx + Math.cos(ang) * hs * 0.6, by + Math.sin(ang) * hs * 0.6);
-      ctx.lineTo(bx + Math.cos(ang + 2.4) * hs, by + Math.sin(ang + 2.4) * hs);
-      ctx.lineTo(bx + Math.cos(ang - 2.4) * hs, by + Math.sin(ang - 2.4) * hs);
-      ctx.closePath();
-      ctx.fill();
-    }
+    ctx.strokeStyle = 'rgba(20,15,10,0.5)';
+    ctx.lineWidth = selected ? 5 : 3;
+    ctx.beginPath();
+    pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+    ctx.stroke();
+    const color = enemyEnd ? 'rgba(255,120,95,0.95)' : 'rgba(255,240,200,0.95)';
+    ctx.strokeStyle = color;
+    ctx.lineWidth = selected ? 2.5 : 1.5;
+    ctx.setLineDash([7, 6]);
+    ctx.lineDashOffset = -this.t * 20;
+    ctx.beginPath();
+    pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+    ctx.stroke();
+    ctx.setLineDash([]);
+    const [ex, ey] = pts[pts.length - 1];
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(ex, ey, selected ? 5 : 3.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  private drawClash(ctx: CanvasRenderingContext2D, x: number, y: number) {
+    const [sx, sy] = this.toScreen(x, y);
+    const r = 9 + Math.sin(this.t * 8) * 1.5;
+    const cy = sy - 16;
+    ctx.save();
+    ctx.fillStyle = 'rgba(120,20,10,0.75)';
+    ctx.beginPath();
+    ctx.arc(sx, cy, r + 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#ffe9b0';
+    ctx.lineWidth = 2.5;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(sx - r * 0.7, cy - r * 0.7);
+    ctx.lineTo(sx + r * 0.7, cy + r * 0.7);
+    ctx.moveTo(sx + r * 0.7, cy - r * 0.7);
+    ctx.lineTo(sx - r * 0.7, cy + r * 0.7);
+    ctx.stroke();
     ctx.restore();
   }
 
@@ -225,7 +314,6 @@ export class CampaignScene implements Scene {
     ctx.lineWidth = p.walls >= 3 ? 2 : 1.2;
     ctx.beginPath();
     if (p.kind === 'fort') {
-      // Keep with three merlons.
       const w = s;
       const t = -s * 0.55;
       const m = w / 5;
@@ -233,9 +321,8 @@ export class CampaignScene implements Scene {
       ctx.lineTo(-w / 2, t);
       for (let i = 0; i < 5; i++) {
         const x0 = -w / 2 + i * m;
-        if (i % 2 === 0) {
-          ctx.lineTo(x0 + m, t);
-        } else {
+        if (i % 2 === 0) ctx.lineTo(x0 + m, t);
+        else {
           ctx.lineTo(x0, t + m);
           ctx.lineTo(x0 + m, t + m);
           ctx.lineTo(x0 + m, t);
@@ -244,7 +331,6 @@ export class CampaignScene implements Scene {
       ctx.lineTo(w / 2, s * 0.45);
       ctx.closePath();
     } else {
-      // Town: base with a dome (ports get a mooring post).
       ctx.rect(-s * 0.5, -s * 0.1, s, s * 0.55);
       ctx.moveTo(s * 0.32, -s * 0.1);
       ctx.arc(0, -s * 0.1, s * 0.32, 0, Math.PI, true);
@@ -252,7 +338,6 @@ export class CampaignScene implements Scene {
     ctx.fill();
     ctx.stroke();
     if (p.kind === 'port') {
-      ctx.strokeStyle = '#1d160e';
       ctx.lineWidth = 1.4;
       ctx.beginPath();
       ctx.moveTo(s * 0.7, -s * 0.4);
@@ -270,15 +355,10 @@ export class CampaignScene implements Scene {
     if (p.siege) {
       ctx.strokeStyle = '#ff5a4a';
       ctx.lineWidth = 2;
-      const r = s * 0.9;
-      ctx.beginPath();
-      ctx.moveTo(-r - 4, -r);
-      ctx.lineTo(-4 + r * 0.2, r * 0.2);
-      ctx.moveTo(-4 + r * 0.2 - 2 * r - 4, r * 0.2);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.arc(0, 0, s * 1.1, 0, Math.PI * 2);
       ctx.setLineDash([3, 3]);
+      ctx.lineDashOffset = -this.t * 6;
+      ctx.beginPath();
+      ctx.arc(0, 0, s * 1.15, 0, Math.PI * 2);
       ctx.stroke();
       ctx.setLineDash([]);
     }
@@ -290,32 +370,48 @@ export class CampaignScene implements Scene {
     ctx.restore();
   }
 
+  /** Banner rectangle in screen space. Armies sharing a spot are stacked. */
   private armyRect(a: Army, icon: number) {
-    const p = this.state.provinces[a.province];
-    const [sx, sy] = this.toScreen(p.x, p.y);
+    const [sx, sy] = this.toScreen(a.x, a.y);
     const k = Math.max(0.8, Math.min(1.15, 0.7 + this.cam.z * 0.3));
-    const w = 34 * k;
+    const w = 50 * k;
     const hh = 17 * k;
-    // Besiegers camp below the walls; others stand beside the town.
-    const x = a.siegeOf >= 0 ? sx - w / 2 : sx + icon * 0.6;
-    const y = a.siegeOf >= 0 ? sy + icon * 0.9 : sy - icon * 0.6 - hh;
-    return { x, y, w, h: hh };
+    const stack = this.state.armies.filter((o) => Math.abs(o.x - a.x) < 1 && Math.abs(o.y - a.y) < 1);
+    const i = stack.indexOf(a);
+    const atTown = townAt(this.state, a) >= 0 || a.siegeOf >= 0;
+    const x = (atTown ? sx + icon * 0.6 : sx - w / 2) + i * 6;
+    const y = (atTown ? sy - icon * 0.6 - hh : sy - hh - 8) - i * (hh + 4);
+    return { x, y, w, h: hh, sx, sy, field: !atTown };
   }
 
   private drawArmy(ctx: CanvasRenderingContext2D, a: Army, icon: number) {
     const r = this.armyRect(a, icon);
-    if (r.x < -50 || r.y < -50 || r.x > VIEW_W + 50 || r.y > VIEW_H + 50) return;
-    const f = this.state.factions[a.owner];
+    if (r.x < -60 || r.y < -60 || r.x > VIEW_W + 60 || r.y > VIEW_H + 60) return;
+    const s = this.state;
+    const f = s.factions[a.owner];
     const sel = a === this.selArmy;
     ctx.save();
-    ctx.fillStyle = '#3a2c1c';
-    ctx.fillRect(r.x - 1, r.y - 8, 2, r.h + 8);
-    ctx.fillStyle = f.color;
+    ctx.strokeStyle = '#3a2c1c';
+    ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.moveTo(r.x + 1, r.y - 8);
-    ctx.lineTo(r.x + 11, r.y - 5);
-    ctx.lineTo(r.x + 1, r.y - 2);
+    ctx.lineTo(r.x + 1, r.y + r.h);
+    if (r.field) ctx.lineTo(r.sx, r.sy);
+    ctx.stroke();
+    ctx.fillStyle = f.color;
+    ctx.beginPath();
+    ctx.moveTo(r.x + 2, r.y - 8);
+    ctx.lineTo(r.x + 12, r.y - 5);
+    ctx.lineTo(r.x + 2, r.y - 2);
     ctx.fill();
+    if (r.field) {
+      ctx.strokeStyle = '#1d160e';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(r.sx, r.sy, 3.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
     ctx.fillStyle = 'rgba(0,0,0,0.35)';
     ctx.beginPath();
     ctx.roundRect(r.x + 2, r.y + 3, r.w, r.h, 4);
@@ -327,33 +423,38 @@ export class CampaignScene implements Scene {
     ctx.lineWidth = sel ? 3 : 1.5;
     ctx.strokeStyle = sel ? '#ffd86b' : 'rgba(20,15,10,0.85)';
     ctx.stroke();
-    const light = f.rgb[0] * 0.3 + f.rgb[1] * 0.59 + f.rgb[2] * 0.11 > 170;
-    ctx.fillStyle = light ? '#1d160e' : '#fff';
+    const ink = inkFor(f.rgb);
+    const sw = r.h * 1.15;
+    if (a.units.length) drawSymbol(ctx, mainUnit(a.units), r.x + 3 + sw / 2, r.y + r.h / 2, sw, f.color, ink, ink);
+    ctx.fillStyle = ink;
     ctx.font = `700 ${Math.round(r.h * 0.62)}px ui-sans-serif, system-ui, sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(fmt(unitsMen(a.units)), r.x + r.w / 2, r.y + r.h / 2 + 0.5);
-    if (a.owner === PLAYER && a.mp <= 0) {
-      ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    ctx.fillText(fmt(unitsMen(a.units)), r.x + 3 + sw + (r.w - sw - 3) / 2, r.y + r.h / 2 + 0.5);
+    if (a.raidUntil > s.day) {
+      ctx.font = `${Math.round(r.h)}px sans-serif`;
+      ctx.fillText('🔥', r.x + r.w + 9, r.y + r.h / 2 + Math.sin(this.t * 6) * 1.5);
+    }
+    if (s.day < a.busyUntil) {
+      ctx.strokeStyle = '#ff5a4a';
+      ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.roundRect(r.x, r.y, r.w, r.h, 4);
-      ctx.fill();
+      ctx.roundRect(r.x - 2, r.y - 2, r.w + 4, r.h + 4, 5);
+      ctx.stroke();
     }
     ctx.restore();
   }
 
   private drawTooltip(ctx: CanvasRenderingContext2D) {
-    const p = this.hoverProv >= 0 && !this.ptr?.dragged ? this.state.provinces[this.hoverProv] : null;
-    if (!p) return;
+    if (this.hoverProv < 0 || this.ptr?.dragged) return;
     const s = this.state;
-    const occ = armyAt(s, p.id);
+    const p = s.provinces[this.hoverProv];
     const lines = [
       `${p.name} · ${s.factions[p.owner].short}`,
       `${p.town}: ${wallName(p.walls, p.kind, p.sea).toLowerCase()}`,
-      `Garrison ${unitsMen(p.garrison)} · wealth ${p.wealth}${p.devastated ? ' (devastated)' : ''}`,
+      `Garrison ${unitsMen(p.garrison)} · wealth ${p.wealth}${p.devastated ? ` (devastated ${Math.ceil(p.devastated)}d)` : ''}`,
     ];
-    if (p.siege) lines.push(`Under siege, ${Math.max(0, Math.ceil(p.supplies))} turns of food left`);
-    if (occ) lines.push(`${s.factions[occ.owner].short} army: ${unitsMen(occ.units)} men`);
+    if (p.siege) lines.push(`Under siege · ${Math.max(0, Math.ceil(p.supplies))} days of food left`);
     ctx.save();
     ctx.font = '12px ui-sans-serif, system-ui, sans-serif';
     const w = Math.max(...lines.map((l) => ctx.measureText(l).width)) + 16;
@@ -381,6 +482,7 @@ export class CampaignScene implements Scene {
     for (const a of [...this.state.armies].reverse()) {
       const r = this.armyRect(a, icon);
       if (sx >= r.x - 2 && sx <= r.x + r.w + 2 && sy >= r.y - 9 && sy <= r.y + r.h + 2) return a;
+      if (r.field && Math.hypot(sx - r.sx, sy - r.sy) < 7) return a;
     }
     return null;
   }
@@ -393,7 +495,7 @@ export class CampaignScene implements Scene {
   pointerDown(x: number, y: number, button: number) {
     if (modalOpen()) return;
     this.ptr = { x, y, button, dragged: false };
-    if (button === 2 && !this.busy) this.command(x, y);
+    if (button === 2) void this.command(x, y);
   }
 
   pointerMove(x: number, y: number) {
@@ -415,8 +517,10 @@ export class CampaignScene implements Scene {
   pointerUp(x: number, y: number, button: number) {
     const p = this.ptr;
     this.ptr = null;
-    if (!p || p.dragged || button !== 0 || modalOpen() || this.busy) return;
-    this.click(x, y);
+    if (!p || p.dragged || button !== 0 || modalOpen()) return;
+    const a = this.armyHit(x, y);
+    if (a) this.select(a, -1);
+    else this.select(null, this.provAtScreen(x, y));
   }
 
   wheel(x: number, y: number, dy: number) {
@@ -429,8 +533,13 @@ export class CampaignScene implements Scene {
     if (['arrowleft', 'arrowright', 'arrowup', 'arrowdown', 'w', 'a', 's', 'd'].includes(k)) {
       e.preventDefault();
       this.keys.add(k);
-    } else if (k === 'enter') void this.endTurn();
-    else if (k === 'escape') this.select(null, -1);
+    } else if (k === ' ') {
+      e.preventDefault();
+      this.setPaused(!this.paused);
+    } else if (k === '1' || k === '2' || k === '3') {
+      this.speed = SPEEDS[Number(k) - 1];
+      this.setPaused(false);
+    } else if (k === 'escape') this.select(null, -1);
     else if (k === '=' || k === '+') this.zoomAt(VIEW_W / 2, VIEW_H / 2, 1.25);
     else if (k === '-') this.zoomAt(VIEW_W / 2, VIEW_H / 2, 0.8);
   }
@@ -441,47 +550,43 @@ export class CampaignScene implements Scene {
 
   private select(army: Army | null, prov: number) {
     this.selArmy = army;
-    this.selProv = army ? army.province : prov;
-    this.dirty = true;
-    this.renderUI();
+    this.selProv = army ? -1 : prov;
+    this.renderUI(true);
   }
 
-  private click(x: number, y: number) {
-    const a = this.armyHit(x, y);
-    const sel = this.selArmy;
-    if (sel && sel.owner === PLAYER && sel.mp > 0) {
-      const target = a ? a.province : this.provAtScreen(x, y);
-      if (target >= 0 && target !== sel.province && (!a || a.owner !== PLAYER)
-        && this.state.provinces[sel.province].neighbors.includes(target)) {
-        void this.tryMove(sel, target);
-        return;
+  /** Right-click: give the selected army its orders. */
+  private async command(x: number, y: number) {
+    const s = this.state;
+    const a = this.selArmy;
+    if (!a || a.owner !== PLAYER) return;
+    const target = this.armyHit(x, y);
+    if (target && target !== a) {
+      if (target.owner === PLAYER) setGoal(s, a, { kind: 'join', army: target.id });
+      else {
+        if (!(await this.ensureWar(target.owner, `attack the ${s.factions[target.owner].short} army`))) return;
+        setGoal(s, a, { kind: 'chase', army: target.id });
       }
+    } else {
+      const p = this.provAtScreen(x, y);
+      if (p < 0) return;
+      const prov = s.provinces[p];
+      if (prov.owner !== PLAYER && !(await this.ensureWar(prov.owner, `march into ${prov.name}`))) return;
+      setGoal(s, a, { kind: 'go', prov: p });
     }
-    if (a) this.select(a, -1);
-    else this.select(null, this.provAtScreen(x, y));
+    this.renderUI(true);
   }
 
-  /** Right-click: march the selected army. */
-  private command(x: number, y: number) {
-    const sel = this.selArmy;
-    if (!sel || sel.owner !== PLAYER) return;
-    const a = this.armyHit(x, y);
-    const target = a ? a.province : this.provAtScreen(x, y);
-    if (target < 0 || target === sel.province) return;
-    if (!this.state.provinces[sel.province].neighbors.includes(target)) {
-      log(this.state, 'Armies march one neighbouring province at a time.', true);
-      this.renderUI();
-      return;
-    }
-    if (sel.mp <= 0) {
-      log(this.state, 'That army has no moves left this turn.', true);
-      this.renderUI();
-      return;
-    }
-    void this.tryMove(sel, target);
+  /** Confirms (and declares) war before an order that would break the peace. */
+  private async ensureWar(other: number, what: string): Promise<boolean> {
+    const s = this.state;
+    if (other === PLAYER || other === IND || s.war[PLAYER][other]) return true;
+    const allies = s.factions.filter((f) => f.alive && s.ally[other][f.id] && f.id !== PLAYER).map((f) => f.name);
+    const ok = await this.confirm(`War with the ${s.factions[other].name}?`,
+      `You are at peace with the ${s.factions[other].name}. To ${what} you must declare war.${allies.length ? ` Their allies (${allies.join(', ')}) will join them.` : ''}`,
+      'Declare war');
+    if (ok) declareWar(s, PLAYER, other);
+    return ok;
   }
-
-  // ---------------------------------------------------------------- game flow
 
   private confirm(title: string, body: string, yes: string): Promise<boolean> {
     return new Promise((resolve) => {
@@ -492,87 +597,34 @@ export class CampaignScene implements Scene {
     });
   }
 
-  private async tryMove(army: Army, target: number) {
+  private showOver() {
+    this.overShown = true;
     const s = this.state;
-    const to = s.provinces[target];
-    const occ = armyAt(s, target);
-    const other = occ && occ.owner !== PLAYER ? occ.owner : to.owner !== PLAYER ? to.owner : -1;
-    if (other >= 0 && other !== IND && !s.war[PLAYER][other]) {
-      const allies = s.factions.filter((f) => f.alive && s.ally[other][f.id] && f.id !== PLAYER).map((f) => f.name);
-      const ok = await this.confirm(`War with the ${s.factions[other].name}?`,
-        `You are at peace with the ${s.factions[other].name}. Marching into ${to.name} means war.${allies.length ? ` Their allies (${allies.join(', ')}) will join them.` : ''}`,
-        'Declare war');
-      if (!ok) return;
-      declareWar(s, PLAYER, other);
-    }
-    this.busy = true;
-    this.renderUI();
-    await this.flow.moveArmy(army, target);
-    this.busy = false;
-    if (this.selArmy && !s.armies.includes(this.selArmy)) this.selArmy = null;
-    this.selProv = this.selArmy ? this.selArmy.province : target;
-    this.dirty = true;
-    this.renderUI();
-    this.checkOver();
-  }
-
-  private async endTurn() {
-    if (this.busy || this.state.over || modalOpen()) return;
-    const s = this.state;
-    const from = s.turn;
-    this.busy = true;
-    this.selArmy = null;
-    this.dirty = true;
-    this.renderUI();
-    await this.flow.endTurn();
-    this.busy = false;
-    this.dispatch = s.log.filter((l) => l.mine && l.turn >= from);
-    this.dirty = true;
-    this.renderUI();
-    this.checkOver();
-  }
-
-  private async assault(army: Army) {
-    const p = this.state.provinces[army.siegeOf];
-    if (!p) return;
-    this.busy = true;
-    this.renderUI();
-    await this.flow.assault(army, p);
-    this.busy = false;
-    if (!this.state.armies.includes(army)) this.selArmy = null;
-    this.dirty = true;
-    this.renderUI();
-    this.checkOver();
-  }
-
-  private checkOver() {
-    const over = this.state.over;
-    if (!over) return;
-    const s = this.state;
+    const won = s.over === 'won';
     showModal(
-      over === 'won' ? 'Hindavi Swarajya!' : 'Swarajya has fallen',
-      over === 'won'
-        ? `By ${dateLabel(s.turn)} the Maratha banner flies over ${provincesOf(s, PLAYER).length} provinces. The empire bends; the people are free.`
+      won ? 'Hindavi Swarajya!' : 'Swarajya has fallen',
+      won
+        ? `By ${dateLabel(s.day)} the Maratha banner flies over ${provincesOf(s, PLAYER).length} provinces. The empire bends; the people are free.`
         : 'The last Maratha fort has fallen. But hill forts have a way of changing hands again...',
       [{ label: 'New campaign', primary: true, onClick: () => { hideModal(); app.setScene(new CampaignScene(newGame(Math.floor(Math.random() * 1e9)))); } }],
     );
   }
 
-  private terrainAt(p: Province): Terrain {
+  private terrainAt(p: { x: number; y: number }): Terrain {
     const { elev, moist } = this.state.map;
     const i = Math.floor(p.y / CELL) * MW + Math.floor(p.x / CELL);
-    if (elev[i] > 0.32 || (p.kind === 'fort' && p.walls >= 3 && !p.sea)) return 'hills';
+    if (elev[i] > 0.32) return 'hills';
     if (moist[i] > 0.68) return 'forest';
     if (moist[i] < 0.3) return 'desert';
     return 'plains';
   }
 
-  // ---------------------------------------------------------------- battles
+  // ---------------------------------------------------------------- moments that need the player
 
   private hooks(): Hooks {
     return {
-      fieldBattle: (att, defUnits, defOwner, p) => this.battlePrompt('field', att, defUnits, defOwner, p),
-      siegeBattle: (att, p) => this.battlePrompt('siege', att, p.garrison, p.owner, p),
+      battle: (att, defUnits, defOwner, defArmy, p, mode) => this.battlePrompt(mode, att, defUnits, defOwner, defArmy, p),
+      arrival: (a, p) => this.arrivalPrompt(a, p),
       chooseSack: (p) => this.sackPrompt(p),
       changed: () => {
         this.dirty = true;
@@ -580,17 +632,19 @@ export class CampaignScene implements Scene {
     };
   }
 
-  private battlePrompt(mode: 'field' | 'siege', att: Army, defUnits: CUnit[], defOwner: number, p: Province): Promise<boolean> {
+  private battlePrompt(mode: 'field' | 'siege', att: Army, defUnits: CUnit[], defOwner: number, defArmy: Army | null, p: Province): Promise<BattleResult> {
     const s = this.state;
-    if (defUnits.length === 0) return Promise.resolve(true);
+    if (defUnits.length === 0) return Promise.resolve('att');
     const playerAttacks = att.owner === PLAYER;
     const mine = playerAttacks ? att.units : defUnits;
     const theirs = playerAttacks ? defUnits : att.units;
     const enemy = s.factions[playerAttacks ? defOwner : att.owner];
     const siege = mode === 'siege';
     const garrison = defUnits === p.garrison;
-    const title = siege ? `Siege of ${p.town}` : garrison ? `Storming ${p.town}` : `Battle of ${p.name}`;
-    const eq = p.siege?.equipment ?? 0;
+    const where = defArmy ? s.provinces[provinceUnder(s, defArmy, defArmy.node)] : p;
+    const place = siege || garrison ? p.town : where.name;
+    const title = siege ? `Siege of ${p.town}` : garrison ? `Storming ${p.town}` : `Battle near ${where.name}`;
+    const eq = p.siege ? siegeEquipment(p.siege) : 0;
     const wallK = siege ? wallFactor(p, att.units, eq) : 1;
     const ms = unitsStrength(mine) * (playerAttacks ? 1 : wallK * 1.1);
     const ts = unitsStrength(theirs) * (playerAttacks ? wallK * 1.1 : 1);
@@ -598,27 +652,44 @@ export class CampaignScene implements Scene {
     const odds = ratio > 1.8 ? 'Overwhelming' : ratio > 1.2 ? 'Favourable' : ratio > 0.85 ? 'Even' : ratio > 0.55 ? 'Unfavourable' : 'Desperate';
     const sideCard = (units: CUnit[], f: number, label: string) => h('div', { class: 'card' },
       h('h3', {}, swatch(s.factions[f].color), label),
-      ...summarize(units).map((l) => h('div', { class: 'muted' }, l)),
-      h('div', { style: 'margin-top:4px' }, `${unitsMen(units)} men`),
+      ...summarize(units).map(([t, n, men]) => h('div', { class: 'muted uname' }, symbolEl(t, s.factions[f].color, 22), `${n}× ${UNIT_STATS[t].short} (${men})`)),
+      h('div', { style: 'margin-top:4px' }, `${Math.round(unitsMen(units))} men`),
     );
     let intro: string;
     if (siege) intro = playerAttacks
       ? `Your army storms the ${wallName(p.walls, p.kind, p.sea).toLowerCase()} of ${p.town}. Siege equipment: ${EQUIPMENT[eq]}.`
       : `The ${enemy.short} assault ${p.town}! Its garrison must hold the walls.`;
-    else intro = playerAttacks ? `Your army attacks the ${enemy.short} at ${p.name}.` : `The ${enemy.short} attack your army at ${p.name}!`;
+    else if (garrison) intro = playerAttacks ? `Your army attacks the garrison of ${p.town}.` : `The ${enemy.short} attack ${p.town}!`;
+    else intro = playerAttacks ? `Your army catches the ${enemy.short} near ${where.name}.` : `The ${enemy.short} fall upon your army near ${where.name}!`;
+    const myArmy = playerAttacks ? att : defArmy;
+    const enemyArmy = playerAttacks ? defArmy : att;
+    const canEscape = !siege && !!myArmy;
+    const faster = !!myArmy && (!enemyArmy || armySpeed(s, myArmy) >= armySpeed(s, enemyArmy));
     const body = h('div', {},
       h('p', {}, intro),
-      isMonsoon(s.turn) ? h('p', { class: 'muted' }, '🌧 Monsoon rain: bows and matchlocks will suffer.') : null,
+      isMonsoon(s.day) ? h('p', { class: 'muted' }, '🌧 Monsoon rain: bows and matchlocks will suffer.') : null,
       h('p', { class: 'muted' }, `Estimated odds: ${odds}.`),
-      h('div', { class: 'versus' }, sideCard(mine, PLAYER, playerAttacks ? 'Your army' : siege ? 'Your garrison' : 'Your army'), sideCard(theirs, enemy.id, enemy.short)),
+      h('div', { class: 'versus' }, sideCard(mine, PLAYER, playerAttacks ? 'Your army' : siege || garrison ? 'Your garrison' : 'Your army'), sideCard(theirs, enemy.id, enemy.short)),
     );
 
     return new Promise((resolve) => {
       const done = (playerWon: boolean) => {
-        log(s, playerWon ? `Victory at ${siege ? p.town : p.name}!` : `Defeat at ${siege ? p.town : p.name}.`, true);
-        resolve(playerAttacks ? playerWon : !playerWon);
+        log(s, playerWon ? `Victory at ${place}!` : `Defeat at ${place}.`, true);
+        resolve(playerAttacks === playerWon ? 'att' : 'def');
       };
-      showModal(title, body, [
+      const buttons: { label: string; onClick: () => void; primary?: boolean }[] = [];
+      if (canEscape) {
+        buttons.push({
+          label: playerAttacks ? 'Leave them be' : faster ? 'Escape' : 'Escape (lose a rearguard)',
+          onClick: () => {
+            hideModal();
+            if (!playerAttacks && !faster) for (const u of mine) u.men = Math.floor(u.men * 0.85);
+            log(s, playerAttacks ? 'Your army breaks off.' : 'Your army slips away.', true);
+            resolve('escaped');
+          },
+        });
+      }
+      buttons.push(
         {
           label: 'Auto-resolve',
           onClick: () => {
@@ -634,8 +705,8 @@ export class CampaignScene implements Scene {
             hideModal();
             app.setScene(new BattleScene({
               mode, playerUnits: mine, enemyUnits: theirs, playerAttacks, title,
-              seed: s.seed * 31 + s.turn * 7 + p.id, terrain: this.terrainAt(p), rain: isMonsoon(s.turn),
-              walls: siege ? p.walls : 0, ladders: eq >= 1, ram: eq >= 2,
+              seed: Math.floor(s.seed * 31 + s.day * 7 + p.id), terrain: this.terrainAt(siege || garrison ? p : (defArmy ?? p)),
+              rain: isMonsoon(s.day), walls: siege ? p.walls : 0, ladders: eq >= 1, ram: eq >= 2,
               playerFaction: s.factions[PLAYER], enemyFaction: enemy,
               onDone: (playerWon) => {
                 app.setScene(this);
@@ -644,6 +715,29 @@ export class CampaignScene implements Scene {
             }));
           },
         },
+      );
+      showModal(title, body, buttons);
+    });
+  }
+
+  private arrivalPrompt(a: Army, p: Province): Promise<'siege' | 'raid' | 'leave'> {
+    const s = this.state;
+    const walled = p.walls > 0 && p.garrison.length > 0;
+    const taken = !!p.siege && p.siege.army !== a.id;
+    return new Promise((resolve) => {
+      showModal(`Before ${p.town}`, h('div', {},
+        h('p', {}, `Your army stands before ${p.town} (${p.name}), held by the ${s.factions[p.owner].name}.`),
+        h('p', { class: 'muted' }, `${wallName(p.walls, p.kind, p.sea)} · garrison ${unitsMen(p.garrison)} men · ${Math.ceil(p.supplies)} days of food · wealth ${p.wealth}`),
+        taken ? h('p', { class: 'neg' }, 'Another army is already besieging it.') : null,
+        h('ul', { class: 'help' },
+          walled ? h('li', {}, h('b', {}, 'Besiege: '), 'camp below the walls. Each day the garrison eats its stores while your men build ladders, then a ram. Storm whenever you like.') : null,
+          !walled ? h('li', {}, h('b', {}, 'Storm: '), 'the town has no real defences. Take it now.') : null,
+          h('li', {}, h('b', {}, 'Raid: '), `plunder the villages for ${RAID_DAYS} days. Gold for you, and the province pays its owner nothing for two months.`),
+        ),
+      ), [
+        { label: 'Leave', onClick: () => { hideModal(); resolve('leave'); } },
+        { label: '🔥 Raid villages', onClick: () => { hideModal(); resolve('raid'); } },
+        ...(taken ? [] : [{ label: walled ? '🏰 Besiege' : '⚔ Storm the town', primary: true, onClick: () => { hideModal(); resolve('siege' as const); } }]),
       ]);
     });
   }
@@ -654,8 +748,8 @@ export class CampaignScene implements Scene {
       showModal(`${p.town} has fallen`, h('div', {},
         h('p', {}, `${p.name} is yours. What becomes of ${p.town}?`),
         h('ul', { class: 'help' },
-          h('li', {}, h('b', {}, 'Occupy: '), `keep the town whole. It pays ${p.wealth} gold a turn from now on.`),
-          h('li', {}, h('b', {}, 'Sack: '), `seize about ${loot} gold now. The province is devastated for 6 turns and loses much of its wealth for good.`),
+          h('li', {}, h('b', {}, 'Occupy: '), `keep the town whole. It pays ${p.wealth} gold a month from now on.`),
+          h('li', {}, h('b', {}, 'Sack: '), `seize about ${loot} gold now. The province is devastated for half a year and loses much of its wealth for good.`),
         ),
       ), [
         { label: `Sack (+${loot} gold)`, onClick: () => { hideModal(); resolve(true); } },
@@ -664,7 +758,7 @@ export class CampaignScene implements Scene {
     });
   }
 
-  // ---------------------------------------------------------------- diplomacy
+  // ---------------------------------------------------------------- diplomacy and troops
 
   private openDiplomacy() {
     const s = this.state;
@@ -673,65 +767,126 @@ export class CampaignScene implements Scene {
       const war = s.war[PLAYER][f.id];
       const allies = s.factions.filter((o) => s.ally[f.id][o.id] && o.alive).map((o) => o.short);
       const str = factionStrength(s, f.id);
+      const refused = (this.peaceTried.get(f.id) ?? -99) > s.day - 30;
       return h('div', { class: 'card' },
-        h('div', { class: 'row' },
-          h('span', {}, swatch(f.color), h('b', {}, f.name)),
-          h('span', { class: war ? 'neg' : 'pos' }, war ? 'At war' : 'At peace')),
+        h('div', { class: 'row' }, h('span', {}, swatch(f.color), h('b', {}, f.name)), h('span', { class: war ? 'neg' : 'pos' }, war ? 'At war' : 'At peace')),
         h('div', { class: 'row muted' },
           h('span', {}, `${provincesOf(s, f.id).length} provinces · armies ${str > mine * 1.5 ? 'far stronger' : str > mine ? 'stronger' : str > mine * 0.6 ? 'comparable' : 'weaker'}`),
           allies.length ? h('span', {}, `Allied: ${allies.join(', ')}`) : null),
         h('div', { class: 'btns' },
           war
-            ? h('button', { class: 'small', disabled: this.peaceTried.get(f.id) === s.turn, onclick: () => this.offerPeace(f.id) },
-              this.peaceTried.get(f.id) === s.turn ? 'Envoys refused this turn' : 'Send envoys for peace')
-            : h('button', { class: 'small', onclick: () => { declareWar(s, PLAYER, f.id); this.dirty = true; this.renderUI(); this.openDiplomacy(); } }, 'Declare war')),
+            ? h('button', { class: 'small', disabled: refused, onclick: () => this.offerPeace(f.id) }, refused ? 'Envoys refused (try next month)' : 'Send envoys for peace')
+            : h('button', { class: 'small', onclick: () => { declareWar(s, PLAYER, f.id); this.renderUI(true); this.openDiplomacy(); } }, 'Declare war')),
       );
     });
     showModal('Diplomacy', h('div', { class: 'stack' },
-      h('p', { class: 'muted' }, 'Independent chiefs (grey) may be attacked at any time without a declaration.'),
-      ...rows,
+      h('p', { class: 'muted' }, 'Independent chiefs (grey) may be attacked at any time without a declaration.'), ...rows,
     ), [{ label: 'Close', primary: true, onClick: hideModal }]);
   }
 
   private offerPeace(f: number) {
     const s = this.state;
-    if (acceptsPeace(s, f, PLAYER)) {
-      makePeace(s, PLAYER, f);
-      this.dirty = true;
-    } else {
-      this.peaceTried.set(f, s.turn);
+    if (acceptsPeace(s, f, PLAYER)) makePeace(s, PLAYER, f);
+    else {
+      this.peaceTried.set(f, s.day);
       log(s, `The ${s.factions[f].name} sends your envoys away.`, true);
     }
-    this.renderUI();
+    this.renderUI(true);
     this.openDiplomacy();
+  }
+
+  private openTroops() {
+    const s = this.state;
+    const who = (t: UnitType) => s.factions.filter((f) => f.roster.includes(t)).map((f) => f.short);
+    const statBar = (label: string, v: number, max: number) => h('div', { class: 'stat-line' }, h('span', { class: 'muted' }, label), bar(v / max, 'var(--gold)'));
+    const sections = TIERS.map((tier) => {
+      const types = UNIT_TYPES.filter((t) => UNIT_STATS[t].tier === tier).sort((a, b) => UNIT_STATS[b].value - UNIT_STATS[a].value);
+      return h('div', { class: 'tier-section' },
+        h('h3', {}, tierBadge(tier), ` ${TIER_NAMES[tier]}`),
+        ...types.map((t) => {
+          const st = UNIT_STATS[t];
+          const mine = s.factions[PLAYER].roster.includes(t);
+          return h('div', { class: `troop ${mine ? 'mine' : ''}` },
+            symbolEl(t, mine ? s.factions[PLAYER].color : '#b7ab92', 40),
+            h('div', { class: 'troop-body' },
+              h('div', { class: 'row' }, h('b', {}, st.name), h('span', { class: 'muted' }, `${st.cost} gold · ${st.maxMen} ${st.cls === 'elephant' ? 'elephants' : 'men'}`)),
+              h('div', { class: 'muted', style: 'font-size:12px' }, who(t).join(', ') + (st.elite ? ' · capital only, max 3' : '')),
+              h('div', { class: 'stat-grid' },
+                statBar('Attack', st.melee * (st.cls === 'elephant' ? 0.35 : 1), 2.3),
+                statBar('Defence', st.defense * (st.cls === 'elephant' ? 0.22 : 1), 2.2),
+                statBar('Speed', st.speed, 85),
+                statBar('Morale', st.morale, 96),
+                st.range ? statBar('Range', st.range, 520) : null,
+              ),
+              h('div', { style: 'font-size:12.5px;margin-top:4px' }, st.blurb),
+            ),
+          );
+        }),
+      );
+    });
+    showModal('Troops of the age', h('div', {},
+      h('p', { class: 'muted' }, 'Ranked by tier. Your own troops are shown in saffron. Symbols follow military map convention: a cross is infantry, a diagonal is cavalry, a dot is gunpowder, an oval is armour, and a double frame marks guard troops.'),
+      ...sections,
+    ), [{ label: 'Close', primary: true, onClick: hideModal }], { wide: true });
   }
 
   // ---------------------------------------------------------------- side panel
 
-  renderUI() {
+  /** What the side panel shows, minus the numbers that tick every frame. */
+  private signature(): string {
+    const s = this.state;
+    const a = this.selArmy;
+    const army = a ? `${a.id}:${a.units.map((u) => Math.round(u.men / 5)).join(',')}:${a.siegeOf}:${a.raidUntil > s.day}:${a.route.length > 0}:${townAt(s, a)}:${a.goal?.kind ?? ''}` : '';
+    const p = this.selProv >= 0 ? s.provinces[this.selProv] : null;
+    const prov = p ? `${p.id}:${p.owner}:${p.garrison.map((u) => Math.round(u.men / 5)).join(',')}:${!!p.siege}:${p.walls}:${p.wealth}:${p.devastated > 0}:${canBuild(s, p)}:${armyAtTown(s, p, PLAYER)?.units.length ?? -1}` : '';
+    const mine = s.armies.filter((x) => x.owner === PLAYER).map((x) => `${x.id}/${Math.round(unitsMen(x.units) / 10)}`).join(',');
+    return [army, prov, s.gold[PLAYER], mine, s.log.length, provincesOf(s, PLAYER).length, this.paused, this.speed].join('|');
+  }
+
+  /** A text node refreshed every frame (ETAs, food left...). */
+  private liveText(fn: () => string): HTMLElement {
+    const el = h('span', {}, fn());
+    this.live.push(() => {
+      const t = fn();
+      if (el.textContent !== t) el.textContent = t;
+    });
+    return el;
+  }
+
+  renderUI(force = false) {
+    const sig = this.signature();
+    if (!force && sig === this.uiSig) return;
+    this.uiSig = sig;
+    this.live = [];
     const s = this.state;
     const me = s.factions[PLAYER];
     const net = netIncome(s, PLAYER);
-    const top = clear(ui.top);
-    top.append(
+    this.dateEl = h('span', {}, dateLabel(s.day));
+    clear(ui.top).append(
       h('div', { class: 'brand' }, '🚩 Swarajya'),
       h('div', { class: 'stat' }, swatch(me.color), me.short),
-      h('div', { class: 'stat' }, `${isMonsoon(s.turn) ? '🌧 ' : ''}${dateLabel(s.turn)}`),
-      h('div', { class: 'stat' }, `💰 ${s.gold[PLAYER]}`, h('span', { class: net >= 0 ? 'pos' : 'neg' }, `(${net >= 0 ? '+' : ''}${net})`)),
+      h('div', { class: 'stat', style: 'min-width:118px' }, this.dateEl),
+      h('div', { class: 'stat btns', style: 'margin:0' },
+        h('button', { class: `small ${this.paused ? 'primary' : ''}`, title: 'Pause or resume (Space)', onclick: () => this.setPaused(!this.paused) }, this.paused ? '▶ Resume' : '⏸ Pause'),
+        ...SPEEDS.map((v, i) => h('button', {
+          class: `small ${!this.paused && this.speed === v ? 'primary' : ''}`, title: `Speed ${v}× (key ${i + 1})`,
+          onclick: () => { this.speed = v; this.setPaused(false); },
+        }, `${v}×`)),
+      ),
+      h('div', { class: 'stat' }, `💰 ${s.gold[PLAYER]}`, h('span', { class: net >= 0 ? 'pos' : 'neg' }, `(${net >= 0 ? '+' : ''}${net}/mo)`)),
       h('div', { class: 'stat', title: `Victory: hold ${VICTORY_PROVINCES} provinces, or take Delhi` }, `🏰 ${provincesOf(s, PLAYER).length}/${VICTORY_PROVINCES}`),
-      h('button', { class: 'push', onclick: () => this.openDiplomacy(), disabled: this.busy }, 'Diplomacy'),
-      h('button', { class: 'primary', onclick: () => void this.endTurn(), disabled: this.busy || !!s.over }, this.busy ? 'Rivals are moving…' : 'End turn ⏎'),
+      h('button', { class: 'push', onclick: () => this.openTroops() }, 'Troops'),
+      h('button', { onclick: () => this.openDiplomacy() }, 'Diplomacy'),
     );
-    const side = clear(ui.side);
-    if (this.dispatch.length) side.append(this.dispatchCard());
-    side.append(this.selectionCard(), this.realmCard(), this.logCard());
+    clear(ui.side).append(this.selectionCard(), this.dispatchCard(), this.realmCard());
   }
 
   private dispatchCard(): HTMLElement {
-    return h('div', { class: 'card', style: 'border-color:#8a6a2a' },
-      h('div', { class: 'row' }, h('h3', {}, `📜 Dispatches, ${seasonOf(this.state.turn)}`),
-        h('button', { class: 'small', onclick: () => { this.dispatch = []; this.renderUI(); } }, 'Dismiss')),
-      h('div', { class: 'log' }, ...this.dispatch.slice(-8).map((l) => h('div', {}, l.text))),
+    const s = this.state;
+    const recent = s.log.filter((l) => l.mine).slice(-7).reverse();
+    return h('div', { class: 'card' },
+      h('h3', {}, '📜 Dispatches'),
+      h('div', { class: 'log' }, ...recent.map((l) => h('div', { style: s.day - l.day < 5 ? 'color:var(--ink)' : '' }, `${dateLabel(l.day)} · ${l.text}`))),
     );
   }
 
@@ -744,98 +899,134 @@ export class CampaignScene implements Scene {
       h('h3', {}, 'The Deccan, 1670'),
       h('p', {}, 'At Purandar in 1665 Shivaji surrendered 23 forts to the Mughals. Now he means to take them back.'),
       h('ul', { class: 'help' },
-        h('li', {}, 'Drag to pan, scroll to zoom. Click your saffron banner, then a neighbouring province to march.'),
-        h('li', {}, 'Walled towns must be besieged: starve them out, or storm them once you have ladders. Mavalas bring ladders from day one.'),
-        h('li', {}, 'Raid enemy lands for gold (chauth). Sack captured towns for a fortune, or occupy them for steady income.'),
-        h('li', {}, 'An all-horse army marches two provinces a turn. In the monsoon everyone slows down.'),
+        h('li', {}, 'Time flows: Space pauses, 1/2/3 set the speed. Every realm marches, fights and besieges at once.'),
+        h('li', {}, 'Click your saffron banner to select an army, then right-click a town to march, or an enemy army to attack it.'),
+        h('li', {}, 'At an enemy town you choose: besiege, storm, or raid its villages. Mavalas bring ladders from day one.'),
+        h('li', {}, 'Sack captured towns for a fortune, or occupy them for steady income. In the monsoon, everyone slows down.'),
         h('li', {}, `Win by holding ${VICTORY_PROVINCES} provinces or taking Delhi.`),
       ),
     );
   }
 
-  private unitList(units: CUnit[]): HTMLElement {
+  private unitList(units: CUnit[], color: string): HTMLElement {
     return h('div', { class: 'stack', style: 'margin-top:6px' }, ...units.map((u) => {
       const st = UNIT_STATS[u.type];
       return h('div', { class: 'unit-row', title: st.blurb },
-        h('div', { class: 'row' }, h('span', {}, `${st.glyph} ${st.name}`), h('span', { class: 'muted' }, `${u.men}/${st.maxMen}`)),
+        h('div', { class: 'row' },
+          h('span', { class: 'uname' }, symbolEl(u.type, color), st.name, tierBadge(st.tier)),
+          h('span', { class: 'muted' }, `${Math.round(u.men)}/${st.maxMen}`)),
         bar(u.men / st.maxMen),
       );
     }));
+  }
+
+  /** Days until the army reaches the end of its route. */
+  private eta(a: Army): number {
+    const s = this.state;
+    let d = 0;
+    let prev: { x: number; y: number } = a;
+    for (const id of a.route) {
+      d += dist(prev, s.provinces[id]);
+      prev = s.provinces[id];
+    }
+    return d / armySpeed(s, a);
+  }
+
+  private statusOf(a: Army): string {
+    const s = this.state;
+    if (a.siegeOf >= 0) {
+      const p = s.provinces[a.siegeOf];
+      return `Besieging ${p.town}, day ${Math.floor(s.day - (p.siege?.start ?? s.day)) + 1}`;
+    }
+    if (a.raidUntil > s.day) return `Plundering ${s.provinces[a.raidProv]?.name}: ${(a.raidUntil - s.day).toFixed(1)} days left`;
+    if (s.day < a.busyUntil) return 'Locked in battle';
+    const g = a.goal;
+    if (g?.kind === 'chase' || g?.kind === 'join') {
+      const t = armyById(s, g.army);
+      return t ? `${g.kind === 'chase' ? 'Pursuing' : 'Joining'} the ${s.factions[t.owner].short} army (${fmt(unitsMen(t.units))})` : 'Searching';
+    }
+    if (a.route.length && g && 'prov' in g) return `Marching to ${s.provinces[g.prov].name}: ${this.eta(a).toFixed(1)} days`;
+    const town = townAt(s, a);
+    return town >= 0 ? `Encamped at ${s.provinces[town].town}` : `In the field near ${s.provinces[provinceUnder(s, a, a.node)].name}`;
   }
 
   private armyCard(a: Army): HTMLElement {
     const s = this.state;
     const f = s.factions[a.owner];
     const mine = a.owner === PLAYER;
-    const p = s.provinces[a.province];
+    const town = townAt(s, a);
     const parts: (HTMLElement | null)[] = [
       h('h3', {}, swatch(f.color), mine ? 'Your army' : `${f.short} army`),
-      h('div', { class: 'muted' }, `At ${p.name} · ${unitsMen(a.units)} men · ${a.units.length}/${MAX_UNITS} regiments${mine ? ` · moves ${a.mp}` : ''}`),
-      this.unitList(a.units),
+      h('div', { class: 'muted' }, `${fmt(unitsMen(a.units))} men · ${a.units.length}/${MAX_UNITS} regiments · marches ${Math.round(armySpeed(s, a) * 2)} km a day`),
+      h('div', { style: 'margin:6px 0' }, this.liveText(() => this.statusOf(a))),
+      this.unitList(a.units, f.color),
     ];
     if (mine) {
       if (a.siegeOf >= 0) parts.push(this.siegeBox(a));
-      else if (p.owner !== PLAYER) parts.push(h('p', { class: 'muted' }, 'Camped in foreign land.'));
-      else parts.push(h('p', { class: a.mp > 0 ? '' : 'muted' }, a.mp > 0
-        ? 'Click or right-click a neighbouring province to march. Red arrows mean battle, gold means enemy land, grey means a realm at peace.'
-        : 'This army has marched this turn.'));
-      if (p.owner !== PLAYER && hostile(s, PLAYER, p.owner) && a.siegeOf < 0) parts.push(this.raidButton(a));
-      if (p.owner === PLAYER && !p.siege) parts.push(this.recruitButtons(p));
+      else {
+        const btns: HTMLElement[] = [];
+        if (a.route.length || a.goal) btns.push(h('button', { class: 'small', onclick: () => { setGoal(s, a, null); this.renderUI(true); } }, '✋ Halt'));
+        const here = town >= 0 ? s.provinces[town] : null;
+        if (here && hostile(s, PLAYER, here.owner) && a.raidUntil <= s.day) {
+          const walled = here.walls > 0 && here.garrison.length > 0;
+          btns.push(h('button', { class: 'small primary', onclick: () => this.orderAttackTown(a, here) }, walled ? '🏰 Besiege' : '⚔ Storm'));
+          btns.push(h('button', { class: 'small', onclick: () => { this.world.startRaid(a, here); this.renderUI(true); } }, '🔥 Raid villages'));
+        }
+        if (btns.length) parts.push(h('div', { class: 'btns' }, ...btns));
+        parts.push(h('p', { class: 'muted', style: 'font-size:12.5px' },
+          'Right-click a town to march there, an enemy army to attack it, or one of your own armies to join it.'));
+        if (here && here.owner === PLAYER && !here.siege) parts.push(this.recruitButtons(here));
+      }
     }
     return h('div', { class: 'card' }, ...parts);
   }
 
-  private raidButton(a: Army): HTMLElement {
-    const p = this.state.provinces[a.province];
-    return h('button', {
-      class: 'small', disabled: a.raided || this.busy,
-      title: 'Plunder the countryside: gold now, and the province pays its owner nothing for 3 turns.',
-      onclick: () => { raid(this.state, a); this.dirty = true; this.renderUI(); },
-    }, a.raided ? 'Already raided this turn' : `🔥 Raid ${p.name} (chauth)`);
+  private orderAttackTown(a: Army, p: Province) {
+    void this.world.attackTown(a, p).then(() => this.renderUI(true));
+    this.renderUI(true);
   }
 
   private siegeBox(a: Army): HTMLElement {
     const s = this.state;
     const p = s.provinces[a.siegeOf];
     const sg = p.siege!;
-    const breakers = a.units.filter((u) => u.type === 'cannon' || u.type === 'elephant').length;
+    const breakers = a.units.filter((u) => UNIT_STATS[u.type].wall > 0 || UNIT_STATS[u.type].cls === 'elephant').length;
+    const cooldown = () => Math.max(0, 2 - (s.day - sg.lastAssault));
     return h('div', { class: 'card', style: 'margin-top:10px;background:#2f2418' },
       h('h3', {}, `🏰 Siege of ${p.town}`),
-      h('div', { class: 'muted' }, `${wallName(p.walls, p.kind, p.sea)} · turn ${sg.turns} of the siege`),
-      h('div', { class: 'muted' }, `Garrison ${unitsMen(p.garrison)} men · food for ${Math.max(0, Math.ceil(p.supplies))} more turns`),
-      h('div', { class: 'muted' }, `Equipment: ${EQUIPMENT[sg.equipment]}${breakers ? ` · ${breakers} gate-breakers (guns/elephants)` : ''}`),
-      sg.equipment === 0 && !breakers ? h('p', { class: 'neg', style: 'font-size:12.5px' }, 'Without ladders, a ram, guns or elephants your men can only hack at the gate.') : null,
+      h('div', { class: 'muted' }, `${wallName(p.walls, p.kind, p.sea)} · garrison ${unitsMen(p.garrison)} men`),
+      h('div', { class: 'muted' }, this.liveText(() => `Food for ${Math.max(0, Math.ceil(p.supplies))} more days${p.supplies <= 0 ? ' (starving!)' : ''}`)),
+      h('div', { class: 'muted' }, this.liveText(() => `Equipment: ${EQUIPMENT[p.siege ? siegeEquipment(p.siege) : 0]}${breakers ? ` · ${breakers} gate-breakers` : ''}`)),
       h('div', { class: 'btns' },
-        h('button', { class: 'small primary', disabled: this.busy || sg.lastAssault === s.turn, onclick: () => void this.assault(a) },
-          sg.lastAssault === s.turn ? 'Assaulted this turn' : '⚔ Assault'),
-        this.raidButton(a),
-        h('button', { class: 'small', disabled: this.busy, onclick: () => { liftSiege(s, p); this.dirty = true; this.renderUI(); } }, 'Lift siege'),
+        h('button', { class: 'small primary', onclick: () => { this.world.assault(a); this.renderUI(true); } },
+          this.liveText(() => (cooldown() > 0 ? `Regrouping (${cooldown().toFixed(1)}d)` : '⚔ Assault'))),
+        h('button', { class: 'small', onclick: () => { setGoal(s, a, null); this.renderUI(true); } }, 'Lift siege'),
       ),
-      h('p', { class: 'muted', style: 'font-size:12px' }, 'Or wait: each turn the besieged eat their stores, and your carpenters build ladders, then a ram.'),
+      h('p', { class: 'muted', style: 'font-size:12px' }, 'Every day the garrison eats its stores while your carpenters build ladders (4 days), then a ram (12 days).'),
     );
   }
 
   private recruitButtons(p: Province): HTMLElement {
     const s = this.state;
-    const occ = armyAt(s, p.id);
+    const occ = armyAtTown(s, p, PLAYER);
     const full = !!occ && occ.units.length >= MAX_UNITS;
     return h('div', { style: 'margin-top:10px' },
-      h('div', { class: 'muted' }, full ? 'Army is at full strength.' : `Raise regiments at ${p.name}:`),
+      h('div', { class: 'muted' }, full ? 'Army is at full strength.' : `Raise regiments at ${p.town}:`),
       h('div', { class: 'btns' },
         ...s.factions[PLAYER].roster.map((t: UnitType) => {
           const st = UNIT_STATS[t];
+          const elite = eliteBlock(s, p, t);
           return h('button', {
-            class: 'small', title: `${st.blurb} Upkeep ${st.upkeep}/turn.`,
-            disabled: full || s.gold[PLAYER] < st.cost || this.busy,
+            class: 'small recruit', title: `${st.name} (tier ${st.tier}). ${elite ? elite + ' ' : ''}${st.blurb} Upkeep ${st.upkeep}/month.`,
+            disabled: full || s.gold[PLAYER] < st.cost || !!elite,
             onclick: () => {
               const err = recruit(s, p, t);
               if (err) log(s, err, true);
-              const a = armyAt(s, p.id);
+              const a = armyAtTown(s, p, PLAYER);
               if (a) this.selArmy = a;
-              this.dirty = true;
-              this.renderUI();
+              this.renderUI(true);
             },
-          }, `${st.glyph} ${st.short} ${st.cost}`);
+          }, symbolEl(t, s.factions[PLAYER].color, 22), `${st.short}`, tierBadge(st.tier), h('span', { class: 'muted' }, `${st.cost}`));
         }),
       ),
     );
@@ -844,36 +1035,37 @@ export class CampaignScene implements Scene {
   private provinceCard(p: Province): HTMLElement {
     const s = this.state;
     const f = s.factions[p.owner];
-    const occ = armyAt(s, p.id);
     const mine = p.owner === PLAYER;
     const income = Math.round(provinceIncome(s, p));
+    const here = s.armies.filter((a) => townAt(s, a) === p.id || a.siegeOf === p.id);
     const parts: (HTMLElement | null)[] = [
       h('h3', {}, p.capitalOf >= 0 ? `♛ ${p.name}` : p.name),
-      h('div', { class: 'muted' }, `${p.region}`),
+      h('div', { class: 'muted' }, p.region),
       h('div', { class: 'row', style: 'margin-top:4px' }, h('span', {}, swatch(f.color), f.name),
         p.owner !== PLAYER && p.owner !== IND ? h('span', { class: s.war[PLAYER][p.owner] ? 'neg' : 'pos' }, s.war[PLAYER][p.owner] ? 'at war' : 'at peace') : null),
       h('p', {}, h('b', {}, p.town), ` · ${wallName(p.walls, p.kind, p.sea)}${p.kind === 'port' ? ' · port' : ''}`),
-      h('div', { class: 'row muted' }, h('span', {}, `Wealth ${p.wealth}`), h('span', {}, income ? `+${income} gold/turn` : p.devastated ? `devastated (${p.devastated} turns)` : p.siege ? 'besieged' : '')),
-      h('div', { class: 'row muted' }, h('span', {}, `Food stores ${Math.max(0, Math.ceil(p.supplies))}/${maxSupplies(p)}`), h('span', {}, `Garrison ${unitsMen(p.garrison)}`)),
-      p.garrison.length ? this.unitList(p.garrison) : null,
-      p.siege ? h('p', { class: 'neg' }, `Besieged by the ${s.factions[s.armies.find((x) => x.id === p.siege!.army)?.owner ?? 0].short} (turn ${p.siege.turns}).`) : null,
-      occ ? h('div', { class: 'btns' }, h('button', { class: 'small', onclick: () => this.select(occ, -1) }, `Select ${s.factions[occ.owner].short} army (${unitsMen(occ.units)})`)) : null,
+      h('div', { class: 'row muted' }, h('span', {}, `Wealth ${p.wealth}`), h('span', {}, income ? `+${income} gold/month` : p.devastated ? 'devastated' : p.siege ? 'besieged' : '')),
+      h('div', { class: 'row muted' }, this.liveText(() => `Food ${Math.max(0, Math.ceil(p.supplies))}/${maxSupplies(p)} days`), h('span', {}, `Garrison ${unitsMen(p.garrison)}`)),
+      p.garrison.length ? this.unitList(p.garrison, f.color) : null,
+      p.siege ? h('p', { class: 'neg' }, `Besieged by the ${s.factions[armyById(s, p.siege.army)?.owner ?? 0].short}.`) : null,
+      here.length ? h('div', { class: 'btns' }, ...here.map((a) => h('button', { class: 'small', onclick: () => this.select(a, -1) },
+        `Select ${s.factions[a.owner].short} army (${fmt(unitsMen(a.units))})`))) : null,
     ];
     if (mine && !p.siege) {
       parts.push(this.recruitButtons(p));
       const err = canBuild(s, p);
       parts.push(h('div', { style: 'margin-top:10px' },
-        h('div', { class: 'muted' }, err && err !== 'Under siege.' ? err : 'Build (one project per turn):'),
+        h('div', { class: 'muted' }, err && err !== 'Under siege.' ? err : 'Build (one project a month):'),
         h('div', { class: 'btns' },
           h('button', {
             class: 'small', disabled: !!err || p.walls >= maxWalls(p) || s.gold[PLAYER] < wallsCost(p),
             title: 'Stronger walls: a bigger garrison, more food, and a harder siege.',
-            onclick: () => { const e = buildWalls(s, p); if (e) log(s, e, true); this.renderUI(); },
+            onclick: () => { const e = buildWalls(s, p); if (e) log(s, e, true); this.renderUI(true); },
           }, p.walls >= maxWalls(p) ? 'Walls at maximum' : `🧱 Walls ${wallsCost(p)}`),
           h('button', {
             class: 'small', disabled: !!err || p.wealth >= maxWealth(p) || s.gold[PLAYER] < marketCost(p),
-            title: '+1 wealth: more gold every turn.',
-            onclick: () => { const e = buildMarket(s, p); if (e) log(s, e, true); this.renderUI(); },
+            title: '+1 wealth: more gold every month.',
+            onclick: () => { const e = buildMarket(s, p); if (e) log(s, e, true); this.renderUI(true); },
           }, p.wealth >= maxWealth(p) ? 'Market at maximum' : `🏪 Market ${marketCost(p)}`),
         ),
       ));
@@ -887,39 +1079,35 @@ export class CampaignScene implements Scene {
     const armies = s.armies.filter((a) => a.owner === PLAYER);
     return h('div', { class: 'card' },
       h('h3', {}, 'Swarajya'),
-      h('div', { class: 'row muted' }, h('span', {}, 'Revenue'), h('span', {}, `+${grossIncome(s, PLAYER)}`)),
-      h('div', { class: 'row muted' }, h('span', {}, 'Army upkeep'), h('span', {}, `-${upkeep(s, PLAYER)}`)),
+      h('div', { class: 'row muted' }, h('span', {}, 'Revenue'), h('span', {}, `+${grossIncome(s, PLAYER)}/month`)),
+      h('div', { class: 'row muted' }, h('span', {}, 'Army upkeep'), h('span', {}, `-${upkeep(s, PLAYER)}/month`)),
       h('div', { class: 'row muted' }, h('span', {}, 'Provinces'), h('span', {}, `${provincesOf(s, PLAYER).length} of ${VICTORY_PROVINCES} for victory`)),
       h('div', { class: 'muted' }, regions.length ? `Whole regions held (+25% revenue): ${regions.join(', ')}` : 'Hold every province of a region for +25% revenue there.'),
+      h('div', { class: 'muted' }, this.liveText(() => `Season: ${seasonOf(s.day)}`)),
       armies.length ? h('div', { class: 'btns' }, ...armies.map((a) =>
-        h('button', { class: 'small', onclick: () => { this.select(a, -1); this.centerOn(s.provinces[a.province]); } },
-          `${s.provinces[a.province].name} (${fmt(unitsMen(a.units))})`))) : null,
-    );
-  }
-
-  private centerOn(p: Province) {
-    this.cam.x = p.x - VIEW_W / 2 / this.cam.z;
-    this.cam.y = p.y - VIEW_H / 2 / this.cam.z;
-    this.clampCam();
-  }
-
-  private logCard(): HTMLElement {
-    return h('div', { class: 'card' },
-      h('h3', {}, 'Chronicle'),
-      h('div', { class: 'log' }, ...this.state.log.slice(-14).reverse().map((l) =>
-        h('div', { style: l.mine ? 'color:var(--ink)' : '' }, `${dateLabel(l.turn)} · ${l.text}`))),
+        h('button', { class: 'small', onclick: () => { this.select(a, -1); this.centerOn(a); } },
+          `Army ${fmt(unitsMen(a.units))} · ${s.provinces[provinceUnder(s, a, a.node)].name}`))) : null,
     );
   }
 }
 
-function summarize(units: CUnit[]): string[] {
+/** The unit type carrying most of an army's strength (shown on its map banner). */
+function mainUnit(units: CUnit[]): UnitType {
+  const by = new Map<UnitType, number>();
+  for (const u of units) by.set(u.type, (by.get(u.type) ?? 0) + u.men * UNIT_STATS[u.type].value);
+  let best: UnitType = units[0]?.type ?? 'spear';
+  let bv = -1;
+  for (const [t, v] of by) if (v > bv) { bv = v; best = t; }
+  return best;
+}
+
+function summarize(units: CUnit[]): [UnitType, number, number][] {
   const counts = new Map<UnitType, { n: number; men: number }>();
   for (const u of units) {
     const c = counts.get(u.type) ?? { n: 0, men: 0 };
     c.n++;
-    c.men += u.men;
+    c.men += Math.round(u.men);
     counts.set(u.type, c);
   }
-  return [...counts].map(([t, c]) => `${UNIT_STATS[t].glyph} ${c.n}× ${UNIT_STATS[t].short} (${c.men})`);
+  return [...counts].map(([t, c]) => [t, c.n, c.men]);
 }
-

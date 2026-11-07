@@ -3,6 +3,7 @@ import { bar, clear, fill, h, hideModal, modalOpen, showModal, swatch, ui } from
 import { fbm, makeNoise } from '../noise';
 import { RNG } from '../rng';
 import { UNIT_STATS } from '../data';
+import { drawSymbol, inkFor, symbolEl, tierBadge } from '../symbols';
 import type { CUnit, Faction } from '../campaign/state';
 import { Battle, type BUnit, FIELD_H, FIELD_W, radiusOf, type Terrain } from './battle';
 import { planSide } from './ai';
@@ -258,7 +259,7 @@ export class BattleScene implements Scene {
       let any = false;
       for (const u of sel) {
         const st = UNIT_STATS[u.type];
-        if (st.cls === 'artillery' || u.type === 'elephant' || (W.segs[seg].gate && st.gate > 0)) {
+        if (st.cls === 'artillery' || st.cls === 'elephant' || (W.segs[seg].gate && st.gate > 0)) {
           u.order = { kind: 'breach', seg };
           any = true;
         }
@@ -307,7 +308,7 @@ export class BattleScene implements Scene {
   }
 
   draw(ctx: CanvasRenderingContext2D) {
-    ctx.drawImage(this.bg, 0, 0);
+    ctx.drawImage(this.bg, 0, 0, FIELD_W, FIELD_H);
     const b = this.b;
     if (b.walls) this.drawWalls(ctx);
 
@@ -560,7 +561,7 @@ export class BattleScene implements Scene {
     if (u.state === 'routing') ctx.globalAlpha = 0.45 + 0.25 * Math.sin(this.t * 10);
     if (u.climbing) ctx.globalAlpha = 0.75;
 
-    if (u.type === 'elephant') {
+    if (st.cls === 'elephant') {
       const cols = Math.ceil(men / 2);
       const w = cols * 13 + 6;
       for (let i = 0; i < men; i++) {
@@ -577,7 +578,7 @@ export class BattleScene implements Scene {
         ctx.fillStyle = '#58554f';
         ctx.fillRect(ex + 8, ey - 1, 5, 2);
       }
-    } else if (u.type === 'cannon') {
+    } else if (st.cls === 'artillery') {
       const guns = Math.max(1, Math.round(men / 5));
       for (let i = 0; i < guns; i++) {
         const gy = (i - (guns - 1) / 2) * 16;
@@ -591,7 +592,7 @@ export class BattleScene implements Scene {
       }
     } else {
       const cav = st.cls === 'cavalry';
-      const ranks = u.type === 'spear' || u.type === 'mavala' ? 3 : 2;
+      const ranks = st.cls === 'infantry' ? 3 : 2;
       const files = Math.ceil(men / ranks);
       const spacing = cav ? 2.8 : 1.7;
       const w = Math.max(14, files * spacing + 6);
@@ -611,7 +612,7 @@ export class BattleScene implements Scene {
           else ctx.fillRect(rx - 0.8, fy - 0.8, 1.6, 1.6);
         }
       }
-      if (u.type === 'spear') {
+      if (st.role === 'pike') {
         ctx.strokeStyle = 'rgba(60,45,30,0.9)';
         ctx.lineWidth = 0.8;
         ctx.beginPath();
@@ -669,13 +670,16 @@ export class BattleScene implements Scene {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.font = '700 11px ui-sans-serif, system-ui, sans-serif';
-    const label = `${st.glyph} ${Math.ceil(u.men)}`;
+    const label = `${Math.ceil(u.men)}`;
     const y = u.y - radiusOf(u.type) - 14;
+    const f = u.side === 0 ? this.s.playerFaction : this.s.enemyFaction;
+    drawSymbol(ctx, u.type, u.x - 10, y, 20, f.color, inkFor(f.rgb));
+    ctx.textAlign = 'left';
     ctx.lineWidth = 3;
     ctx.strokeStyle = 'rgba(0,0,0,0.65)';
-    ctx.strokeText(label, u.x, y);
+    ctx.strokeText(label, u.x + 3, y + 0.5);
     ctx.fillStyle = u.side === 0 ? '#ffffff' : '#ffd9d2';
-    ctx.fillText(label, u.x, y);
+    ctx.fillText(label, u.x + 3, y + 0.5);
     const m = Math.max(0, u.morale / u.maxMorale);
     ctx.fillStyle = 'rgba(0,0,0,0.6)';
     ctx.fillRect(u.x - 14, y + 8, 28, 4);
@@ -748,7 +752,7 @@ export class BattleScene implements Scene {
       .filter(Boolean).join(', ');
     const lines = [
       `${u.side === 0 ? 'Your' : 'Enemy'} ${st.name}`,
-      `${Math.ceil(u.men)}/${u.maxMen} ${u.type === 'elephant' ? 'elephants' : 'men'} · morale ${Math.round(u.morale)}`,
+      `${Math.ceil(u.men)}/${u.maxMen} ${st.cls === 'elephant' ? 'elephants' : 'men'} · morale ${Math.round(u.morale)} · tier ${st.tier}`,
       statusOf(u, this.b) + (where ? ` · ${where}` : ''),
     ];
     ctx.save();
@@ -848,7 +852,7 @@ export class BattleScene implements Scene {
           },
         },
         h('div', { class: 'row' },
-          h('span', {}, `${st.glyph} ${st.short}`),
+          h('span', { class: 'uname' }, symbolEl(u.type, this.s.playerFaction.color, 22), st.short, tierBadge(st.tier)),
           h('span', { class: 'muted' }, `${Math.ceil(u.men)}/${u.maxMen} · ${statusOf(u, this.b)}`)),
         bar(m, m > 0.6 ? '#8fd16b' : m > 0.3 ? '#e8c14a' : '#e3604f'),
         );
@@ -874,11 +878,12 @@ function statusOf(u: BUnit, b: Battle): string {
 }
 
 function renderBattlefield(b: Battle, s: BattleSetup): HTMLCanvasElement {
-  const c = document.createElement('canvas');
-  c.width = FIELD_W;
-  c.height = FIELD_H;
-  const g = c.getContext('2d')!;
-  const img = g.createImageData(FIELD_W, FIELD_H);
+  // Ground texture at 1x, smoothed onto a 2x canvas; everything drawn on top is crisp vector art.
+  const tex = document.createElement('canvas');
+  tex.width = FIELD_W;
+  tex.height = FIELD_H;
+  const tg = tex.getContext('2d')!;
+  const img = tg.createImageData(FIELD_W, FIELD_H);
   const n = makeNoise(s.seed);
   const fine = makeNoise(s.seed + 1);
   const ground: Record<Terrain, [number, number, number]> = {
@@ -902,7 +907,14 @@ function renderBattlefield(b: Battle, s: BattleSetup): HTMLCanvasElement {
       img.data[i + 3] = 255;
     }
   }
-  g.putImageData(img, 0, 0);
+  tg.putImageData(img, 0, 0);
+  const c = document.createElement('canvas');
+  c.width = FIELD_W * 2;
+  c.height = FIELD_H * 2;
+  const g = c.getContext('2d')!;
+  g.imageSmoothingQuality = 'high';
+  g.drawImage(tex, 0, 0, c.width, c.height);
+  g.scale(2, 2);
 
   // Contour lines on hills.
   g.strokeStyle = 'rgba(70,55,30,0.25)';

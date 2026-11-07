@@ -48,12 +48,12 @@ function planField(b: Battle, side: 0 | 1, mine: BUnit[], foes: BUnit[]) {
     }
     if (st.cls === 'missile') {
       const meleeClose = closest(u, foes.filter((f) => UNIT_STATS[f.type].range === 0));
-      if (meleeClose && dist(u, meleeClose) < 90 && u.type !== 'musket') {
+      if (meleeClose && dist(u, meleeClose) < 90 && st.weapon !== 'gun') {
         // Fall back from charging enemies toward friends.
         const d = Math.max(1, dist(u, meleeClose));
         u.order = { kind: 'move', x: u.x + ((u.x - meleeClose.x) / d) * 90, y: u.y + ((u.y - meleeClose.y) / d) * 90 };
       } else if (dN <= st.range * 0.95 || patient) {
-        const pref = u.type === 'rocket' ? closest(u, foes, (e) => (isLarge(e.type) ? 0.5 : 1)) : near;
+        const pref = st.weapon === 'rocket' ? closest(u, foes, (e) => (isLarge(e.type) ? 0.5 : 1)) : near;
         u.order = pref && dist(u, pref) <= st.range ? { kind: 'attack', target: pref.id } : { kind: 'hold' };
       } else {
         const k = (st.range * 0.85) / dN;
@@ -66,16 +66,18 @@ function planField(b: Battle, side: 0 | 1, mine: BUnit[], foes: BUnit[]) {
       continue;
     }
     let t: BUnit | null;
-    if (u.type === 'spear') {
+    const role = (e: BUnit) => UNIT_STATS[e.type].role;
+    const ecls = (e: BUnit) => UNIT_STATS[e.type].cls;
+    if (st.role === 'pike') {
       t = closest(u, foes, (e) => (isLarge(e.type) ? 0.6 : 1));
-    } else if (u.type === 'lightcav') {
-      t = closest(u, foes, (e) => (UNIT_STATS[e.type].cls === 'missile' || e.type === 'cannon' ? 0.45 : e.type === 'spear' ? 2.5 : 1.2));
-    } else if (u.type === 'heavycav') {
-      t = closest(u, foes, (e) => (e.type === 'spear' ? 2.5 : e.type === 'elephant' ? 2 : UNIT_STATS[e.type].cls === 'missile' ? 0.7 : 1));
-    } else if (u.type === 'horsearcher') {
+    } else if (st.role === 'raider') {
+      t = closest(u, foes, (e) => (ecls(e) === 'missile' || ecls(e) === 'artillery' ? 0.45 : role(e) === 'pike' ? 2.5 : 1.2));
+    } else if (st.role === 'shock') {
+      t = closest(u, foes, (e) => (role(e) === 'pike' ? 2.5 : ecls(e) === 'elephant' ? 2 : ecls(e) === 'missile' ? 0.7 : 1));
+    } else if (st.role === 'skirmish') {
       t = closest(u, foes, (e) => (e.state === 'ok' && e.morale < e.maxMorale * 0.4 ? 0.5 : 1));
-    } else if (u.type === 'elephant') {
-      t = closest(u, foes, (e) => (UNIT_STATS[e.type].cls === 'infantry' ? 0.7 : e.type === 'musket' || e.type === 'rocket' ? 1.6 : 1));
+    } else if (st.role === 'beast') {
+      t = closest(u, foes, (e) => (ecls(e) === 'infantry' ? 0.7 : UNIT_STATS[e.type].weapon === 'gun' || UNIT_STATS[e.type].weapon === 'rocket' ? 1.6 : 1));
     } else {
       t = closest(u, foes, (e) => (UNIT_STATS[e.type].cls === 'missile' ? 0.8 : 1));
     }
@@ -130,7 +132,7 @@ function planSiegeAttack(b: Battle, mine: BUnit[], foes: BUnit[]) {
       u.order = t && dist(u, t) < 220 ? { kind: 'attack', target: t.id } : plazaGoal;
       continue;
     }
-    if (u.type === 'elephant' || (b.opts.ram && st.cls === 'infantry' && u.type !== 'mavala')) {
+    if (st.cls === 'elephant' || (b.opts.ram && st.cls === 'infantry' && st.climb < 2)) {
       u.order = { kind: 'breach', seg: gateIdx };
       continue;
     }
