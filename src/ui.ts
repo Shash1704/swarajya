@@ -27,6 +27,16 @@ export function clear<T extends HTMLElement>(el: T): T {
   return el;
 }
 
+/** Replaces an element's children, skipping null/false entries. */
+export function fill<T extends HTMLElement>(el: T, ...children: Child[]): T {
+  clear(el);
+  for (const c of children) {
+    if (c === null || c === undefined || c === false) continue;
+    el.append(typeof c === 'number' ? String(c) : c);
+  }
+  return el;
+}
+
 export function swatch(color: string): HTMLElement {
   return h('span', { class: 'swatch', style: `background:${color}` });
 }

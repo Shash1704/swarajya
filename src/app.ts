@@ -10,6 +10,8 @@ export interface Scene {
   pointerMove?(x: number, y: number, e: PointerEvent): void;
   pointerUp?(x: number, y: number, button: number, e: PointerEvent): void;
   keyDown?(e: KeyboardEvent): void;
+  keyUp?(e: KeyboardEvent): void;
+  wheel?(x: number, y: number, deltaY: number, e: WheelEvent): void;
 }
 
 class App {

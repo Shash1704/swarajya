@@ -1,43 +1,62 @@
-import { Scene } from '../app';
-import { bar, clear, h, hideModal, modalOpen, showModal, swatch, ui } from '../ui';
+import type { Scene } from '../app';
+import { bar, clear, fill, h, hideModal, modalOpen, showModal, swatch, ui } from '../ui';
 import { fbm, makeNoise } from '../noise';
 import { RNG } from '../rng';
-import { UNIT_ICON, UNIT_STATS } from '../data';
-import type { Army, Faction } from '../campaign/state';
-import { Battle, BUnit, EXEC_TIME, FIELD_H, FIELD_W, MAX_ROUNDS } from './battle';
+import { UNIT_STATS } from '../data';
+import type { CUnit, Faction } from '../campaign/state';
+import { Battle, type BUnit, FIELD_H, FIELD_W, radiusOf, type Terrain } from './battle';
+import { planSide } from './ai';
 
 export interface BattleSetup {
-  playerArmy: Army;
-  enemyArmy: Army;
+  mode: 'field' | 'siege';
+  playerUnits: CUnit[];
+  enemyUnits: CUnit[];
   playerAttacks: boolean;
-  provinceName: string;
+  title: string;
   seed: number;
+  terrain: Terrain;
+  rain: boolean;
+  walls: number;
+  ladders: boolean;
+  ram: boolean;
   playerFaction: Faction;
   enemyFaction: Faction;
   onDone(playerWon: boolean): void;
 }
 
 const STEP = 1 / 60;
+const AI_EVERY = 1.5;
+
+interface Particle { x: number; y: number; vx: number; vy: number; life: number; max: number; size: number; color: string }
 
 export class BattleScene implements Scene {
   private b: Battle;
-  private phase: 'plan' | 'exec' | 'done' = 'plan';
-  private execLeft = 0;
+  private s: BattleSetup;
+  private phase: 'deploy' | 'live' | 'done' = 'deploy';
+  private paused = false;
+  private speed = 1;
   private acc = 0;
-  private uiTimer = 0;
+  private aiT = 0;
+  private uiT = 0;
   private t = 0;
   private selected = new Set<number>();
   private drag: { x0: number; y0: number; x1: number; y1: number } | null = null;
   private mouse = { x: -100, y: -100 };
   private bg: HTMLCanvasElement;
   private listEl: HTMLElement | null = null;
+  private statusEl: HTMLElement | null = null;
   private notice = '';
   private noticeT = 0;
+  private particles: Particle[] = [];
+  private seenShots = new WeakSet<object>();
 
-  constructor(private s: BattleSetup) {
-    this.b = new Battle(s.playerArmy.units, s.enemyArmy.units, !s.playerAttacks, s.seed);
-    this.bg = renderBattlefield(this.b, s.seed);
-    this.b.planAI();
+  constructor(setup: BattleSetup) {
+    this.s = setup;
+    this.b = new Battle(setup.playerUnits, setup.enemyUnits, {
+      mode: setup.mode, playerAttacks: setup.playerAttacks, seed: setup.seed, terrain: setup.terrain,
+      rain: setup.rain, walls: setup.walls, ladders: setup.ladders, ram: setup.ram,
+    });
+    this.bg = renderBattlefield(this.b, setup);
   }
 
   enter() {
@@ -49,76 +68,60 @@ export class BattleScene implements Scene {
   update(dt: number) {
     this.t += dt;
     this.noticeT = Math.max(0, this.noticeT - dt);
-    if (this.phase !== 'exec') return;
-    this.acc = Math.min(this.acc + dt, 0.25);
-    while (this.acc >= STEP && this.phase === 'exec') {
+    if (this.phase !== 'live' || this.paused || modalOpen()) return;
+    this.acc = Math.min(this.acc + dt * this.speed, 0.5);
+    while (this.acc >= STEP) {
       this.acc -= STEP;
+      this.aiT -= STEP;
+      if (this.aiT <= 0) {
+        planSide(this.b, 1);
+        this.aiT = AI_EVERY;
+      }
       this.b.step(STEP);
-      this.execLeft -= STEP;
       if (this.b.winner >= 0) {
         this.finish(this.b.winner === 0);
         return;
       }
-      if (this.execLeft <= 0) {
-        this.b.round++;
-        if (this.b.round > MAX_ROUNDS) {
-          this.say('The day is spent; the defender holds the field.');
-          this.finish(this.b.defenderSide === 0);
-          return;
-        }
-        this.phase = 'plan';
-        this.b.planAI();
-        this.renderUI();
-      }
     }
-    this.uiTimer += dt;
-    if (this.uiTimer > 0.25) {
-      this.uiTimer = 0;
-      this.refreshList();
+    this.spawnParticles(dt);
+    this.uiT += dt;
+    if (this.uiT > 0.3) {
+      this.uiT = 0;
+      this.refreshStatus();
     }
   }
 
-  private execute() {
-    if (this.phase !== 'plan' || modalOpen()) return;
-    this.phase = 'exec';
-    this.execLeft = EXEC_TIME;
+  private start() {
+    if (this.phase !== 'deploy') return;
+    this.phase = 'live';
+    planSide(this.b, 1);
+    this.aiT = AI_EVERY;
     this.renderUI();
   }
 
   private finish(won: boolean, retreated = false) {
     if (this.phase === 'done') return;
     this.phase = 'done';
-    const winnerSide = won ? 0 : 1;
-    let before = [0, 0];
-    let after = [0, 0];
-    for (const u of this.b.units) {
-      let m = u.men;
-      if (u.state === 'dead') m = 0;
-      else if (u.state === 'fled') m *= u.side === winnerSide ? 0.85 : 0.5;
-      else if (u.side !== winnerSide) m *= retreated ? 0.85 : 0.8;
-      u.ref.men = Math.floor(m);
-      before[u.side] += u.startMen;
-      after[u.side] += u.ref.men;
-    }
-    before = before.map(Math.round);
-    after = after.map(Math.round);
+    const before = [0, 0];
+    for (const u of this.b.units) before[u.side] += u.startMen;
+    this.b.applyResults(won ? 0 : 1, retreated);
+    const after = [0, 0];
+    for (const u of this.b.units) after[u.side] += u.ref.men;
     this.renderUI();
-    const body = h('div', {},
-      h('p', {}, won
-        ? `The ${this.s.enemyFaction.name} army breaks and flees the field at ${this.s.provinceName}.`
-        : retreated
-          ? `You sound the retreat at ${this.s.provinceName}. The army withdraws in good order.`
-          : `Your lines break at ${this.s.provinceName}.`),
+    const s = this.s;
+    const siege = s.mode === 'siege';
+    let text: string;
+    if (retreated) text = 'You sound the retreat. The army withdraws, bloodied but intact.';
+    else if (siege && won) text = s.playerAttacks ? 'The defenders break. The settlement is yours to take.' : 'The assault is thrown back from the walls!';
+    else if (siege) text = s.playerAttacks ? 'The assault fails beneath the walls.' : 'The enemy is inside the walls. The settlement falls.';
+    else text = won ? `The ${s.enemyFaction.short} break and flee the field.` : 'Your lines break and scatter.';
+    showModal(won ? 'Victory!' : 'Defeat', h('div', {},
+      h('p', {}, text),
       h('div', { class: 'versus' },
-        h('div', { class: 'card' }, h('h3', {}, swatch(this.s.playerFaction.color), 'Your losses'),
-          h('div', {}, `${before[0] - after[0]} of ${before[0]} men`)),
-        h('div', { class: 'card' }, h('h3', {}, swatch(this.s.enemyFaction.color), 'Enemy losses'),
-          h('div', {}, `${before[1] - after[1]} of ${before[1]} men`)),
+        h('div', { class: 'card' }, h('h3', {}, swatch(s.playerFaction.color), 'Your losses'), h('div', {}, `${before[0] - after[0]} of ${before[0]} men`)),
+        h('div', { class: 'card' }, h('h3', {}, swatch(s.enemyFaction.color), 'Enemy losses'), h('div', {}, `${before[1] - after[1]} of ${before[1]} men`)),
       ),
-    );
-    showModal(won ? 'Victory!' : 'Defeat', body, [
-      { label: 'Return to the campaign map', primary: true, onClick: () => { hideModal(); this.s.onDone(won); } },
-    ]);
+    ), [{ label: 'Return to the campaign map', primary: true, onClick: () => { hideModal(); s.onDone(won); } }]);
   }
 
   private say(msg: string) {
@@ -130,7 +133,7 @@ export class BattleScene implements Scene {
 
   private unitAt(x: number, y: number, side: 0 | 1): BUnit | null {
     let best: BUnit | null = null;
-    let bd = 26;
+    let bd = 28;
     for (const u of this.b.units) {
       if (u.side !== side || u.state !== 'ok') continue;
       const d = Math.hypot(u.x - x, u.y - y);
@@ -140,6 +143,12 @@ export class BattleScene implements Scene {
       }
     }
     return best;
+  }
+
+  private segAtPoint(x: number, y: number): number {
+    const W = this.b.walls;
+    if (!W || y < W.y - 12 || y > W.y + W.t + 12) return -1;
+    return Math.max(0, Math.min(W.segs.length - 1, Math.floor(x / (FIELD_W / W.segs.length))));
   }
 
   pointerDown(x: number, y: number, button: number, e: PointerEvent) {
@@ -154,9 +163,7 @@ export class BattleScene implements Scene {
       if (e.shiftKey) {
         if (this.selected.has(u.id)) this.selected.delete(u.id);
         else this.selected.add(u.id);
-      } else {
-        this.selected = new Set([u.id]);
-      }
+      } else this.selected = new Set([u.id]);
     } else {
       this.drag = { x0: x, y0: y, x1: x, y1: y };
       if (!e.shiftKey) this.selected.clear();
@@ -187,27 +194,56 @@ export class BattleScene implements Scene {
 
   keyDown(e: KeyboardEvent) {
     if (modalOpen()) return;
-    if (e.key === ' ' || e.key === 'Enter') {
+    const k = e.key.toLowerCase();
+    if (k === ' ') {
       e.preventDefault();
-      this.execute();
-    } else if (e.key === 'Escape') {
+      if (this.phase === 'deploy') this.start();
+      else if (this.phase === 'live') this.togglePause();
+    } else if (k === 'escape') {
       this.selected.clear();
       this.refreshList();
-    } else if (e.key.toLowerCase() === 'a' && (e.metaKey || e.ctrlKey)) {
+    } else if (k === 'a' && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
       this.selected = new Set(this.b.units.filter((u) => u.side === 0 && u.state === 'ok').map((u) => u.id));
+      this.refreshList();
+    } else if (k === '1' || k === '2' || k === '3') {
+      this.speed = Number(k);
+      this.renderUI();
+    } else if (k === 'h') {
+      for (const u of this.mySelected()) u.order = { kind: 'hold' };
       this.refreshList();
     }
   }
 
+  private togglePause() {
+    this.paused = !this.paused;
+    this.renderUI();
+  }
+
+  private mySelected(): BUnit[] {
+    return this.b.units.filter((u) => this.selected.has(u.id) && u.state === 'ok' && u.side === 0);
+  }
+
   private issueOrder(x: number, y: number) {
-    if (this.phase !== 'plan') {
-      this.say('Orders can only be given while planning. Wait for this round to finish.');
+    const sel = this.mySelected();
+    if (!sel.length) {
+      this.say('Select a regiment first (left-click, or drag a box).');
       return;
     }
-    const sel = this.b.units.filter((u) => this.selected.has(u.id) && u.state === 'ok' && u.side === 0);
-    if (!sel.length) {
-      this.say('Select a regiment first (left-click or drag a box).');
+    const cx = sel.reduce((s, u) => s + u.x, 0) / sel.length;
+    const cy = sel.reduce((s, u) => s + u.y, 0) / sel.length;
+    const spot = (u: BUnit) => ({
+      x: Math.max(15, Math.min(FIELD_W - 15, sel.length === 1 ? x : x + (u.x - cx))),
+      y: Math.max(15, Math.min(FIELD_H - 15, sel.length === 1 ? y : y + (u.y - cy))),
+    });
+
+    if (this.phase === 'deploy') {
+      const [y0, y1] = this.b.deployZone(0);
+      for (const u of sel) {
+        const p = spot(u);
+        u.x = p.x;
+        u.y = Math.max(y0, Math.min(y1, p.y));
+      }
       return;
     }
     const enemy = this.unitAt(x, y, 1);
@@ -216,70 +252,115 @@ export class BattleScene implements Scene {
       this.refreshList();
       return;
     }
-    // Move as a group, keeping the current formation.
-    const cx = sel.reduce((s, u) => s + u.x, 0) / sel.length;
-    const cy = sel.reduce((s, u) => s + u.y, 0) / sel.length;
-    for (const u of sel) {
-      const tx = sel.length === 1 ? x : x + (u.x - cx);
-      const ty = sel.length === 1 ? y : y + (u.y - cy);
-      u.order = { kind: 'move', x: Math.max(15, Math.min(FIELD_W - 15, tx)), y: Math.max(15, Math.min(FIELD_H - 15, ty)) };
+    const seg = this.segAtPoint(x, y);
+    const W = this.b.walls;
+    if (W && seg >= 0 && this.b.attacker === 0 && W.segs[seg].hp > 0) {
+      let any = false;
+      for (const u of sel) {
+        const st = UNIT_STATS[u.type];
+        if (st.cls === 'artillery' || u.type === 'elephant' || (W.segs[seg].gate && st.gate > 0)) {
+          u.order = { kind: 'breach', seg };
+          any = true;
+        }
+      }
+      if (any) {
+        this.refreshList();
+        return;
+      }
+      if (!W.segs[seg].gate) this.say('Only guns and elephants can batter a wall. Infantry can hack at the gate.');
     }
+    for (const u of sel) u.order = { kind: 'move', ...spot(u) };
     this.refreshList();
   }
 
   // ---------------------------------------------------------------- drawing
 
+  private spawnParticles(dt: number) {
+    for (const s of this.b.shots) {
+      if (this.seenShots.has(s)) continue;
+      this.seenShots.add(s);
+      if (s.kind === 'musket' || s.kind === 'fizzle' || s.kind === 'cannon') {
+        const n = s.kind === 'cannon' ? 10 : 6;
+        for (let i = 0; i < n; i++) {
+          this.particles.push({
+            x: s.x0 + (Math.random() - 0.5) * 20, y: s.y0 + (Math.random() - 0.5) * 20,
+            vx: (Math.random() - 0.5) * 12, vy: -6 - Math.random() * 8, life: 0,
+            max: s.kind === 'cannon' ? 2.4 : 1.6, size: s.kind === 'cannon' ? 9 : 6, color: '235,232,222',
+          });
+        }
+      }
+      if (s.kind === 'cannon' || s.kind === 'rocket') {
+        for (let i = 0; i < 6; i++) {
+          this.particles.push({
+            x: s.x1, y: s.y1, vx: (Math.random() - 0.5) * 40, vy: (Math.random() - 0.5) * 40, life: 0,
+            max: 0.9, size: 5, color: '150,120,80',
+          });
+        }
+      }
+    }
+    for (const p of this.particles) {
+      p.life += dt;
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+    }
+    this.particles = this.particles.filter((p) => p.life < p.max);
+  }
+
   draw(ctx: CanvasRenderingContext2D) {
     ctx.drawImage(this.bg, 0, 0);
     const b = this.b;
+    if (b.walls) this.drawWalls(ctx);
 
-    // Player orders.
+    if (this.phase === 'deploy') {
+      const [y0, y1] = b.deployZone(0);
+      ctx.save();
+      ctx.fillStyle = 'rgba(255,240,200,0.07)';
+      ctx.strokeStyle = 'rgba(255,240,200,0.35)';
+      ctx.setLineDash([8, 6]);
+      ctx.fillRect(4, y0, FIELD_W - 8, y1 - y0);
+      ctx.strokeRect(4, y0, FIELD_W - 8, y1 - y0);
+      ctx.restore();
+    }
+
+    // Orders for the player's selected regiments (and faintly for the rest).
     for (const u of b.units) {
       if (u.side !== 0 || u.state !== 'ok') continue;
-      const alpha = this.phase === 'plan' ? 0.9 : 0.35;
+      const alpha = this.selected.has(u.id) ? 0.9 : 0.25;
       ctx.save();
       ctx.lineWidth = 2;
-      if (u.order.kind === 'move') {
+      const o = u.order;
+      if (o.kind === 'move') {
         ctx.strokeStyle = `rgba(255,255,255,${alpha})`;
         ctx.setLineDash([6, 5]);
         ctx.beginPath();
         ctx.moveTo(u.x, u.y);
-        ctx.lineTo(u.order.x, u.order.y);
+        ctx.lineTo(o.x, o.y);
         ctx.stroke();
         ctx.setLineDash([]);
         ctx.beginPath();
-        ctx.arc(u.order.x, u.order.y, 5, 0, Math.PI * 2);
+        ctx.arc(o.x, o.y, 5, 0, Math.PI * 2);
         ctx.stroke();
-      } else if (u.order.kind === 'attack') {
-        const t = b.get(u.order.target);
-        if (t && t.state !== 'dead' && t.state !== 'fled') {
+      } else if (o.kind === 'attack' || o.kind === 'breach') {
+        const t = o.kind === 'attack' ? b.get(o.target) : b.segCenter(o.seg);
+        if (t) {
           ctx.strokeStyle = `rgba(255,110,90,${alpha})`;
-          ctx.fillStyle = ctx.strokeStyle;
           ctx.beginPath();
           ctx.moveTo(u.x, u.y);
           ctx.lineTo(t.x, t.y);
           ctx.stroke();
-          const ang = Math.atan2(t.y - u.y, t.x - u.x);
-          const ex = t.x - Math.cos(ang) * 22;
-          const ey = t.y - Math.sin(ang) * 22;
-          ctx.beginPath();
-          ctx.moveTo(ex + Math.cos(ang) * 6, ey + Math.sin(ang) * 6);
-          ctx.lineTo(ex + Math.cos(ang + 2.5) * 9, ey + Math.sin(ang + 2.5) * 9);
-          ctx.lineTo(ex + Math.cos(ang - 2.5) * 9, ey + Math.sin(ang - 2.5) * 9);
-          ctx.fill();
         }
       }
       ctx.restore();
     }
 
-    // Arrow volleys.
-    if (this.phase === 'exec') {
+    // Continuous arrow fire.
+    if (this.phase === 'live') {
       ctx.save();
       ctx.strokeStyle = 'rgba(40,30,20,0.75)';
-      ctx.lineWidth = 1.2;
+      ctx.lineWidth = 1.1;
       for (const u of b.units) {
-        if (u.shootingAt < 0) continue;
-        const t = b.get(u.shootingAt);
+        if (u.aimId < 0) continue;
+        const t = b.get(u.aimId);
         if (!t) continue;
         const ang = Math.atan2(t.y - u.y, t.x - u.x);
         for (let k = 0; k < 4; k++) {
@@ -295,12 +376,52 @@ export class BattleScene implements Scene {
       ctx.restore();
     }
 
-    const order = [...b.units].sort((p, q) => (p.state === 'routing' ? -1 : 0) - (q.state === 'routing' ? -1 : 0));
+    const order = [...b.units].sort((p, q) => p.y - q.y);
     for (const u of order) if (u.state === 'ok' || u.state === 'routing') this.drawUnit(ctx, u);
+
+    // Volleys, cannonballs, rockets and tower bolts.
+    ctx.save();
+    for (const s of b.shots) {
+      const f = Math.min(1, s.t / 0.25);
+      if (s.kind === 'musket' || s.kind === 'tower') {
+        ctx.strokeStyle = s.kind === 'tower' ? `rgba(40,30,20,${1 - f})` : `rgba(255,236,170,${0.8 * (1 - f)})`;
+        ctx.lineWidth = s.kind === 'tower' ? 1.2 : 1;
+        ctx.beginPath();
+        ctx.moveTo(s.x0, s.y0);
+        ctx.lineTo(s.x0 + (s.x1 - s.x0) * f, s.y0 + (s.y1 - s.y0) * f);
+        ctx.stroke();
+      } else if (s.kind === 'cannon') {
+        const px = s.x0 + (s.x1 - s.x0) * f;
+        const py = s.y0 + (s.y1 - s.y0) * f;
+        ctx.fillStyle = '#222';
+        ctx.beginPath();
+        ctx.arc(px, py, 3, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (s.kind === 'rocket') {
+        const px = s.x0 + (s.x1 - s.x0) * f;
+        const py = s.y0 + (s.y1 - s.y0) * f - Math.sin(f * Math.PI) * 40;
+        ctx.strokeStyle = 'rgba(255,170,60,0.9)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(px, py);
+        ctx.lineTo(px - (s.x1 - s.x0) * 0.04, py - (s.y1 - s.y0) * 0.04 + 4);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+
+    for (const p of this.particles) {
+      const a = (1 - p.life / p.max) * 0.5;
+      ctx.fillStyle = `rgba(${p.color},${a})`;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size * (0.6 + p.life / p.max), 0, Math.PI * 2);
+      ctx.fill();
+    }
+
     for (const u of order) if (u.state === 'ok' || u.state === 'routing') this.drawLabel(ctx, u);
 
     // Melee sparks.
-    if (this.phase === 'exec') {
+    if (this.phase === 'live' && !this.paused) {
       ctx.fillStyle = '#ffe9a8';
       for (const u of b.units) {
         if (!u.fighting) continue;
@@ -312,7 +433,8 @@ export class BattleScene implements Scene {
       }
     }
 
-    // Floating combat text.
+    if (this.s.rain) this.drawRain(ctx);
+
     ctx.save();
     ctx.textAlign = 'center';
     ctx.font = '700 13px Georgia, serif';
@@ -331,7 +453,6 @@ export class BattleScene implements Scene {
       ctx.save();
       ctx.strokeStyle = 'rgba(255,255,255,0.85)';
       ctx.fillStyle = 'rgba(255,255,255,0.08)';
-      ctx.lineWidth = 1;
       ctx.fillRect(d.x0, d.y0, d.x1 - d.x0, d.y1 - d.y0);
       ctx.strokeRect(d.x0, d.y0, d.x1 - d.x0, d.y1 - d.y0);
       ctx.restore();
@@ -341,49 +462,203 @@ export class BattleScene implements Scene {
     this.drawTooltip(ctx);
   }
 
+  private drawWalls(ctx: CanvasRenderingContext2D) {
+    const W = this.b.walls!;
+    const stone = W.level === 1 ? '#7a5a36' : W.level === 2 ? '#a39887' : '#8c8274';
+    const dark = W.level === 1 ? '#4e3820' : '#5d564b';
+    // Plaza.
+    ctx.save();
+    ctx.fillStyle = 'rgba(200,180,140,0.35)';
+    ctx.beginPath();
+    ctx.arc(W.plaza.x, W.plaza.y, W.plaza.r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = 'rgba(60,40,20,0.5)';
+    ctx.stroke();
+    if (W.capture > 0) {
+      ctx.strokeStyle = this.b.attacker === 0 ? this.s.playerFaction.color : this.s.enemyFaction.color;
+      ctx.lineWidth = 6;
+      ctx.beginPath();
+      ctx.arc(W.plaza.x, W.plaza.y, W.plaza.r - 3, -Math.PI / 2, -Math.PI / 2 + W.capture * Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    for (const s of W.segs) {
+      const w = s.x1 - s.x0;
+      if (s.hp <= 0) {
+        // Rubble.
+        const rng = new RNG(Math.floor(s.x0));
+        ctx.fillStyle = dark;
+        for (let i = 0; i < 14; i++) ctx.fillRect(s.x0 + rng.range(0, w), W.y + rng.range(-4, W.t + 4), rng.range(3, 8), rng.range(3, 6));
+        continue;
+      }
+      if (s.gate) {
+        ctx.fillStyle = stone;
+        ctx.fillRect(s.x0, W.y, 22, W.t);
+        ctx.fillRect(s.x1 - 22, W.y, 22, W.t);
+        ctx.fillStyle = '#5b3a1e';
+        ctx.fillRect(s.x0 + 22, W.y + 4, w - 44, W.t - 8);
+        ctx.strokeStyle = '#2c1a0c';
+        ctx.lineWidth = 1;
+        for (let x = s.x0 + 28; x < s.x1 - 22; x += 7) {
+          ctx.beginPath();
+          ctx.moveTo(x, W.y + 4);
+          ctx.lineTo(x, W.y + W.t - 4);
+          ctx.stroke();
+        }
+      } else {
+        ctx.fillStyle = stone;
+        ctx.fillRect(s.x0, W.y, w, W.t);
+        // Crenellations.
+        ctx.fillStyle = dark;
+        for (let x = s.x0; x < s.x1; x += 10) ctx.fillRect(x, W.y + W.t - 5, 5, 5);
+      }
+      ctx.strokeStyle = dark;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(s.x0, W.y, w, W.t);
+      const dmg = 1 - s.hp / s.maxHp;
+      if (dmg > 0.05) {
+        ctx.strokeStyle = 'rgba(30,20,10,0.8)';
+        ctx.lineWidth = 1.2;
+        const rng = new RNG(Math.floor(s.x0) + 7);
+        for (let i = 0; i < Math.ceil(dmg * 6); i++) {
+          const x = s.x0 + rng.range(8, w - 8);
+          ctx.beginPath();
+          ctx.moveTo(x, W.y + 2);
+          ctx.lineTo(x + rng.range(-8, 8), W.y + W.t / 2);
+          ctx.lineTo(x + rng.range(-8, 8), W.y + W.t - 2);
+          ctx.stroke();
+        }
+      }
+      if (s.gate) {
+        ctx.fillStyle = 'rgba(0,0,0,0.6)';
+        ctx.fillRect(s.x0 + 22, W.y + W.t + 4, w - 44, 4);
+        ctx.fillStyle = '#e8c14a';
+        ctx.fillRect(s.x0 + 22, W.y + W.t + 4, (w - 44) * (s.hp / s.maxHp), 4);
+      }
+    }
+    for (const t of W.towers) {
+      ctx.fillStyle = stone;
+      ctx.fillRect(t.x - 14, W.y - 8, 28, W.t + 16);
+      ctx.strokeStyle = dark;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(t.x - 14, W.y - 8, 28, W.t + 16);
+      ctx.fillStyle = dark;
+      for (let x = t.x - 14; x < t.x + 14; x += 8) ctx.fillRect(x, W.y - 8, 4, 4);
+    }
+  }
+
   private drawUnit(ctx: CanvasRenderingContext2D, u: BUnit) {
     const col = u.side === 0 ? this.s.playerFaction.rgb : this.s.enemyFaction.rgb;
+    const st = UNIT_STATS[u.type];
     const men = Math.max(1, Math.ceil(u.men));
-    const ranks = u.type === 'spear' ? 3 : 2;
-    const files = Math.ceil(men / ranks);
-    const spacing = u.type === 'knight' ? 2.6 : 1.7;
-    const w = Math.max(14, files * spacing + 6);
-    const depth = u.type === 'knight' ? 18 : u.type === 'spear' ? 15 : 12;
+    const dark = `rgb(${col[0] * 0.5},${col[1] * 0.5},${col[2] * 0.5})`;
     ctx.save();
     ctx.translate(u.x, u.y);
     ctx.rotate(u.facing);
     if (u.state === 'routing') ctx.globalAlpha = 0.45 + 0.25 * Math.sin(this.t * 10);
-    ctx.fillStyle = `rgba(${col[0]},${col[1]},${col[2]},0.35)`;
-    ctx.fillRect(-depth / 2, -w / 2, depth, w);
-    ctx.lineWidth = 1.5;
-    ctx.strokeStyle = `rgb(${col[0] * 0.6},${col[1] * 0.6},${col[2] * 0.6})`;
-    ctx.strokeRect(-depth / 2, -w / 2, depth, w);
-    // Individual soldiers.
-    ctx.fillStyle = `rgb(${col[0] * 0.55},${col[1] * 0.55},${col[2] * 0.55})`;
-    const dot = u.type === 'knight' ? 2.4 : 1.6;
-    let n = 0;
-    for (let r = 0; r < ranks && n < men; r++) {
-      const rx = depth / 2 - (r + 0.5) * (depth / ranks);
-      for (let f = 0; f < files && n < men; f++, n++) {
-        const fy = -w / 2 + 3 + (f + 0.5) * ((w - 6) / files);
-        ctx.fillRect(rx - dot / 2, fy - dot / 2, dot, dot);
+    if (u.climbing) ctx.globalAlpha = 0.75;
+
+    if (u.type === 'elephant') {
+      const cols = Math.ceil(men / 2);
+      const w = cols * 13 + 6;
+      for (let i = 0; i < men; i++) {
+        const r = i % 2;
+        const f = Math.floor(i / 2);
+        const ex = r === 0 ? 7 : -9;
+        const ey = -w / 2 + 9 + f * 13;
+        ctx.fillStyle = '#6d6a66';
+        ctx.beginPath();
+        ctx.ellipse(ex, ey, 9, 6, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = `rgb(${col[0]},${col[1]},${col[2]})`;
+        ctx.fillRect(ex - 3, ey - 3, 6, 6);
+        ctx.fillStyle = '#58554f';
+        ctx.fillRect(ex + 8, ey - 1, 5, 2);
+      }
+    } else if (u.type === 'cannon') {
+      const guns = Math.max(1, Math.round(men / 5));
+      for (let i = 0; i < guns; i++) {
+        const gy = (i - (guns - 1) / 2) * 16;
+        ctx.fillStyle = '#5a3d22';
+        ctx.fillRect(-8, gy - 5, 10, 10);
+        ctx.fillStyle = '#2a2a28';
+        ctx.fillRect(-4, gy - 2.5, 20, 5);
+        ctx.fillStyle = dark;
+        ctx.fillRect(-14, gy - 4, 3, 3);
+        ctx.fillRect(-14, gy + 2, 3, 3);
+      }
+    } else {
+      const cav = st.cls === 'cavalry';
+      const ranks = u.type === 'spear' || u.type === 'mavala' ? 3 : 2;
+      const files = Math.ceil(men / ranks);
+      const spacing = cav ? 2.8 : 1.7;
+      const w = Math.max(14, files * spacing + 6);
+      const depth = cav ? 18 : ranks === 3 ? 15 : 12;
+      ctx.fillStyle = `rgba(${col[0]},${col[1]},${col[2]},0.35)`;
+      ctx.fillRect(-depth / 2, -w / 2, depth, w);
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = dark;
+      ctx.strokeRect(-depth / 2, -w / 2, depth, w);
+      ctx.fillStyle = dark;
+      let n = 0;
+      for (let r = 0; r < ranks && n < men; r++) {
+        const rx = depth / 2 - (r + 0.5) * (depth / ranks);
+        for (let f = 0; f < files && n < men; f++, n++) {
+          const fy = -w / 2 + 3 + (f + 0.5) * ((w - 6) / files);
+          if (cav) ctx.fillRect(rx - 2.5, fy - 1, 5, 2.2);
+          else ctx.fillRect(rx - 0.8, fy - 0.8, 1.6, 1.6);
+        }
+      }
+      if (u.type === 'spear') {
+        ctx.strokeStyle = 'rgba(60,45,30,0.9)';
+        ctx.lineWidth = 0.8;
+        ctx.beginPath();
+        for (let f = 0; f < files; f += 2) {
+          const fy = -w / 2 + 3 + (f + 0.5) * ((w - 6) / files);
+          ctx.moveTo(depth / 2, fy);
+          ctx.lineTo(depth / 2 + 6, fy);
+        }
+        ctx.stroke();
       }
     }
-    if (u.type === 'spear') {
-      ctx.strokeStyle = 'rgba(60,45,30,0.9)';
-      ctx.lineWidth = 0.8;
-      ctx.beginPath();
-      for (let f = 0; f < files; f += 2) {
-        const fy = -w / 2 + 3 + (f + 0.5) * ((w - 6) / files);
-        ctx.moveTo(depth / 2, fy);
-        ctx.lineTo(depth / 2 + 6, fy);
-      }
-      ctx.stroke();
-    }
+    // Regimental banner at the rear.
+    ctx.fillStyle = '#3a2c1c';
+    ctx.fillRect(-radiusOf(u.type) * 0.55, -1, 2, 2);
+    ctx.restore();
+
+    ctx.save();
+    const bx = u.x - Math.cos(u.facing) * radiusOf(u.type) * 0.6;
+    const by = u.y - Math.sin(u.facing) * radiusOf(u.type) * 0.6;
+    ctx.strokeStyle = '#3a2c1c';
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(bx, by);
+    ctx.lineTo(bx, by - 16);
+    ctx.stroke();
+    ctx.fillStyle = `rgb(${col[0]},${col[1]},${col[2]})`;
+    ctx.beginPath();
+    ctx.moveTo(bx, by - 16);
+    ctx.lineTo(bx + 10, by - 13);
+    ctx.lineTo(bx, by - 10);
+    ctx.fill();
     if (this.selected.has(u.id) && u.state === 'ok') {
       ctx.strokeStyle = '#fff4c2';
       ctx.lineWidth = 2;
-      ctx.strokeRect(-depth / 2 - 4, -w / 2 - 4, depth + 8, w + 8);
+      ctx.beginPath();
+      ctx.arc(u.x, u.y, radiusOf(u.type) + 4, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    if (u.climbing) {
+      ctx.strokeStyle = '#7a5a36';
+      ctx.lineWidth = 2;
+      for (const dx of [-8, 8]) {
+        ctx.beginPath();
+        ctx.moveTo(u.x + dx, u.y);
+        ctx.lineTo(u.x + dx, u.y - 30);
+        ctx.stroke();
+      }
     }
     ctx.restore();
   }
@@ -394,47 +669,73 @@ export class BattleScene implements Scene {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.font = '700 11px ui-sans-serif, system-ui, sans-serif';
-    const label = `${UNIT_ICON[u.type]} ${Math.ceil(u.men)}`;
-    const y = u.y - 30;
+    const label = `${st.glyph} ${Math.ceil(u.men)}`;
+    const y = u.y - radiusOf(u.type) - 14;
     ctx.lineWidth = 3;
     ctx.strokeStyle = 'rgba(0,0,0,0.65)';
     ctx.strokeText(label, u.x, y);
     ctx.fillStyle = u.side === 0 ? '#ffffff' : '#ffd9d2';
     ctx.fillText(label, u.x, y);
-    const m = Math.max(0, u.morale / st.morale);
+    const m = Math.max(0, u.morale / u.maxMorale);
     ctx.fillStyle = 'rgba(0,0,0,0.6)';
     ctx.fillRect(u.x - 14, y + 8, 28, 4);
     ctx.fillStyle = m > 0.6 ? '#8fd16b' : m > 0.3 ? '#e8c14a' : '#e3604f';
     ctx.fillRect(u.x - 14, y + 8, 28 * m, 4);
+    if (st.reload > 0 && u.state === 'ok') {
+      const r = 1 - Math.max(0, u.reload) / st.reload;
+      ctx.fillStyle = 'rgba(0,0,0,0.6)';
+      ctx.fillRect(u.x - 14, y + 13, 28, 2);
+      ctx.fillStyle = '#9cc7ff';
+      ctx.fillRect(u.x - 14, y + 13, 28 * r, 2);
+    }
+    ctx.restore();
+  }
+
+  private drawRain(ctx: CanvasRenderingContext2D) {
+    ctx.save();
+    ctx.strokeStyle = 'rgba(200,215,235,0.25)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let i = 0; i < 160; i++) {
+      const x = ((i * 137.5 + this.t * 60) % (FIELD_W + 60)) - 30;
+      const y = ((i * 91.3 + this.t * 520) % (FIELD_H + 40)) - 20;
+      ctx.moveTo(x, y);
+      ctx.lineTo(x - 4, y + 12);
+    }
+    ctx.stroke();
     ctx.restore();
   }
 
   private drawBanner(ctx: CanvasRenderingContext2D) {
     let text: string;
-    if (this.phase === 'plan') text = `ROUND ${this.b.round} · PLAN YOUR ORDERS · SPACE TO EXECUTE`;
-    else if (this.phase === 'exec') text = `ROUND ${this.b.round} · BATTLE IN PROGRESS · ${Math.max(0, this.execLeft).toFixed(1)}s`;
-    else text = 'THE BATTLE IS OVER';
+    if (this.phase === 'deploy') text = 'DEPLOYMENT · RIGHT-CLICK TO PLACE REGIMENTS · SPACE TO BEGIN';
+    else if (this.phase === 'done') text = 'THE BATTLE IS OVER';
+    else if (this.paused) text = 'PAUSED · GIVE ORDERS · SPACE TO RESUME';
+    else {
+      const left = Math.max(0, this.b.timeLimit - this.b.time);
+      text = `${this.speed}× · ${Math.floor(left / 60)}:${String(Math.floor(left % 60)).padStart(2, '0')} LEFT`;
+    }
     ctx.save();
     ctx.font = '700 13px Georgia, serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     const w = ctx.measureText(text).width + 32;
-    ctx.fillStyle = this.phase === 'plan' ? 'rgba(30,22,12,0.82)' : 'rgba(90,30,20,0.82)';
+    ctx.fillStyle = this.phase === 'live' && !this.paused ? 'rgba(90,30,20,0.8)' : 'rgba(30,22,12,0.85)';
     ctx.beginPath();
-    ctx.roundRect(FIELD_W / 2 - w / 2, 10, w, 28, 14);
+    ctx.roundRect(FIELD_W / 2 - w / 2, FIELD_H - 40, w, 28, 14);
     ctx.fill();
     ctx.fillStyle = '#f4e3b5';
-    ctx.fillText(text, FIELD_W / 2, 24.5);
+    ctx.fillText(text, FIELD_W / 2, FIELD_H - 25.5);
     if (this.noticeT > 0) {
       ctx.globalAlpha = Math.min(1, this.noticeT);
       ctx.font = '600 13px Georgia, serif';
       const nw = ctx.measureText(this.notice).width + 24;
       ctx.fillStyle = 'rgba(20,15,10,0.85)';
       ctx.beginPath();
-      ctx.roundRect(FIELD_W / 2 - nw / 2, 46, nw, 24, 12);
+      ctx.roundRect(FIELD_W / 2 - nw / 2, FIELD_H - 72, nw, 24, 12);
       ctx.fill();
       ctx.fillStyle = '#ffd27a';
-      ctx.fillText(this.notice, FIELD_W / 2, 58.5);
+      ctx.fillText(this.notice, FIELD_W / 2, FIELD_H - 59.5);
     }
     ctx.restore();
   }
@@ -443,10 +744,12 @@ export class BattleScene implements Scene {
     const u = this.unitAt(this.mouse.x, this.mouse.y, 0) ?? this.unitAt(this.mouse.x, this.mouse.y, 1);
     if (!u) return;
     const st = UNIT_STATS[u.type];
+    const where = [this.b.inForest(u) ? 'in forest' : '', this.b.height(u) > 0.35 ? 'on high ground' : '', this.b.onWall(u) ? 'on the walls' : '']
+      .filter(Boolean).join(', ');
     const lines = [
       `${u.side === 0 ? 'Your' : 'Enemy'} ${st.name}`,
-      `${Math.ceil(u.men)}/${u.maxMen} men · morale ${Math.round(u.morale)}`,
-      statusOf(u, this.b) + (this.b.inForest(u) ? ' · in forest' : ''),
+      `${Math.ceil(u.men)}/${u.maxMen} ${u.type === 'elephant' ? 'elephants' : 'men'} · morale ${Math.round(u.morale)}`,
+      statusOf(u, this.b) + (where ? ` · ${where}` : ''),
     ];
     ctx.save();
     ctx.font = '12px ui-sans-serif, system-ui, sans-serif';
@@ -467,49 +770,61 @@ export class BattleScene implements Scene {
 
   renderUI() {
     const s = this.s;
-    clear(ui.top).append(
-      h('div', { class: 'brand' }, `⚔ Battle of ${s.provinceName}`),
-      h('div', { class: 'stat' }, swatch(s.playerFaction.color), s.playerFaction.name, s.playerAttacks ? ' (attacking)' : ' (defending)'),
+    const siege = s.mode === 'siege';
+    fill(ui.top,
+      h('div', { class: 'brand' }, `${siege ? '🏰' : '⚔'} ${s.title}`),
+      h('div', { class: 'stat' }, swatch(s.playerFaction.color), s.playerFaction.short, s.playerAttacks ? ' (attacking)' : ' (defending)'),
       h('div', { class: 'stat muted' }, 'vs'),
-      h('div', { class: 'stat' }, swatch(s.enemyFaction.color), s.enemyFaction.name),
-      h('div', { class: 'stat push' }, `Round ${Math.min(this.b.round, MAX_ROUNDS)}/${MAX_ROUNDS}`),
+      h('div', { class: 'stat' }, swatch(s.enemyFaction.color), s.enemyFaction.short),
+      s.rain ? h('div', { class: 'stat muted' }, '🌧 Monsoon rain: bows and matchlocks suffer') : null,
+      h('div', { class: 'stat push btns', style: 'margin:0' },
+        ...[1, 2, 3].map((n) => h('button', { class: `small ${this.speed === n ? 'primary' : ''}`, onclick: () => { this.speed = n; this.renderUI(); } }, `${n}×`)),
+      ),
     );
-    const planning = this.phase === 'plan';
     this.listEl = h('div', { class: 'stack' });
+    this.statusEl = h('div', {});
+    const deploying = this.phase === 'deploy';
     clear(ui.side).append(
       h('div', { class: 'card' },
-        h('h3', {}, planning ? 'Planning' : this.phase === 'exec' ? 'Battle in progress' : 'Battle over'),
-        h('p', { class: 'muted' }, planning
-          ? 'The battle is paused. Give orders, then execute. Both sides act at the same time.'
-          : `Each round plays for ${EXEC_TIME} seconds, then pauses for new orders.`),
+        h('h3', {}, deploying ? 'Deployment' : this.phase === 'done' ? 'Battle over' : this.paused ? 'Paused' : 'Battle in progress'),
+        h('p', { class: 'muted' }, deploying
+          ? 'Select regiments and right-click inside the dashed zone to position them. The enemy cannot move until you begin.'
+          : 'Real-time. Pause with Space at any moment to give orders.'),
         h('div', { class: 'btns' },
-          h('button', { class: 'primary', disabled: !planning, onclick: () => this.execute() }, 'Execute orders (Space)'),
-          h('button', {
-            disabled: this.phase === 'done',
-            onclick: () => this.finish(false, true),
-          }, 'Retreat'),
+          deploying
+            ? h('button', { class: 'primary', onclick: () => this.start() }, 'Begin battle (Space)')
+            : h('button', { class: 'primary', disabled: this.phase === 'done', onclick: () => this.togglePause() }, this.paused ? 'Resume (Space)' : 'Pause (Space)'),
+          h('button', { disabled: this.phase === 'done', onclick: () => this.finish(false, true) }, 'Retreat'),
         ),
+        this.statusEl,
         h('ul', { class: 'help' },
-          h('li', {}, 'Left-click or drag a box to select regiments. Hold Shift to add.'),
-          h('li', {}, 'Right-click the ground to move. Right-click an enemy to attack.'),
-          h('li', {}, 'Hit flanks and rear for bonus damage. Knights charge hard but spears stop them.'),
-          h('li', {}, 'Forests slow movement and shield units from arrows.'),
+          h('li', {}, 'Left-click or drag to select. Shift adds. Right-click: move, or attack an enemy.'),
+          siege && s.playerAttacks ? h('li', {}, 'Right-click the gate or a wall section with guns or elephants to batter it. Infantry can hack at the gate.') : null,
+          siege && s.playerAttacks && s.ladders ? h('li', {}, 'You have ladders: send infantry at the walls and they will climb.') : null,
+          siege ? h('li', {}, 'The attacker wins by holding the town square, or by breaking the defenders.') : null,
+          h('li', {}, 'Charge into flanks and rear. Spears stop horse and elephants. Guns and rockets panic elephants.'),
+          h('li', {}, 'Mavalas fight best in forest and on hills. Keys: 1/2/3 speed, H hold.'),
         ),
       ),
       h('div', { class: 'card' }, h('h3', {}, 'Your regiments'), this.listEl),
-      this.enemyCard(),
     );
+    this.refreshStatus();
     this.refreshList();
   }
 
-  private enemyCard(): HTMLElement {
-    const foes = this.b.units.filter((u) => u.side === 1);
+  private refreshStatus() {
+    const el = this.statusEl;
+    if (!el) return;
+    const b = this.b;
+    const foes = b.units.filter((u) => u.side === 1);
     const ok = foes.filter((u) => u.state === 'ok');
-    return h('div', { class: 'card' },
-      h('h3', {}, swatch(this.s.enemyFaction.color), 'Enemy'),
-      h('div', { class: 'muted' }, `${ok.length} of ${foes.length} regiments still fighting`),
-      h('div', { class: 'muted' }, `${Math.round(ok.reduce((n, u) => n + u.men, 0))} men in the field`),
+    const W = b.walls;
+    fill(el,
+      h('div', { class: 'muted', style: 'margin-top:8px' }, swatch(this.s.enemyFaction.color),
+        `Enemy: ${ok.length}/${foes.length} regiments fighting, ${Math.round(ok.reduce((n, u) => n + u.men, 0))} men`),
+      W ? h('div', { class: 'muted' }, `Gate ${Math.round((W.segs[5].hp / W.segs[5].maxHp) * 100)}% · ${W.segs.filter((x) => x.hp <= 0).length} breaches · square ${Math.round(W.capture * 100)}% taken`) : null,
     );
+    this.refreshList();
   }
 
   private refreshList() {
@@ -519,9 +834,10 @@ export class BattleScene implements Scene {
       ...this.b.units.filter((u) => u.side === 0).map((u) => {
         const st = UNIT_STATS[u.type];
         const alive = u.state === 'ok';
-        const m = Math.max(0, u.morale / st.morale);
+        const m = Math.max(0, u.morale / u.maxMorale);
         return h('div', {
           class: `unit-row ${alive ? 'clickable' : 'gone'} ${this.selected.has(u.id) ? 'selected' : ''}`,
+          title: st.blurb,
           onclick: (e: MouseEvent) => {
             if (!alive) return;
             if (e.shiftKey) {
@@ -532,16 +848,12 @@ export class BattleScene implements Scene {
           },
         },
         h('div', { class: 'row' },
-          h('span', {}, `${UNIT_ICON[u.type]} ${st.name}`),
+          h('span', {}, `${st.glyph} ${st.short}`),
           h('span', { class: 'muted' }, `${Math.ceil(u.men)}/${u.maxMen} · ${statusOf(u, this.b)}`)),
         bar(m, m > 0.6 ? '#8fd16b' : m > 0.3 ? '#e8c14a' : '#e3604f'),
         );
       }),
     );
-    if (this.phase === 'exec') {
-      const enemy = ui.side.lastElementChild;
-      if (enemy) enemy.replaceWith(this.enemyCard());
-    }
   }
 }
 
@@ -549,39 +861,81 @@ function statusOf(u: BUnit, b: Battle): string {
   if (u.state === 'dead') return 'destroyed';
   if (u.state === 'fled') return 'fled';
   if (u.state === 'routing') return 'routing!';
+  if (u.climbing) return 'climbing';
   if (u.fighting) return 'fighting';
-  if (u.shootingAt >= 0) return 'shooting';
-  if (u.order.kind === 'move') return 'marching';
+  if (u.aimId >= 0) return 'shooting';
+  if (u.order.kind === 'breach') return 'battering';
+  if (u.order.kind === 'move') return u.moving ? 'marching' : 'blocked';
   if (u.order.kind === 'attack') {
     const t = b.get(u.order.target);
-    return t ? `attacking ${UNIT_STATS[t.type].name.toLowerCase()}` : 'attacking';
+    return t ? `→ ${UNIT_STATS[t.type].short.toLowerCase()}` : 'attacking';
   }
   return 'holding';
 }
 
-function renderBattlefield(b: Battle, seed: number): HTMLCanvasElement {
+function renderBattlefield(b: Battle, s: BattleSetup): HTMLCanvasElement {
   const c = document.createElement('canvas');
   c.width = FIELD_W;
   c.height = FIELD_H;
   const g = c.getContext('2d')!;
   const img = g.createImageData(FIELD_W, FIELD_H);
-  const n = makeNoise(seed);
-  const fine = makeNoise(seed + 1);
+  const n = makeNoise(s.seed);
+  const fine = makeNoise(s.seed + 1);
+  const ground: Record<Terrain, [number, number, number]> = {
+    plains: [118, 140, 76],
+    hills: [128, 132, 82],
+    forest: [92, 124, 66],
+    desert: [196, 170, 118],
+  };
+  const [gr, gg, gb] = ground[s.terrain];
+  const rainK = s.rain ? 0.85 : 1;
   for (let y = 0; y < FIELD_H; y++) {
     for (let x = 0; x < FIELD_W; x++) {
       const v = fbm(n, x / 140, y / 140, 4);
       const f = fine(x / 6, y / 6) - 0.5;
-      const k = 0.82 + 0.36 * v;
+      const hgt = b.height({ x, y });
+      const k = (0.82 + 0.36 * v + hgt * 0.18) * rainK;
       const i = (y * FIELD_W + x) * 4;
-      img.data[i] = 108 * k + f * 10;
-      img.data[i + 1] = 136 * k + f * 10;
-      img.data[i + 2] = 74 * k + f * 8;
+      img.data[i] = gr * k + f * 10;
+      img.data[i + 1] = gg * k + f * 10;
+      img.data[i + 2] = gb * k + f * 8;
       img.data[i + 3] = 255;
     }
   }
   g.putImageData(img, 0, 0);
 
-  const rng = new RNG(seed + 3);
+  // Contour lines on hills.
+  g.strokeStyle = 'rgba(70,55,30,0.25)';
+  g.lineWidth = 1;
+  for (const hl of b.hills) {
+    for (let k = 1; k <= 3; k++) {
+      g.beginPath();
+      g.arc(hl.x, hl.y, hl.r * (1 - k * 0.25), 0, Math.PI * 2);
+      g.stroke();
+    }
+  }
+
+  const W = b.walls;
+  if (W) {
+    // Town inside the walls: houses round the square.
+    const rng = new RNG(s.seed + 5);
+    g.fillStyle = 'rgba(150,130,100,0.6)';
+    g.fillRect(0, 0, FIELD_W, W.y);
+    for (let i = 0; i < 90; i++) {
+      const x = rng.range(10, FIELD_W - 30);
+      const y = rng.range(10, W.y - 30);
+      if (Math.hypot(x - W.plaza.x, y - W.plaza.y) < W.plaza.r + 30) continue;
+      if (Math.abs(x - FIELD_W / 2) < 50) continue; // keep the main street clear
+      const w = rng.range(14, 30);
+      const hh = rng.range(10, 20);
+      g.fillStyle = `rgb(${rng.int(150, 180)},${rng.int(110, 130)},${rng.int(80, 95)})`;
+      g.fillRect(x, y, w, hh);
+      g.fillStyle = 'rgba(60,35,20,0.5)';
+      g.fillRect(x, y + hh - 3, w, 3);
+    }
+  }
+
+  const rng = new RNG(s.seed + 3);
   for (const f of b.forests) {
     g.fillStyle = 'rgba(40,64,32,0.45)';
     g.beginPath();
@@ -593,22 +947,17 @@ function renderBattlefield(b: Battle, seed: number): HTMLCanvasElement {
       const r = f.r * Math.sqrt(rng.next()) * 0.95;
       const x = f.x + Math.cos(a) * r;
       const y = f.y + Math.sin(a) * r;
-      const s = rng.range(5, 9);
+      const sz = rng.range(5, 9);
       g.fillStyle = 'rgba(20,35,18,0.45)';
       g.beginPath();
-      g.arc(x + 2, y + 3, s, 0, Math.PI * 2);
+      g.arc(x + 2, y + 3, sz, 0, Math.PI * 2);
       g.fill();
-      g.fillStyle = `rgb(${rng.int(34, 48)},${rng.int(64, 84)},${rng.int(34, 44)})`;
+      g.fillStyle = s.terrain === 'desert' ? `rgb(${rng.int(90, 110)},${rng.int(100, 120)},${rng.int(50, 60)})` : `rgb(${rng.int(34, 48)},${rng.int(64, 84)},${rng.int(34, 44)})`;
       g.beginPath();
-      g.arc(x, y, s, 0, Math.PI * 2);
-      g.fill();
-      g.fillStyle = 'rgba(120,160,90,0.25)';
-      g.beginPath();
-      g.arc(x - s * 0.3, y - s * 0.3, s * 0.45, 0, Math.PI * 2);
+      g.arc(x, y, sz, 0, Math.PI * 2);
       g.fill();
     }
   }
-  // Vignette.
   const grad = g.createRadialGradient(FIELD_W / 2, FIELD_H / 2, FIELD_H * 0.35, FIELD_W / 2, FIELD_H / 2, FIELD_W * 0.7);
   grad.addColorStop(0, 'rgba(0,0,0,0)');
   grad.addColorStop(1, 'rgba(0,0,0,0.35)');

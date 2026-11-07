@@ -21,7 +21,7 @@ function fit() {
 new ResizeObserver(fit).observe(stage);
 fit();
 
-function toView(e: PointerEvent): [number, number] {
+function toView(e: MouseEvent): [number, number] {
   const r = canvas.getBoundingClientRect();
   return [((e.clientX - r.left) * VIEW_W) / r.width, ((e.clientY - r.top) * VIEW_H) / r.height];
 }
@@ -40,11 +40,16 @@ canvas.addEventListener('pointerup', (e) => {
   const [x, y] = toView(e);
   app.scene?.pointerUp?.(x, y, e.button, e);
 });
+canvas.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const [x, y] = toView(e);
+  app.scene?.wheel?.(x, y, e.deltaY, e);
+}, { passive: false });
+const typing = (e: KeyboardEvent) => ['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement | null)?.tagName ?? '');
 window.addEventListener('keydown', (e) => {
-  const tag = (e.target as HTMLElement | null)?.tagName;
-  if (tag === 'INPUT' || tag === 'TEXTAREA') return;
-  app.scene?.keyDown?.(e);
+  if (!typing(e)) app.scene?.keyDown?.(e);
 });
+window.addEventListener('keyup', (e) => app.scene?.keyUp?.(e));
 
 let last = performance.now();
 function frame(t: number) {
@@ -63,15 +68,16 @@ if (params.has('debug')) Object.assign(window, { banners: app });
 requestAnimationFrame(frame);
 
 showModal(
-  'Banners of the Realm',
+  'Swarajya: Winter 1670',
   h('div', {},
-    h('p', {}, 'Four crowns contest a fractured land. You rule the Kingdom of Aldmere (blue).'),
+    h('p', {}, 'Five years ago, at Purandar, Shivaji surrendered twenty-three forts to the Mughal general Jai Singh. Now Aurangzeb is distracted, and the Marathas are ready to take them back.'),
     h('ul', { class: 'help' },
-      h('li', {}, 'On the campaign map, march armies between provinces, take land for gold, and recruit regiments.'),
-      h('li', {}, 'When armies clash, command the battle yourself. Plan orders while paused, then watch the round play out.'),
-      h('li', {}, 'Destroy the three rival realms to win.'),
+      h('li', {}, 'You lead the Marathas (saffron) from Raigad. Kondhana (Sinhagad), Purandar and Shivneri are in Mughal hands.'),
+      h('li', {}, 'Besiege walled towns: starve them out, or storm them. Mavalas scale walls from the first day.'),
+      h('li', {}, 'Raid for chauth, sack rich towns like Surat, and stay out of the Mughal field armies’ way until you are ready.'),
+      h('li', {}, 'Battles are real-time with pause: deploy, then press Space to begin.'),
     ),
-    h('p', { class: 'muted' }, `Map seed ${seed}. Add ?seed=${seed} to the URL to replay this map.`),
+    h('p', { class: 'muted' }, `Map seed ${seed}. Drag to pan, scroll to zoom.`),
   ),
-  [{ label: 'Raise your banner', primary: true, onClick: hideModal }],
+  [{ label: 'Har Har Mahadev!', primary: true, onClick: hideModal }],
 );
