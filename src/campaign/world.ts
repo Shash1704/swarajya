@@ -9,9 +9,26 @@ import {
 
 export type BattleResult = 'att' | 'def' | 'escaped';
 
+/** Everyone fighting in one battle: the lead armies, any reinforcements nearby, and a garrison. */
+export interface BattleInfo {
+  mode: 'field' | 'siege';
+  /** The army that started it, and the one it fell upon (null when attacking a town). */
+  att: Army;
+  def: Army | null;
+  attArmies: Army[];
+  defArmies: Army[];
+  attUnits: CUnit[];
+  defUnits: CUnit[];
+  defOwner: number;
+  /** The town fought over, or the province the battle happens in. */
+  p: Province;
+  /** The town's garrison fights on the defending side. */
+  garrison: boolean;
+}
+
 /** Moments that need the player. The world clock stops until each one resolves. */
 export interface Hooks {
-  battle(att: Army, defUnits: CUnit[], defOwner: number, defArmy: Army | null, p: Province, mode: 'field' | 'siege'): Promise<BattleResult>;
+  battle(b: BattleInfo): Promise<BattleResult>;
   arrival(army: Army, p: Province): Promise<'siege' | 'raid' | 'leave'>;
   chooseSack(p: Province): Promise<boolean>;
   changed(): void;
@@ -19,8 +36,8 @@ export interface Hooks {
 
 /** Auto-resolves everything: for headless tests. */
 export const autoHooks = (s: GameState): Hooks => ({
-  battle: async (att, defUnits, _o, _a, p, mode) =>
-    (mode === 'siege' ? autoResolveSiege(s, att.units, p) : autoResolve(s, att.units, defUnits)) ? 'att' : 'def',
+  battle: async (b) =>
+    (b.mode === 'siege' ? autoResolveSiege(s, b.attUnits, b.p, b.defUnits) : autoResolve(s, b.attUnits, b.defUnits)) ? 'att' : 'def',
   arrival: async () => 'siege',
   chooseSack: async (p) => p.wealth >= 8,
   changed: () => {},
@@ -28,12 +45,17 @@ export const autoHooks = (s: GameState): Hooks => ({
 
 /** An AI-versus-AI battle being fought out on the map. */
 export interface Clash {
-  att: number;
-  def: number;
+  att: number[];
+  def: number[];
+  /** Province whose garrison fights for the defenders, or -1. */
+  garrison: number;
   x: number;
   y: number;
   until: number;
 }
+
+/** Armies within this distance of a battle march to the sound of the guns. */
+export const REINFORCE_RANGE = 60;
 
 const STEP = 0.1; // days per simulation step
 
@@ -211,17 +233,17 @@ export class World {
       this.hooks.changed();
       return;
     }
-    if (p.garrison.length) {
-      const won = a.owner === PLAYER || p.owner === PLAYER
-        ? (await this.hooks.battle(a, p.garrison, p.owner, null, p, 'field')) === 'att'
-        : autoResolve(s, a.units, p.garrison);
+    const b = this.townBattle('field', a, p);
+    if (b.defUnits.length) {
+      const won = this.involvesPlayer(b)
+        ? (await this.hooks.battle(b)) === 'att'
+        : autoResolve(s, b.attUnits, b.defUnits);
       cleanupArmies(s);
-      if (!won) {
-        if (this.alive(a)) retreat(s, a);
+      this.settle(b, won);
+      if (!won || !this.alive(a)) {
         this.hooks.changed();
         return;
       }
-      if (!this.alive(a)) return;
     }
     await this.take(a.owner, p);
   }
@@ -232,11 +254,13 @@ export class World {
     const p = s.provinces[a.siegeOf];
     if (!p?.siege || s.day - p.siege.lastAssault < 2) return;
     p.siege.lastAssault = s.day;
+    const b = this.townBattle('siege', a, p);
     const after = (won: boolean) => {
-      if (a.owner !== PLAYER && p.owner !== PLAYER) {
+      if (!this.involvesPlayer(b)) {
         log(s, won ? `The ${s.factions[a.owner].short} storm ${p.town}.` : `An assault on ${p.town} is thrown back.`);
       }
       cleanupArmies(s);
+      this.settle(b, won);
       if (!this.alive(a)) {
         liftSiege(s, p);
         this.hooks.changed();
@@ -245,9 +269,79 @@ export class World {
       this.hooks.changed();
       return won ? this.take(a.owner, p) : Promise.resolve();
     };
-    if (a.owner === PLAYER || p.owner === PLAYER) {
-      this.run(async () => after((await this.hooks.battle(a, p.garrison, p.owner, null, p, 'siege')) === 'att'));
-    } else void after(autoResolveSiege(s, a.units, p));
+    if (this.involvesPlayer(b)) this.run(async () => after((await this.hooks.battle(b)) === 'att'));
+    else void after(autoResolveSiege(s, b.attUnits, p, b.defUnits));
+  }
+
+  // ---------------------------------------------------------------- who fights
+
+  /** Armies of `lead`'s side close enough to join a battle at `at` against `foe`. */
+  private reinforcements(lead: Army, foe: number, at: { x: number; y: number }, taken: Set<Army>): Army[] {
+    const s = this.state;
+    return s.armies.filter((x) => !taken.has(x)
+      && (x.owner === lead.owner || s.ally[x.owner][lead.owner])
+      // The player's armies only join battles the player is already in.
+      && (x.owner !== PLAYER || lead.owner === PLAYER)
+      && hostile(s, x.owner, foe)
+      && dist(x, at) < REINFORCE_RANGE
+      && s.day >= x.busyUntil && x.raidUntil <= s.day
+      && (x.siegeOf < 0 || dist(x, s.provinces[x.siegeOf]) < REINFORCE_RANGE));
+  }
+
+  /** A field battle between two armies, with everyone nearby piling in. */
+  private fieldBattle(att: Army, def: Army): BattleInfo {
+    const s = this.state;
+    const at = { x: (att.x + def.x) / 2, y: (att.y + def.y) / 2 };
+    const taken = new Set([att, def]);
+    const attArmies = [att, ...this.reinforcements(att, def.owner, at, taken)];
+    attArmies.forEach((x) => taken.add(x));
+    const defArmies = [def, ...this.reinforcements(def, att.owner, at, taken)];
+    // An army caught at its own town fights with the garrison beside it.
+    const town = townAt(s, def);
+    const tp = town >= 0 ? s.provinces[town] : null;
+    const garrison = !!tp && (tp.owner === def.owner || s.ally[tp.owner][def.owner]) && !tp.siege && tp.garrison.length > 0;
+    return {
+      mode: 'field', att, def, attArmies, defArmies,
+      attUnits: attArmies.flatMap((x) => x.units),
+      defUnits: [...defArmies.flatMap((x) => x.units), ...(garrison ? tp!.garrison : [])],
+      defOwner: def.owner, p: tp ?? s.provinces[provinceUnder(s, def, def.node)], garrison,
+    };
+  }
+
+  /** An attack on a town: the garrison plus any of the owner's armies standing in it. */
+  private townBattle(mode: 'field' | 'siege', a: Army, p: Province): BattleInfo {
+    const s = this.state;
+    const defArmies = s.armies.filter((x) => (x.owner === p.owner || s.ally[x.owner][p.owner]) && townAt(s, x) === p.id
+      && s.day >= x.busyUntil);
+    const taken = new Set([a, ...defArmies]);
+    const attArmies = [a, ...this.reinforcements(a, p.owner, p, taken)];
+    return {
+      mode, att: a, def: null, attArmies, defArmies,
+      attUnits: attArmies.flatMap((x) => x.units),
+      defUnits: [...p.garrison, ...defArmies.flatMap((x) => x.units)],
+      defOwner: p.owner, p, garrison: true,
+    };
+  }
+
+  private involvesPlayer(b: BattleInfo): boolean {
+    return [...b.attArmies, ...b.defArmies].some((x) => x.owner === PLAYER) || (b.garrison && b.p.owner === PLAYER);
+  }
+
+  /** After the fighting: the beaten side falls back, the victors stop chasing. */
+  private settle(b: BattleInfo, attWon: boolean) {
+    const s = this.state;
+    const [winners, losers] = attWon ? [b.attArmies, b.defArmies] : [b.defArmies, b.attArmies];
+    const threat = winners.find((x) => this.alive(x)) ?? (attWon ? b.att : b.p);
+    for (const x of losers) {
+      // A failed assault leaves the besiegers in their lines; any other defeat sends an army packing.
+      if (!this.alive(x) || (b.mode === 'siege' && x.siegeOf === b.p.id)) continue;
+      retreat(s, x, threat);
+    }
+    for (const x of winners) {
+      if (!this.alive(x)) continue;
+      x.busyUntil = 0;
+      if (x.goal?.kind === 'chase') x.goal = null;
+    }
   }
 
   async take(owner: number, p: Province): Promise<void> {
@@ -289,12 +383,18 @@ export class World {
         const bWants = this.wantsFight(b, a);
         if (!aWants && !bWants) continue; // they pass each other by
         const [att, def] = aWants && bWants ? this.whoAttacks(a, b) : aWants ? [a, b] : [b, a];
-        if (att.owner === PLAYER || def.owner === PLAYER) {
-          this.playerClash(att, def);
+        const battle = this.fieldBattle(att, def);
+        if (this.involvesPlayer(battle)) {
+          this.playerClash(battle);
           return;
         }
-        att.busyUntil = def.busyUntil = s.day + 0.6;
-        this.clashes.push({ att: att.id, def: def.id, x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, until: s.day + 0.6 });
+        // Bigger battles take longer to fight out.
+        const until = s.day + 0.5 + 0.05 * (battle.attArmies.length + battle.defArmies.length);
+        for (const x of [...battle.attArmies, ...battle.defArmies]) x.busyUntil = until;
+        this.clashes.push({
+          att: battle.attArmies.map((x) => x.id), def: battle.defArmies.map((x) => x.id),
+          garrison: battle.garrison ? battle.p.id : -1, x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, until,
+        });
       }
     }
   }
@@ -330,49 +430,51 @@ export class World {
     this.hooks.changed();
   }
 
-  private playerClash(att: Army, def: Army) {
+  private playerClash(b: BattleInfo) {
     const s = this.state;
-    const p = s.provinces[provinceUnder(s, def, def.node)];
     this.run(async () => {
-      const r = await this.hooks.battle(att, def.units, def.owner, def, p, 'field');
+      const r = await this.hooks.battle(b);
       cleanupArmies(s);
       if (r === 'escaped') {
-        const [mine, foe] = att.owner === PLAYER ? [att, def] : [def, att];
-        if (!this.alive(mine)) return;
-        if (mine === att) {
-          // We chose not to attack: stop the pursuit and let them be.
-          setGoal(s, mine, null);
-          mine.safeUntil = s.day + 1;
-        } else {
-          retreat(s, mine, foe);
-          mine.safeUntil = s.day + 3;
+        const playerAttacked = b.attArmies.some((x) => x.owner === PLAYER);
+        const mine = [...b.attArmies, ...b.defArmies].filter((x) => x.owner === PLAYER && this.alive(x));
+        const foe = playerAttacked ? (b.def ?? b.p) : b.att;
+        for (const x of mine) {
+          if (playerAttacked) {
+            // We chose not to attack: stop the pursuit and let them be.
+            setGoal(s, x, null);
+            x.safeUntil = s.day + 1;
+          } else {
+            retreat(s, x, foe);
+            x.safeUntil = s.day + 3;
+          }
         }
         return;
       }
-      const [winner, loser] = r === 'att' ? [att, def] : [def, att];
-      if (this.alive(loser)) retreat(s, loser, winner);
-      if (winner.goal?.kind === 'chase') winner.goal = null;
+      this.settle(b, r === 'att');
     });
   }
 
   private resolveClashes() {
     const s = this.state;
     for (const c of this.clashes.filter((x) => s.day >= x.until)) {
-      const att = armyById(s, c.att);
-      const def = armyById(s, c.def);
-      if (att && def) {
-        const won = autoResolve(s, att.units, def.units);
-        const f = s.factions;
-        log(s, won ? `The ${f[att.owner].short} rout the ${f[def.owner].short} near ${s.provinces[provinceUnder(s, def, def.node)].name}.`
-          : `The ${f[def.owner].short} beat off the ${f[att.owner].short} near ${s.provinces[provinceUnder(s, def, def.node)].name}.`);
-        cleanupArmies(s);
-        const [winner, loser] = won ? [att, def] : [def, att];
-        if (this.alive(loser)) retreat(s, loser, winner);
-        if (this.alive(winner)) {
-          winner.busyUntil = 0;
-          if (winner.goal?.kind === 'chase') winner.goal = null;
-        }
-      }
+      const attArmies = c.att.map((id) => armyById(s, id)).filter((x): x is Army => !!x);
+      const defArmies = c.def.map((id) => armyById(s, id)).filter((x): x is Army => !!x);
+      if (!attArmies.length || !defArmies.length) continue;
+      const tp = c.garrison >= 0 ? s.provinces[c.garrison] : null;
+      const b: BattleInfo = {
+        mode: 'field', att: attArmies[0], def: defArmies[0], attArmies, defArmies,
+        attUnits: attArmies.flatMap((x) => x.units),
+        defUnits: [...defArmies.flatMap((x) => x.units), ...(tp && tp.owner === defArmies[0].owner ? tp.garrison : [])],
+        defOwner: defArmies[0].owner, p: tp ?? s.provinces[provinceUnder(s, defArmies[0], defArmies[0].node)], garrison: !!tp,
+      };
+      const won = autoResolve(s, b.attUnits, b.defUnits);
+      const f = s.factions;
+      const size = attArmies.length + defArmies.length > 2 ? 'great battle' : 'battle';
+      log(s, won ? `The ${f[b.att.owner].short} rout the ${f[b.defOwner].short} in a ${size} near ${b.p.name}.`
+        : `The ${f[b.defOwner].short} beat off the ${f[b.att.owner].short} in a ${size} near ${b.p.name}.`);
+      cleanupArmies(s);
+      this.settle(b, won);
     }
     this.clashes = this.clashes.filter((x) => s.day < x.until);
   }

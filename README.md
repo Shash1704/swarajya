@@ -16,7 +16,7 @@ Open the URL Vite prints. Add `?seed=123` to fix the random seed (terrain detail
 - **Time:** the world clock runs from 1 January 1670. **Space** pauses or resumes, and **1/2/3** set the speed (1 day per second at 1×). Income and recruitment are monthly. The monsoon (June to September) slows every army, stalls siege works, wears down armies camped in hostile land, and spoils bows and matchlocks.
 - **Map:** the Indian subcontinent with 137 historical provinces, rivers, the Ghats and the Himalaya. Drag to pan, scroll to zoom.
 - **Orders:** select an army and right-click a town to march there along the roads, right-click an enemy army to hunt it down, or right-click one of your own armies to join it. All-horse armies march fastest; elephants and guns slow everyone down.
-- **Encounters:** when a hunter catches its prey, or an AI army likes its odds, battle is joined. If you are involved the game pauses and you choose: command the battle, auto-resolve it, or escape (with a rearguard lost if you are slower). AI-versus-AI battles play out on the map under a crossed-swords marker.
+- **Encounters:** when a hunter catches its prey, or an AI army likes its odds, battle is joined. Every friendly or allied army within reach marches to join, and an army caught at its own town fights beside the garrison, so battles can grow to dozens of regiments a side. Sieges work the same way: nearby allies join the assault, and armies inside a town help defend it. If you are involved the game pauses and you choose: command the battle, auto-resolve it, or escape (with a rearguard lost if you are slower). AI-versus-AI battles play out on the map under a crossed-swords marker.
 - **Sieges:** arriving before an enemy town opens a choice: besiege it, storm it if it has no walls, or raid its villages. A siege runs day by day: the garrison eats its food, and your camp builds ladders (4 days), then a ram (12 days). Assault whenever you like (every 2 days), or wait for a starving garrison to surrender. Mavalas bring ladders from day one.
 - **Taking towns:** a captured town can be **occupied** (steady income) or **sacked** (a fortune now, devastated for half a year).
 - **Raids (chauth):** plunder an enemy province's villages for 2 days for gold. It then pays its owner nothing for two months.
@@ -26,7 +26,7 @@ Open the URL Vite prints. Add `?seed=123` to fix the random seed (terrain detail
 
 ## Battles
 
-Battles are real-time with pause. First there is a deployment phase; press **Space** to begin, and Space again to pause at any time. Use **1/2/3** for speed.
+Battles are real-time with pause on a large field. Scroll (or pinch) to zoom; use WASD, the arrow keys or middle-drag to pan. First there is a deployment phase in which armies form up in ranks; press **Space** to begin, and Space again to pause at any time. Use **1/2/3** for speed. An army holds up to 20 regiments.
 
 - **Field battles:** terrain comes from the province (forest, hills, desert, plains). Flank and rear attacks deal extra damage, charges hit hard, and spears brace against horse and elephants. Morale breaks, and routs spread to nearby units.
 - **Sieges:** walls, a gate and towers that shoot attackers. Guns and elephants batter walls; infantry hack at the gate (much faster with a ram); ladders let infantry climb. The attacker wins by breaking the garrison, or by holding the town square.

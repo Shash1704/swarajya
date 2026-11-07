@@ -2,8 +2,9 @@ import { isLarge, UNIT_STATS, type UnitType } from '../data';
 import type { CUnit } from '../campaign/state';
 import { RNG } from '../rng';
 
-export const FIELD_W = 1080;
-export const FIELD_H = 720;
+/** Battlefield size in world pixels (the battle camera zooms and pans over it). */
+export const FIELD_W = 1620;
+export const FIELD_H = 1080;
 /** Centre distance at which two regiments are locked in melee. */
 export const CONTACT = 50;
 /** Men killed per attacking man per second at melee 1.0 against defense 1.0. */
@@ -147,7 +148,7 @@ export class Battle {
   constructor(player: CUnit[], enemy: CUnit[], opts: BattleOptions) {
     this.opts = opts;
     this.attacker = opts.playerAttacks ? 0 : 1;
-    this.timeLimit = opts.mode === 'siege' ? 900 : 600;
+    this.timeLimit = opts.mode === 'siege' ? 1200 : 900;
     this.rng = new RNG(opts.seed);
     this.makeTerrain();
     if (opts.mode === 'siege') this.makeWalls();
@@ -174,10 +175,10 @@ export class Battle {
     const rng = this.rng;
     const t = this.opts.terrain;
     const siege = this.opts.mode === 'siege';
-    const nForest = t === 'forest' ? rng.int(6, 9) : t === 'desert' ? rng.int(0, 1) : rng.int(2, 4);
-    const nHill = t === 'hills' ? rng.int(4, 6) : t === 'desert' ? rng.int(1, 3) : rng.int(1, 2);
-    const yMin = siege ? 330 : 190;
-    const yMax = siege ? 470 : 530;
+    const nForest = t === 'forest' ? rng.int(9, 13) : t === 'desert' ? rng.int(0, 2) : rng.int(3, 6);
+    const nHill = t === 'hills' ? rng.int(6, 9) : t === 'desert' ? rng.int(2, 4) : rng.int(2, 3);
+    const yMin = siege ? FIELD_H * 0.46 : FIELD_H * 0.3;
+    const yMax = siege ? FIELD_H * 0.62 : FIELD_H * 0.7;
     for (let i = 0; i < nForest; i++) {
       this.forests.push({ x: rng.range(60, FIELD_W - 60), y: rng.range(yMin, yMax), r: rng.range(35, t === 'forest' ? 95 : 75) });
     }
@@ -202,48 +203,75 @@ export class Battle {
       for (let k = 1; k < n; k++) if (level === 3 || k % 2 === 1 || k === 5 || k === 6) towers.push({ x: k * w, cd: k * 0.3 });
     }
     this.walls = {
-      y: 230, t: 28, level, segs, towers,
-      plaza: { x: FIELD_W / 2, y: 110, r: 70 }, capture: 0, captureTime: level === 1 ? 30 : 40,
+      y: Math.round(FIELD_H * 0.32), t: 28, level, segs, towers,
+      plaza: { x: FIELD_W / 2, y: Math.round(FIELD_H * 0.15), r: 90 }, capture: 0, captureTime: level === 1 ? 30 : 40,
     };
   }
 
+  /**
+   * Lays an army out in ranks: foot (and elephants) in front, missile troops
+   * behind them, guns at the back, horse on the wings. Big armies get several
+   * lines of each.
+   */
   private deploy(cunits: CUnit[], side: 0 | 1) {
     const top = this.homeTop(side);
     const facing = top ? Math.PI / 2 : -Math.PI / 2;
-    const Y = (yBottom: number) => (top ? FIELD_H - yBottom : yBottom);
+    const dir = top ? -1 : 1; // +1 means "further back" is down the screen
     const cx = FIELD_W / 2;
-    const gap = 62;
-    const rowXs = (n: number, spacing = gap) => Array.from({ length: n }, (_, i) => cx + (i - (n - 1) / 2) * spacing);
+    const gap = 64;
+    const rowGap = 58;
     const of = (...cls: string[]) => cunits.filter((u) => cls.includes(UNIT_STATS[u.type].cls));
+    /** Places units in centred rows of at most `cap`, starting at y0 and stepping back. Returns the next free y. */
+    const rows = (list: CUnit[], y0: number, cap: number, spacing = gap) => {
+      let y = y0;
+      for (let i = 0; i < list.length; i += cap) {
+        const row = list.slice(i, i + cap);
+        row.forEach((u, k) => this.addUnit(u, side, cx + (k - (row.length - 1) / 2) * spacing, y, facing));
+        y += rowGap * dir;
+      }
+      return y;
+    };
 
     const W = this.walls;
     if (W && side === this.defender) {
       // Missile troops man the walls; foot soldiers wait behind the gate; horse and elephants hold the square.
+      const onWall = Math.floor((FIELD_W - 120) / 80);
       const missile = of('missile', 'artillery');
-      const foot = of('infantry');
+      rows(missile.slice(0, onWall), W.y + W.t / 2, onWall, 80);
+      const inner = [...missile.slice(onWall), ...of('infantry')];
+      const yInner = W.y - 55;
+      let y = yInner;
+      for (let i = 0; i < inner.length; i += 18) {
+        inner.slice(i, i + 18).forEach((u, k, row) => this.addUnit(u, side, cx + (k - (row.length - 1) / 2) * gap, y, facing));
+        y -= rowGap;
+      }
       const big = of('cavalry', 'elephant');
-      rowXs(missile.length, 80).forEach((x, i) => this.addUnit(missile[i], side, x, W.y + W.t / 2, facing));
-      rowXs(foot.length).forEach((x, i) => this.addUnit(foot[i], side, x, W.y - 55, facing));
-      rowXs(big.length).forEach((x, i) => this.addUnit(big[i], side, x, W.plaza.y + 10, facing));
+      big.forEach((u, k) => {
+        const ring = Math.floor(k / 8);
+        const a = (k % 8) / 8 * Math.PI * 2 + ring * 0.4;
+        const r = W.plaza.r * 0.6 + ring * 50;
+        this.addUnit(u, side, W.plaza.x + Math.cos(a) * r * 1.6, Math.max(25, W.plaza.y + Math.sin(a) * r * 0.6), facing);
+      });
       return;
     }
 
+    const cap = Math.floor((FIELD_W - 420) / gap); // leave room for the cavalry wings
+    const front = FIELD_H * (top ? 0.28 : 0.72);
     const foot = of('infantry', 'elephant');
     const missile = of('missile');
-    const guns = of('artillery');
-    const horse = of('cavalry');
-    const front = foot.length ? foot : missile;
-    const back = foot.length ? missile : [];
-    const fx = rowXs(front.length);
-    front.forEach((u, i) => this.addUnit(u, side, fx[i], Y(545), facing));
-    rowXs(back.length).forEach((x, i) => this.addUnit(back[i], side, x, Y(612), facing));
-    rowXs(guns.length, 90).forEach((x, i) => this.addUnit(guns[i], side, x, Y(672), facing));
-    const left = fx.length ? fx[0] : cx + gap / 2;
-    const right = fx.length ? fx[fx.length - 1] : cx - gap / 2;
-    horse.forEach((u, i) => {
-      const k = Math.floor(i / 2) + 1;
-      const x = i % 2 === 0 ? left - gap * k : right + gap * k;
-      this.addUnit(u, side, Math.max(30, Math.min(FIELD_W - 30, x)), Y(560), facing);
+    const firstLine = foot.length ? foot : missile;
+    let y = rows(firstLine, front, cap);
+    if (foot.length) y = rows(missile, y, cap);
+    rows(of('artillery'), y + rowGap * 0.3 * dir, cap, 90);
+    // Horse on both wings, in columns outward from the line's ends.
+    const lineHalf = (Math.min(cap, Math.max(1, firstLine.length)) - 1) / 2 * gap;
+    of('cavalry').forEach((u, i) => {
+      const wing = i % 2 === 0 ? -1 : 1;
+      const k = Math.floor(i / 2);
+      const col = Math.floor(k / 3);
+      const rank = k % 3;
+      const x = cx + wing * (lineHalf + gap * (col + 1.2));
+      this.addUnit(u, side, Math.max(30, Math.min(FIELD_W - 30, x)), front + rank * rowGap * dir, facing);
     });
   }
 
@@ -262,7 +290,7 @@ export class Battle {
   deployZone(side: 0 | 1): [number, number] {
     const W = this.walls;
     if (W && side === this.defender) return [20, W.y + W.t];
-    return this.homeTop(side) ? [20, 280] : [430, FIELD_H - 20];
+    return this.homeTop(side) ? [20, FIELD_H * 0.4] : [FIELD_H * 0.6, FIELD_H - 20];
   }
 
   // ---------------------------------------------------------------- terrain helpers

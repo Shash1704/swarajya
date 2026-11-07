@@ -5,7 +5,7 @@ import { FOREIGN_LABELS } from '../india';
 import { TIER_NAMES, TIERS, UNIT_STATS, UNIT_TYPES, wallName, type UnitType } from '../data';
 import { drawSymbol, inkFor, symbolEl, tierBadge } from '../symbols';
 import { MapRenderer } from './mapRender';
-import { type BattleResult, type Hooks, World } from './world';
+import { type BattleInfo, type BattleResult, type Hooks, World } from './world';
 import {
   acceptsPeace, type Army, armyAtTown, armyById, armySpeed, autoResolve, autoResolveSiege, buildMarket, buildWalls,
   canBuild, type CUnit, dateLabel, declareWar, dist, eliteBlock, factionStrength, type GameState, grossIncome,
@@ -623,7 +623,7 @@ export class CampaignScene implements Scene {
 
   private hooks(): Hooks {
     return {
-      battle: (att, defUnits, defOwner, defArmy, p, mode) => this.battlePrompt(mode, att, defUnits, defOwner, defArmy, p),
+      battle: (b) => this.battlePrompt(b),
       arrival: (a, p) => this.arrivalPrompt(a, p),
       chooseSack: (p) => this.sackPrompt(p),
       changed: () => {
@@ -632,28 +632,35 @@ export class CampaignScene implements Scene {
     };
   }
 
-  private battlePrompt(mode: 'field' | 'siege', att: Army, defUnits: CUnit[], defOwner: number, defArmy: Army | null, p: Province): Promise<BattleResult> {
+  private battlePrompt(b: BattleInfo): Promise<BattleResult> {
     const s = this.state;
-    if (defUnits.length === 0) return Promise.resolve('att');
-    const playerAttacks = att.owner === PLAYER;
-    const mine = playerAttacks ? att.units : defUnits;
-    const theirs = playerAttacks ? defUnits : att.units;
+    const { mode, att, p, defOwner } = b;
+    const defArmy = b.def;
+    if (b.defUnits.length === 0) return Promise.resolve('att');
+    const playerAttacks = b.attArmies.some((x) => x.owner === PLAYER);
+    const mine = playerAttacks ? b.attUnits : b.defUnits;
+    const theirs = playerAttacks ? b.defUnits : b.attUnits;
     const enemy = s.factions[playerAttacks ? defOwner : att.owner];
     const siege = mode === 'siege';
-    const garrison = defUnits === p.garrison;
+    const garrison = !defArmy;
     const where = defArmy ? s.provinces[provinceUnder(s, defArmy, defArmy.node)] : p;
     const place = siege || garrison ? p.town : where.name;
     const title = siege ? `Siege of ${p.town}` : garrison ? `Storming ${p.town}` : `Battle near ${where.name}`;
     const eq = p.siege ? siegeEquipment(p.siege) : 0;
-    const wallK = siege ? wallFactor(p, att.units, eq) : 1;
+    const wallK = siege ? wallFactor(p, b.attUnits, eq) : 1;
     const ms = unitsStrength(mine) * (playerAttacks ? 1 : wallK * 1.1);
     const ts = unitsStrength(theirs) * (playerAttacks ? wallK * 1.1 : 1);
     const ratio = ms / Math.max(1, ts);
     const odds = ratio > 1.8 ? 'Overwhelming' : ratio > 1.2 ? 'Favourable' : ratio > 0.85 ? 'Even' : ratio > 0.55 ? 'Unfavourable' : 'Desperate';
-    const sideCard = (units: CUnit[], f: number, label: string) => h('div', { class: 'card' },
+    const myArmies = (playerAttacks ? b.attArmies : b.defArmies).length;
+    const theirArmies = (playerAttacks ? b.defArmies : b.attArmies).length;
+    const forces = (n: number, withGarrison: boolean) =>
+      [n ? `${n} ${n === 1 ? 'army' : 'armies'}` : '', withGarrison ? 'the garrison' : ''].filter(Boolean).join(' + ');
+    const sideCard = (units: CUnit[], f: number, label: string, detail: string) => h('div', { class: 'card' },
       h('h3', {}, swatch(s.factions[f].color), label),
+      detail ? h('div', { class: 'muted', style: 'margin-bottom:4px' }, detail) : null,
       ...summarize(units).map(([t, n, men]) => h('div', { class: 'muted uname' }, symbolEl(t, s.factions[f].color, 22), `${n}× ${UNIT_STATS[t].short} (${men})`)),
-      h('div', { style: 'margin-top:4px' }, `${Math.round(unitsMen(units))} men`),
+      h('div', { style: 'margin-top:4px' }, `${Math.round(unitsMen(units))} men in ${units.length} regiments`),
     );
     let intro: string;
     if (siege) intro = playerAttacks
@@ -661,7 +668,7 @@ export class CampaignScene implements Scene {
       : `The ${enemy.short} assault ${p.town}! Its garrison must hold the walls.`;
     else if (garrison) intro = playerAttacks ? `Your army attacks the garrison of ${p.town}.` : `The ${enemy.short} attack ${p.town}!`;
     else intro = playerAttacks ? `Your army catches the ${enemy.short} near ${where.name}.` : `The ${enemy.short} fall upon your army near ${where.name}!`;
-    const myArmy = playerAttacks ? att : defArmy;
+    const myArmy = (playerAttacks ? b.attArmies : b.defArmies).find((x) => x.owner === PLAYER) ?? null;
     const enemyArmy = playerAttacks ? defArmy : att;
     const canEscape = !siege && !!myArmy;
     const faster = !!myArmy && (!enemyArmy || armySpeed(s, myArmy) >= armySpeed(s, enemyArmy));
@@ -669,7 +676,10 @@ export class CampaignScene implements Scene {
       h('p', {}, intro),
       isMonsoon(s.day) ? h('p', { class: 'muted' }, '🌧 Monsoon rain: bows and matchlocks will suffer.') : null,
       h('p', { class: 'muted' }, `Estimated odds: ${odds}.`),
-      h('div', { class: 'versus' }, sideCard(mine, PLAYER, playerAttacks ? 'Your army' : siege || garrison ? 'Your garrison' : 'Your army'), sideCard(theirs, enemy.id, enemy.short)),
+      theirArmies + myArmies > 2 ? h('p', {}, 'Armies nearby have marched to join the fight.') : null,
+      h('div', { class: 'versus' },
+        sideCard(mine, PLAYER, 'Your forces', forces(myArmies, !playerAttacks && b.garrison && p.owner === PLAYER)),
+        sideCard(theirs, enemy.id, enemy.short, forces(theirArmies, playerAttacks && b.garrison))),
     );
 
     return new Promise((resolve) => {
@@ -694,7 +704,7 @@ export class CampaignScene implements Scene {
           label: 'Auto-resolve',
           onClick: () => {
             hideModal();
-            const won = siege ? autoResolveSiege(s, att.units, p) : autoResolve(s, att.units, defUnits);
+            const won = siege ? autoResolveSiege(s, b.attUnits, p, b.defUnits) : autoResolve(s, b.attUnits, b.defUnits);
             done(playerAttacks ? won : !won);
           },
         },

@@ -1,4 +1,4 @@
-import type { Scene } from '../app';
+import { type Scene, VIEW_H, VIEW_W } from '../app';
 import { bar, clear, fill, h, hideModal, modalOpen, showModal, swatch, ui } from '../ui';
 import { fbm, makeNoise } from '../noise';
 import { RNG } from '../rng';
@@ -43,6 +43,12 @@ export class BattleScene implements Scene {
   private selected = new Set<number>();
   private drag: { x0: number; y0: number; x1: number; y1: number } | null = null;
   private mouse = { x: -100, y: -100 };
+  /** Mouse position on the battlefield (world coords). */
+  private mouseW = { x: -100, y: -100 };
+  /** Battle camera: world position of the view's top-left, and zoom. Starts showing the whole field. */
+  private cam = { x: 0, y: 0, z: VIEW_W / FIELD_W };
+  private keys = new Set<string>();
+  private panDrag: { x: number; y: number } | null = null;
   private bg: HTMLCanvasElement;
   private listEl: HTMLElement | null = null;
   private statusEl: HTMLElement | null = null;
@@ -68,6 +74,15 @@ export class BattleScene implements Scene {
 
   update(dt: number) {
     this.t += dt;
+    if (this.keys.size) {
+      const k = this.keys;
+      const pan = (700 / this.cam.z) * dt;
+      if (k.has('arrowleft') || k.has('a')) this.cam.x -= pan;
+      if (k.has('arrowright') || k.has('d')) this.cam.x += pan;
+      if (k.has('arrowup') || k.has('w')) this.cam.y -= pan;
+      if (k.has('arrowdown') || k.has('s')) this.cam.y += pan;
+      this.clampCam();
+    }
     this.noticeT = Math.max(0, this.noticeT - dt);
     if (this.phase !== 'live' || this.paused || modalOpen()) return;
     this.acc = Math.min(this.acc + dt * this.speed, 0.5);
@@ -132,9 +147,37 @@ export class BattleScene implements Scene {
 
   // ---------------------------------------------------------------- input
 
+  private minZoom() {
+    return Math.min(VIEW_W / FIELD_W, VIEW_H / FIELD_H);
+  }
+
+  private clampCam() {
+    const c = this.cam;
+    c.z = Math.max(this.minZoom(), Math.min(2.5, c.z));
+    c.x = Math.max(0, Math.min(FIELD_W - VIEW_W / c.z, c.x));
+    c.y = Math.max(0, Math.min(FIELD_H - VIEW_H / c.z, c.y));
+  }
+
+  private toW(sx: number, sy: number): [number, number] {
+    return [this.cam.x + sx / this.cam.z, this.cam.y + sy / this.cam.z];
+  }
+
+  wheel(x: number, y: number, dy: number) {
+    const [wx, wy] = this.toW(x, y);
+    this.cam.z *= Math.exp(-dy * 0.0015);
+    this.clampCam();
+    this.cam.x = wx - x / this.cam.z;
+    this.cam.y = wy - y / this.cam.z;
+    this.clampCam();
+  }
+
+  keyUp(e: KeyboardEvent) {
+    this.keys.delete(e.key.toLowerCase());
+  }
+
   private unitAt(x: number, y: number, side: 0 | 1): BUnit | null {
     let best: BUnit | null = null;
-    let bd = 28;
+    let bd = 28 / Math.min(1, this.cam.z);
     for (const u of this.b.units) {
       if (u.side !== side || u.state !== 'ok') continue;
       const d = Math.hypot(u.x - x, u.y - y);
@@ -152,8 +195,13 @@ export class BattleScene implements Scene {
     return Math.max(0, Math.min(W.segs.length - 1, Math.floor(x / (FIELD_W / W.segs.length))));
   }
 
-  pointerDown(x: number, y: number, button: number, e: PointerEvent) {
+  pointerDown(sx: number, sy: number, button: number, e: PointerEvent) {
     if (this.phase === 'done' || modalOpen()) return;
+    if (button === 1) {
+      this.panDrag = { x: sx, y: sy };
+      return;
+    }
+    const [x, y] = this.toW(sx, sy);
     if (button === 2) {
       this.issueOrder(x, y);
       return;
@@ -172,8 +220,17 @@ export class BattleScene implements Scene {
     this.refreshList();
   }
 
-  pointerMove(x: number, y: number) {
-    this.mouse = { x, y };
+  pointerMove(sx: number, sy: number) {
+    this.mouse = { x: sx, y: sy };
+    const [x, y] = this.toW(sx, sy);
+    this.mouseW = { x, y };
+    if (this.panDrag) {
+      this.cam.x -= (sx - this.panDrag.x) / this.cam.z;
+      this.cam.y -= (sy - this.panDrag.y) / this.cam.z;
+      this.panDrag = { x: sx, y: sy };
+      this.clampCam();
+      return;
+    }
     if (this.drag) {
       this.drag.x1 = x;
       this.drag.y1 = y;
@@ -181,6 +238,7 @@ export class BattleScene implements Scene {
   }
 
   pointerUp() {
+    this.panDrag = null;
     const d = this.drag;
     if (!d) return;
     this.drag = null;
@@ -196,6 +254,11 @@ export class BattleScene implements Scene {
   keyDown(e: KeyboardEvent) {
     if (modalOpen()) return;
     const k = e.key.toLowerCase();
+    if (['arrowleft', 'arrowright', 'arrowup', 'arrowdown', 'w', 'a', 's', 'd'].includes(k) && !e.metaKey && !e.ctrlKey) {
+      e.preventDefault();
+      this.keys.add(k);
+      return;
+    }
     if (k === ' ') {
       e.preventDefault();
       if (this.phase === 'deploy') this.start();
@@ -308,6 +371,11 @@ export class BattleScene implements Scene {
   }
 
   draw(ctx: CanvasRenderingContext2D) {
+    ctx.fillStyle = '#1d1a12';
+    ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+    ctx.save();
+    const z = this.cam.z;
+    ctx.transform(z, 0, 0, z, -this.cam.x * z, -this.cam.y * z);
     ctx.drawImage(this.bg, 0, 0, FIELD_W, FIELD_H);
     const b = this.b;
     if (b.walls) this.drawWalls(ctx);
@@ -438,14 +506,15 @@ export class BattleScene implements Scene {
 
     ctx.save();
     ctx.textAlign = 'center';
-    ctx.font = '700 13px Georgia, serif';
+    const k = 1 / z;
+    ctx.font = `700 ${13 * k}px Georgia, serif`;
     for (const f of b.floaters) {
       ctx.globalAlpha = Math.max(0, 1 - f.t / 1.6);
-      ctx.lineWidth = 3;
+      ctx.lineWidth = 3 * k;
       ctx.strokeStyle = 'rgba(0,0,0,0.7)';
-      ctx.strokeText(f.text, f.x, f.y - f.t * 18);
+      ctx.strokeText(f.text, f.x, f.y - f.t * 18 * k);
       ctx.fillStyle = f.color;
-      ctx.fillText(f.text, f.x, f.y - f.t * 18);
+      ctx.fillText(f.text, f.x, f.y - f.t * 18 * k);
     }
     ctx.restore();
 
@@ -454,11 +523,13 @@ export class BattleScene implements Scene {
       ctx.save();
       ctx.strokeStyle = 'rgba(255,255,255,0.85)';
       ctx.fillStyle = 'rgba(255,255,255,0.08)';
+      ctx.lineWidth = 1 / z;
       ctx.fillRect(d.x0, d.y0, d.x1 - d.x0, d.y1 - d.y0);
       ctx.strokeRect(d.x0, d.y0, d.x1 - d.x0, d.y1 - d.y0);
       ctx.restore();
     }
 
+    ctx.restore();
     this.drawBanner(ctx);
     this.drawTooltip(ctx);
   }
@@ -664,33 +735,35 @@ export class BattleScene implements Scene {
     ctx.restore();
   }
 
+  /** Symbol, headcount, morale and reload bars, kept the same size on screen whatever the zoom. */
   private drawLabel(ctx: CanvasRenderingContext2D, u: BUnit) {
     const st = UNIT_STATS[u.type];
+    const k = 1 / this.cam.z;
     ctx.save();
-    ctx.textAlign = 'center';
+    ctx.translate(u.x, u.y - radiusOf(u.type) - 14 * k);
+    ctx.scale(k, k);
     ctx.textBaseline = 'middle';
     ctx.font = '700 11px ui-sans-serif, system-ui, sans-serif';
-    const label = `${Math.ceil(u.men)}`;
-    const y = u.y - radiusOf(u.type) - 14;
     const f = u.side === 0 ? this.s.playerFaction : this.s.enemyFaction;
-    drawSymbol(ctx, u.type, u.x - 10, y, 20, f.color, inkFor(f.rgb));
+    drawSymbol(ctx, u.type, -10, 0, 20, f.color, inkFor(f.rgb));
+    const label = `${Math.ceil(u.men)}`;
     ctx.textAlign = 'left';
     ctx.lineWidth = 3;
     ctx.strokeStyle = 'rgba(0,0,0,0.65)';
-    ctx.strokeText(label, u.x + 3, y + 0.5);
+    ctx.strokeText(label, 3, 0.5);
     ctx.fillStyle = u.side === 0 ? '#ffffff' : '#ffd9d2';
-    ctx.fillText(label, u.x + 3, y + 0.5);
+    ctx.fillText(label, 3, 0.5);
     const m = Math.max(0, u.morale / u.maxMorale);
     ctx.fillStyle = 'rgba(0,0,0,0.6)';
-    ctx.fillRect(u.x - 14, y + 8, 28, 4);
+    ctx.fillRect(-14, 8, 28, 4);
     ctx.fillStyle = m > 0.6 ? '#8fd16b' : m > 0.3 ? '#e8c14a' : '#e3604f';
-    ctx.fillRect(u.x - 14, y + 8, 28 * m, 4);
+    ctx.fillRect(-14, 8, 28 * m, 4);
     if (st.reload > 0 && u.state === 'ok') {
       const r = 1 - Math.max(0, u.reload) / st.reload;
       ctx.fillStyle = 'rgba(0,0,0,0.6)';
-      ctx.fillRect(u.x - 14, y + 13, 28, 2);
+      ctx.fillRect(-14, 13, 28, 2);
       ctx.fillStyle = '#9cc7ff';
-      ctx.fillRect(u.x - 14, y + 13, 28 * r, 2);
+      ctx.fillRect(-14, 13, 28 * r, 2);
     }
     ctx.restore();
   }
@@ -726,26 +799,26 @@ export class BattleScene implements Scene {
     const w = ctx.measureText(text).width + 32;
     ctx.fillStyle = this.phase === 'live' && !this.paused ? 'rgba(90,30,20,0.8)' : 'rgba(30,22,12,0.85)';
     ctx.beginPath();
-    ctx.roundRect(FIELD_W / 2 - w / 2, FIELD_H - 40, w, 28, 14);
+    ctx.roundRect(VIEW_W / 2 - w / 2, VIEW_H - 40, w, 28, 14);
     ctx.fill();
     ctx.fillStyle = '#f4e3b5';
-    ctx.fillText(text, FIELD_W / 2, FIELD_H - 25.5);
+    ctx.fillText(text, VIEW_W / 2, VIEW_H - 25.5);
     if (this.noticeT > 0) {
       ctx.globalAlpha = Math.min(1, this.noticeT);
       ctx.font = '600 13px Georgia, serif';
       const nw = ctx.measureText(this.notice).width + 24;
       ctx.fillStyle = 'rgba(20,15,10,0.85)';
       ctx.beginPath();
-      ctx.roundRect(FIELD_W / 2 - nw / 2, FIELD_H - 72, nw, 24, 12);
+      ctx.roundRect(VIEW_W / 2 - nw / 2, VIEW_H - 72, nw, 24, 12);
       ctx.fill();
       ctx.fillStyle = '#ffd27a';
-      ctx.fillText(this.notice, FIELD_W / 2, FIELD_H - 59.5);
+      ctx.fillText(this.notice, VIEW_W / 2, VIEW_H - 59.5);
     }
     ctx.restore();
   }
 
   private drawTooltip(ctx: CanvasRenderingContext2D) {
-    const u = this.unitAt(this.mouse.x, this.mouse.y, 0) ?? this.unitAt(this.mouse.x, this.mouse.y, 1);
+    const u = this.unitAt(this.mouseW.x, this.mouseW.y, 0) ?? this.unitAt(this.mouseW.x, this.mouseW.y, 1);
     if (!u) return;
     const st = UNIT_STATS[u.type];
     const where = [this.b.inForest(u) ? 'in forest' : '', this.b.height(u) > 0.35 ? 'on high ground' : '', this.b.onWall(u) ? 'on the walls' : '']
@@ -758,8 +831,8 @@ export class BattleScene implements Scene {
     ctx.save();
     ctx.font = '12px ui-sans-serif, system-ui, sans-serif';
     const w = Math.max(...lines.map((l) => ctx.measureText(l).width)) + 16;
-    const x = Math.min(FIELD_W - w - 6, this.mouse.x + 16);
-    const y = Math.min(FIELD_H - 58, this.mouse.y + 16);
+    const x = Math.min(VIEW_W - w - 6, this.mouse.x + 16);
+    const y = Math.min(VIEW_H - 58, this.mouse.y + 16);
     ctx.fillStyle = 'rgba(20,15,10,0.9)';
     ctx.beginPath();
     ctx.roundRect(x, y, w, 52, 6);
@@ -808,6 +881,7 @@ export class BattleScene implements Scene {
           siege ? h('li', {}, 'The attacker wins by holding the town square, or by breaking the defenders.') : null,
           h('li', {}, 'Charge into flanks and rear. Spears stop horse and elephants. Guns and rockets panic elephants.'),
           h('li', {}, 'Mavalas fight best in forest and on hills. Keys: 1/2/3 speed, H hold.'),
+          h('li', {}, 'Scroll or pinch to zoom; WASD, arrow keys or middle-drag to pan.'),
         ),
       ),
       h('div', { class: 'card' }, h('h3', {}, 'Your regiments'), this.listEl),
@@ -909,12 +983,12 @@ function renderBattlefield(b: Battle, s: BattleSetup): HTMLCanvasElement {
   }
   tg.putImageData(img, 0, 0);
   const c = document.createElement('canvas');
-  c.width = FIELD_W * 2;
-  c.height = FIELD_H * 2;
+  c.width = FIELD_W * 1.5;
+  c.height = FIELD_H * 1.5;
   const g = c.getContext('2d')!;
   g.imageSmoothingQuality = 'high';
   g.drawImage(tex, 0, 0, c.width, c.height);
-  g.scale(2, 2);
+  g.scale(1.5, 1.5);
 
   // Contour lines on hills.
   g.strokeStyle = 'rgba(70,55,30,0.25)';

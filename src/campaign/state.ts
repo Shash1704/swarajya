@@ -6,7 +6,7 @@ import { PROVINCES, type Kind } from '../india';
 
 export const PLAYER = 0;
 export const IND = FACTION_DEFS.length - 1;
-export const MAX_UNITS = 12;
+export const MAX_UNITS = 20;
 /** Distance (world px) at which hostile armies clash. */
 export const CONTACT_RANGE = 9;
 /** Distance at which an army counts as standing at a settlement. */
@@ -182,23 +182,23 @@ export function newGame(seed: number): GameState {
     for (const [t, count] of units) for (let i = 0; i < count; i++) list.push(newUnit(t));
     spawnArmy(state, p.owner, p.id, list);
   };
-  army('raigad', [['mavala', 3], ['huzurat', 1], ['lightcav', 1], ['archer', 1], ['musket', 1]]);
-  army('javli', [['mavala', 2], ['shiledar', 1], ['lightcav', 1]]);
-  army('aurangabad', [['heavycav', 2], ['spear', 2], ['musket', 2], ['elephant', 1], ['horsearcher', 1], ['cannon', 1]]);
+  army('raigad', [['mavala', 5], ['huzurat', 1], ['shiledar', 1], ['lightcav', 2], ['archer', 2], ['musket', 2]]);
+  army('javli', [['mavala', 3], ['shiledar', 1], ['lightcav', 2], ['archer', 1]]);
+  army('aurangabad', [['heavycav', 2], ['spear', 3], ['musket', 2], ['archer', 2], ['elephant', 1], ['horsearcher', 1], ['cannon', 1]]);
   army('ahmednagar', [['spear', 2], ['musket', 1], ['heavycav', 1]]);
-  army('delhi', [['ahadi', 2], ['heavycav', 2], ['spear', 3], ['musket', 2], ['elephant', 2], ['horsearcher', 1]]);
-  army('ahmedabad', [['heavycav', 2], ['spear', 2], ['archer', 2]]);
-  army('dhaka', [['spear', 3], ['musket', 2], ['heavycav', 1], ['elephant', 1], ['cannon', 1]]);
-  army('lahore', [['heavycav', 2], ['horsearcher', 2], ['spear', 2]]);
-  army('bijapur', [['habshi', 1], ['spear', 2], ['musket', 2], ['heavycav', 2], ['elephant', 1], ['cannon', 1]]);
-  army('bangalore', [['spear', 2], ['lightcav', 2], ['archer', 1]]);
-  army('golconda', [['habshi', 1], ['spear', 2], ['musket', 2], ['heavycav', 2], ['elephant', 1]]);
-  army('amber', [['rajput', 3], ['spear', 2], ['archer', 1]]);
-  army('marwar', [['rajput', 2], ['spear', 2]]);
-  army('mysore', [['spear', 2], ['rocket', 1], ['lightcav', 1]]);
-  army('madurai', [['spear', 3], ['archer', 1], ['elephant', 1]]);
-  army('garhgaon', [['spear', 3], ['archer', 2], ['musket', 1]]);
-  army('kamrup', [['spear', 2], ['archer', 1], ['musket', 1]]);
+  army('delhi', [['ahadi', 2], ['heavycav', 4], ['spear', 5], ['musket', 3], ['elephant', 3], ['horsearcher', 2]]);
+  army('ahmedabad', [['heavycav', 3], ['spear', 3], ['archer', 3]]);
+  army('dhaka', [['spear', 4], ['musket', 3], ['heavycav', 2], ['elephant', 1], ['cannon', 1]]);
+  army('lahore', [['heavycav', 3], ['horsearcher', 3], ['spear', 3]]);
+  army('bijapur', [['habshi', 2], ['spear', 4], ['musket', 3], ['heavycav', 3], ['elephant', 2], ['cannon', 1]]);
+  army('bangalore', [['spear', 3], ['lightcav', 3], ['archer', 2]]);
+  army('golconda', [['habshi', 2], ['spear', 4], ['musket', 3], ['heavycav', 3], ['elephant', 1]]);
+  army('amber', [['rajput', 4], ['spear', 3], ['archer', 2]]);
+  army('marwar', [['rajput', 3], ['spear', 3]]);
+  army('mysore', [['spear', 3], ['rocket', 2], ['lightcav', 2]]);
+  army('madurai', [['spear', 4], ['archer', 2], ['elephant', 1]]);
+  army('garhgaon', [['spear', 4], ['archer', 3], ['musket', 2]]);
+  army('kamrup', [['spear', 3], ['archer', 2], ['musket', 1]]);
 
   // Armies start the year in winter quarters.
   for (const a of state.armies) a.aiNext = rng.range(15, 35);
@@ -307,7 +307,8 @@ export function provinceIncome(state: GameState, p: Province, regions = regionOw
 export function upkeep(state: GameState, f: number): number {
   let u = 0;
   for (const a of state.armies) if (a.owner === f) for (const x of a.units) u += UNIT_STATS[x.type].upkeep;
-  return Math.round(u);
+  // Regiments live off the land in part: upkeep is a fraction of their nominal cost.
+  return Math.round(u * 0.6);
 }
 
 /** Revenue per month. */
@@ -587,14 +588,16 @@ export function wallFactor(p: Province, attackers: CUnit[], equipment: number): 
 }
 
 /** Quick siege assault. Mutates casualties; returns true if the walls fell. */
-export function autoResolveSiege(state: GameState, att: CUnit[], p: Province): boolean {
+export function autoResolveSiege(state: GameState, att: CUnit[], p: Province, def: CUnit[] = p.garrison): boolean {
   const rng = state.rng;
   const eq = p.siege ? siegeEquipment(p.siege) : 0;
   const A = unitsStrength(att) * rng.range(0.85, 1.15);
-  const D = (unitsStrength(p.garrison) + 10) * wallFactor(p, att, eq) * rng.range(0.85, 1.15);
+  const D = (unitsStrength(def) + 10) * wallFactor(p, att, eq) * rng.range(0.85, 1.15);
   const won = rng.next() < (A * A) / (A * A + D * D);
   applyLosses(att, won ? Math.min(0.45, (0.3 * D) / Math.max(1, A)) : rng.range(0.3, 0.5));
+  // A garrison that loses its walls dies there; field armies inside break out with what they can.
   applyLosses(p.garrison, won ? 1 : rng.range(0.15, 0.35));
+  applyLosses(def.filter((u) => !p.garrison.includes(u)), won ? rng.range(0.4, 0.6) : rng.range(0.15, 0.35));
   return won;
 }
 
