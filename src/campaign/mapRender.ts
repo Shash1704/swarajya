@@ -121,6 +121,10 @@ export class MapRenderer {
   private prov: Int16Array;
   private seaImg: HTMLCanvasElement;
   private landImg: HTMLCanvasElement;
+  /** Mountain and forest symbols, drawn in vector so they stay crisp at any zoom. */
+  private peaks: Path2D;
+  private peakShadow: Path2D;
+  private trees: Path2D;
   private chains: Chain[] = [];
   private provPaths: Path2D[] = [];
   private landClip = new Path2D();
@@ -134,6 +138,7 @@ export class MapRenderer {
   constructor(map: MapData, seed: number, provinceCount: number) {
     this.prov = map.prov;
     [this.seaImg, this.landImg] = paintTerrain(map, seed);
+    [this.peaks, this.peakShadow, this.trees] = reliefSymbols(map, seed);
     this.buildShapes(provinceCount);
     this.rivers = map.rivers.map((r) => {
       const path = new Path2D();
@@ -339,7 +344,7 @@ export class MapRenderer {
     ctx.globalCompositeOperation = 'multiply';
     for (const p of provinces) {
       const f = factions[p.owner];
-      const a = f.id === IND ? 0.22 : 0.82;
+      const a = f.id === IND ? 0.2 : 0.66;
       ctx.fillStyle = `rgba(${f.rgb[0]},${f.rgb[1]},${f.rgb[2]},${a})`;
       ctx.fill(this.provPaths[p.id], 'evenodd');
     }
@@ -349,6 +354,16 @@ export class MapRenderer {
     ctx.fill(this.landClip);
     ctx.globalCompositeOperation = 'source-over';
 
+    // Mountains and forests as map symbols over the paint.
+    if (z >= 0.55) {
+      ctx.fillStyle = 'rgba(70,50,30,0.32)';
+      ctx.fill(this.peakShadow);
+      ctx.strokeStyle = 'rgba(62,42,24,0.7)';
+      ctx.lineWidth = px(1.1);
+      ctx.stroke(this.peaks);
+      ctx.fillStyle = 'rgba(36,62,30,0.4)';
+      ctx.fill(this.trees);
+    }
     for (const r of this.rivers) {
       ctx.strokeStyle = 'rgba(96,146,184,0.85)';
       ctx.lineWidth = px((r.major ? 1.9 : 1.1) * rz);
@@ -426,8 +441,9 @@ function paintTerrain(map: MapData, seed: number): [HTMLCanvasElement, HTMLCanva
       const s = lerp(DEEP, SHALLOW, t * t);
       simg.data.set([s[0] + g * 4, s[1] + g * 4, s[2] + g * 5, 255], i * 4);
       let c = terrainColor(Math.max(0, elev[i]) + g * 0.04, moist[i]);
-      const shade = (E(x - 1, y - 1) - E(x + 1, y + 1)) * 5 + (E(x - 2, y) - E(x + 2, y)) * 1.5;
-      const k = 1 + Math.max(-0.32, Math.min(0.32, shade)) + g * 0.07;
+      const shade = (E(x - 1, y - 1) - E(x + 1, y + 1)) * 9 + (E(x - 2, y) - E(x + 2, y)) * 2.5;
+      // Highlands darken a little overall so ranges stand out as masses, not just shaded edges.
+      const k = 1 + Math.max(-0.5, Math.min(0.42, shade)) + g * 0.07 - clamp01((Math.max(0, elev[i]) - 0.25) * 0.6) * 0.18;
       c = [c[0] * k, c[1] * k, c[2] * k];
       if (prov[i] === FOREIGN) {
         const grey = (c[0] + c[1] + c[2]) / 3;
@@ -439,4 +455,48 @@ function paintTerrain(map: MapData, seed: number): [HTMLCanvasElement, HTMLCanva
   sctx.putImageData(simg, 0, 0);
   lctx.putImageData(limg, 0, 0);
   return [sea, land];
+}
+
+/**
+ * Hill and mountain symbols (little peaks, shaded on their eastern face) on high
+ * ground, and clumps of tree crowns in the jungles, on a jittered grid.
+ */
+function reliefSymbols(map: MapData, seed: number): [Path2D, Path2D, Path2D] {
+  const peaks = new Path2D();
+  const shadow = new Path2D();
+  const trees = new Path2D();
+  const { elev, moist, prov } = map;
+  const jitter = makeNoise(seed + 7);
+  const step = 3; // cells between symbols
+  for (let cy = 1, row = 0; cy < MH - 1; cy += step, row++) {
+    for (let cx = 1 + (row % 2) * 1.5; cx < MW - 1; cx += step) {
+      const x0 = Math.round(cx);
+      const i = cy * MW + x0;
+      if (prov[i] === SEA) continue;
+      const e = elev[i];
+      const jx = (jitter(cx * 0.9, cy * 0.9) - 0.5) * CELL * 2;
+      const jy = (jitter(cy * 0.9 + 50, cx * 0.9) - 0.5) * CELL * 2;
+      const x = x0 * CELL + CELL / 2 + jx;
+      const y = cy * CELL + CELL / 2 + jy;
+      if (e > 0.3) {
+        // Taller, wider peaks on higher ground.
+        const h = 3 + Math.min(1, (e - 0.3) / 0.45) * 6;
+        const w = h * 0.95;
+        peaks.moveTo(x - w, y);
+        peaks.lineTo(x, y - h);
+        peaks.lineTo(x + w, y);
+        shadow.moveTo(x, y - h);
+        shadow.lineTo(x + w, y);
+        shadow.lineTo(x + w * 0.15, y);
+        shadow.closePath();
+      } else if (moist[i] > 0.7 && e < 0.3 && jitter(cx * 2.3, cy * 2.3) > 0.45) {
+        const r = 1.6;
+        for (const [dx, dy] of [[-1.8, 0.6], [1.8, 0.6], [0, -1.2]]) {
+          trees.moveTo(x + dx + r, y + dy);
+          trees.arc(x + dx, y + dy, r, 0, Math.PI * 2);
+        }
+      }
+    }
+  }
+  return [peaks, shadow, trees];
 }

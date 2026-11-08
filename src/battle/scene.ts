@@ -646,7 +646,7 @@ export class BattleScene implements Scene {
     // Morning mist and the coming of night.
     const mist = b.mist();
     if (mist > 0) {
-      ctx.fillStyle = `rgba(226,230,232,${0.38 * mist})`;
+      ctx.fillStyle = `rgba(226,230,232,${0.26 * mist})`;
       ctx.fillRect(0, 0, FIELD_W, FIELD_H);
     }
     const light = b.light();
@@ -709,7 +709,7 @@ export class BattleScene implements Scene {
       c.width = Math.ceil(FIELD_W / K);
       c.height = Math.ceil(FIELD_H / K);
       const g = c.getContext('2d')!;
-      g.fillStyle = 'rgba(16,13,8,0.42)';
+      g.fillStyle = 'rgba(16,13,8,0.24)';
       g.fillRect(0, 0, c.width, c.height);
       g.globalCompositeOperation = 'destination-out';
       for (const u of this.b.units) {
@@ -730,7 +730,7 @@ export class BattleScene implements Scene {
     ctx.restore();
   }
 
-  /** Dashed outlines where enemy regiments were last seen (fading over half a minute). */
+  /** Dashed outlines where enemy regiments were last seen (fading over a minute). */
   private drawGhosts(ctx: CanvasRenderingContext2D) {
     const b = this.b;
     if (!b.fogOn) return;
@@ -744,8 +744,8 @@ export class BattleScene implements Scene {
       const u = b.get(id);
       if (!u || u.state !== 'ok' || b.sees(0, u)) continue;
       const age = b.time - p.t;
-      if (age > 30) continue;
-      const a = 0.55 * (1 - age / 30);
+      if (age > 60) continue;
+      const a = 0.6 * (1 - age / 60);
       ctx.strokeStyle = `rgba(60,20,15,${a})`;
       ctx.fillStyle = `rgba(60,20,15,${a})`;
       ctx.strokeRect(p.x - 14, p.y - 14, 28, 28);
@@ -1349,16 +1349,35 @@ function renderBattlefield(b: Battle, s: BattleSetup): HTMLCanvasElement {
   };
   const [gr, gg, gb] = ground[s.terrain];
   const rainK = s.rain ? 0.85 : 1;
+  // Height field once, for shading and contours.
+  const H = new Float32Array(FIELD_W * FIELD_H);
+  for (let y = 0; y < FIELD_H; y++) for (let x = 0; x < FIELD_W; x++) H[y * FIELD_W + x] = b.height({ x, y });
+  const at = (x: number, y: number) => H[Math.max(0, Math.min(FIELD_H - 1, y)) * FIELD_W + Math.max(0, Math.min(FIELD_W - 1, x))];
+  const LEVELS = 7;
   for (let y = 0; y < FIELD_H; y++) {
     for (let x = 0; x < FIELD_W; x++) {
       const v = fbm(n, x / 140, y / 140, 4);
       const f = fine(x / 6, y / 6) - 0.5;
-      const hgt = b.height({ x, y });
-      const k = (0.82 + 0.36 * v + hgt * 0.18) * rainK;
+      const hgt = H[y * FIELD_W + x];
+      // Hillshade, lit from the north-west: sunlit slopes glow, far slopes fall into shadow.
+      const slope = (at(x - 3, y - 3) - at(x + 3, y + 3)) * 9;
+      const shade = Math.max(-0.38, Math.min(0.32, slope));
+      let k = (0.84 + 0.3 * v + shade) * rainK;
+      // Higher ground turns from olive to warm ochre and rock.
+      const up = Math.min(1, hgt * 1.2);
+      let r = gr * (1 - up * 0.1) + 40 * up;
+      let gg2 = gg * (1 - up * 0.18) + 8 * up;
+      let bb = gb * (1 - up * 0.3);
+      // Contour lines at even heights; every third one heavier.
+      const lv = Math.floor(hgt * LEVELS);
+      if (hgt > 0.03 && (Math.floor(at(x + 1, y) * LEVELS) !== lv || Math.floor(at(x, y + 1) * LEVELS) !== lv)) {
+        k *= lv % 3 === 0 ? 0.62 : 0.76;
+        r = r * 0.92 + 8;
+      }
       const i = (y * FIELD_W + x) * 4;
-      img.data[i] = gr * k + f * 10;
-      img.data[i + 1] = gg * k + f * 10;
-      img.data[i + 2] = gb * k + f * 8;
+      img.data[i] = r * k + f * 10;
+      img.data[i + 1] = gg2 * k + f * 10;
+      img.data[i + 2] = bb * k + f * 8;
       img.data[i + 3] = 255;
     }
   }
@@ -1387,15 +1406,23 @@ function renderBattlefield(b: Battle, s: BattleSetup): HTMLCanvasElement {
     g.stroke();
   }
 
-  // Sunlit hilltops.
-  for (const hl of b.hills) {
-    const grad = g.createRadialGradient(hl.x - hl.r * 0.2, hl.y - hl.r * 0.2, 0, hl.x, hl.y, hl.r);
-    grad.addColorStop(0, `rgba(255,244,205,${0.22 * hl.h})`);
-    grad.addColorStop(1, 'rgba(255,244,205,0)');
-    g.fillStyle = grad;
+  // Hachures: short strokes running down the steep slopes, as on an old survey map.
+  const hr = new RNG(s.seed + 29);
+  g.lineCap = 'round';
+  for (let i = 0; i < 26000; i++) {
+    const x = hr.range(0, FIELD_W);
+    const y = hr.range(0, FIELD_H);
+    const dx = (at(Math.round(x) + 2, Math.round(y)) - at(Math.round(x) - 2, Math.round(y))) / 4;
+    const dy = (at(Math.round(x), Math.round(y) + 2) - at(Math.round(x), Math.round(y) - 2)) / 4;
+    const grade = Math.hypot(dx, dy);
+    if (grade < 0.0035) continue;
+    const len = Math.min(9, 3 + grade * 900);
+    g.strokeStyle = `rgba(78,52,24,${Math.min(0.5, 0.12 + grade * 40)})`;
+    g.lineWidth = 0.9;
     g.beginPath();
-    g.arc(hl.x, hl.y, hl.r, 0, Math.PI * 2);
-    g.fill();
+    g.moveTo(x, y);
+    g.lineTo(x - (dx / grade) * len, y - (dy / grade) * len);
+    g.stroke();
   }
 
   // Marshes: dark pools and reeds.
@@ -1404,14 +1431,14 @@ function renderBattlefield(b: Battle, s: BattleSetup): HTMLCanvasElement {
     for (let i = 0; i < 9; i++) {
       const a = mr.range(0, Math.PI * 2);
       const d = mr.range(0, m.r * 0.6);
-      g.fillStyle = 'rgba(64,92,84,0.35)';
+      g.fillStyle = 'rgba(58,98,104,0.5)';
       g.beginPath();
       g.ellipse(m.x + Math.cos(a) * d, m.y + Math.sin(a) * d, m.r * mr.range(0.35, 0.55), m.r * mr.range(0.25, 0.4), mr.range(0, 3), 0, Math.PI * 2);
       g.fill();
     }
-    g.strokeStyle = 'rgba(48,70,40,0.7)';
-    g.lineWidth = 1;
-    for (let i = 0; i < m.r * 1.2; i++) {
+    g.strokeStyle = 'rgba(40,62,34,0.85)';
+    g.lineWidth = 1.2;
+    for (let i = 0; i < m.r * 2; i++) {
       const a = mr.range(0, Math.PI * 2);
       const d = m.r * Math.sqrt(mr.next()) * 0.9;
       const x = m.x + Math.cos(a) * d;
@@ -1429,10 +1456,13 @@ function renderBattlefield(b: Battle, s: BattleSetup): HTMLCanvasElement {
     r.pts.forEach(([x, y], i) => (i ? path.lineTo(x, y) : path.moveTo(x, y)));
     g.lineCap = 'round';
     g.lineJoin = 'round';
-    g.strokeStyle = 'rgba(112,92,58,0.85)';
-    g.lineWidth = r.w + 12;
+    g.strokeStyle = 'rgba(132,150,96,0.6)'; // reedy banks
+    g.lineWidth = r.w + 34;
     g.stroke(path);
-    g.strokeStyle = '#4c7ea4';
+    g.strokeStyle = 'rgba(92,72,44,0.95)';
+    g.lineWidth = r.w + 10;
+    g.stroke(path);
+    g.strokeStyle = '#3f74a0';
     g.lineWidth = r.w;
     g.stroke(path);
     g.strokeStyle = 'rgba(200,228,245,0.3)';
@@ -1456,6 +1486,22 @@ function renderBattlefield(b: Battle, s: BattleSetup): HTMLCanvasElement {
   // Villages: a fence and a cluster of huts.
   const vr = new RNG(s.seed + 17);
   for (const v of b.villages) {
+    // Patchwork fields around the village.
+    for (let i = 0; i < 10; i++) {
+      const a = vr.range(0, Math.PI * 2);
+      const d = vr.range(v.r * 1.05, v.r * 1.9);
+      g.save();
+      g.translate(v.x + Math.cos(a) * d, v.y + Math.sin(a) * d);
+      g.rotate(vr.range(-0.5, 0.5));
+      const w = vr.range(28, 50);
+      const hh = vr.range(18, 32);
+      g.fillStyle = vr.chance(0.5) ? 'rgba(214,190,110,0.45)' : 'rgba(140,150,72,0.4)';
+      g.fillRect(-w / 2, -hh / 2, w, hh);
+      g.strokeStyle = 'rgba(100,80,40,0.35)';
+      g.lineWidth = 1;
+      g.strokeRect(-w / 2, -hh / 2, w, hh);
+      g.restore();
+    }
     g.strokeStyle = 'rgba(92,64,36,0.8)';
     g.lineWidth = 2;
     g.setLineDash([5, 4]);
@@ -1480,15 +1526,16 @@ function renderBattlefield(b: Battle, s: BattleSetup): HTMLCanvasElement {
     }
   }
 
-  // Contour lines on hills.
-  g.strokeStyle = 'rgba(70,55,30,0.25)';
-  g.lineWidth = 1;
+  // Summit marks on the higher hills.
   for (const hl of b.hills) {
-    for (let k = 1; k <= 3; k++) {
-      g.beginPath();
-      g.arc(hl.x, hl.y, hl.r * (1 - k * 0.25), 0, Math.PI * 2);
-      g.stroke();
-    }
+    if (hl.h < 0.6) continue;
+    g.fillStyle = 'rgba(70,44,20,0.8)';
+    g.beginPath();
+    g.moveTo(hl.x, hl.y - 7);
+    g.lineTo(hl.x - 6, hl.y + 4);
+    g.lineTo(hl.x + 6, hl.y + 4);
+    g.closePath();
+    g.fill();
   }
 
   const W = b.walls;
@@ -1515,7 +1562,8 @@ function renderBattlefield(b: Battle, s: BattleSetup): HTMLCanvasElement {
   const rng = new RNG(s.seed + 3);
   for (const f of b.forests) {
     const soft = g.createRadialGradient(f.x, f.y, f.r * 0.3, f.x, f.y, f.r * 1.1);
-    soft.addColorStop(0, 'rgba(48,58,34,0.55)');
+    soft.addColorStop(0, 'rgba(34,48,24,0.78)');
+    soft.addColorStop(0.75, 'rgba(38,52,26,0.6)');
     soft.addColorStop(1, 'rgba(48,58,34,0)');
     g.fillStyle = soft;
     g.beginPath();
@@ -1528,11 +1576,40 @@ function renderBattlefield(b: Battle, s: BattleSetup): HTMLCanvasElement {
       const x = f.x + Math.cos(a) * r;
       const y = f.y + Math.sin(a) * r;
       const shade = rng.int(0, 2);
-      g.fillStyle = shade === 0 ? 'rgba(30,38,22,0.8)' : shade === 1 ? 'rgba(58,70,40,0.75)' : 'rgba(96,104,62,0.6)';
+      g.fillStyle = shade === 0 ? 'rgba(22,32,16,0.85)' : shade === 1 ? 'rgba(50,66,34,0.8)' : 'rgba(92,106,58,0.65)';
       g.beginPath();
       g.arc(x, y, rng.range(1.2, 3.2), 0, Math.PI * 2);
       g.fill();
     }
+    // Tree crowns: a shadow, a dark crown and a sunlit highlight.
+    const crowns = Math.floor(f.r * f.r * 0.012);
+    for (let i = 0; i < crowns; i++) {
+      const a = rng.range(0, Math.PI * 2);
+      const r = f.r * 0.92 * Math.sqrt(rng.next());
+      const x = f.x + Math.cos(a) * r;
+      const y = f.y + Math.sin(a) * r;
+      const cr = rng.range(5, 9);
+      g.fillStyle = 'rgba(16,20,10,0.35)';
+      g.beginPath();
+      g.arc(x + 2.5, y + 3, cr, 0, Math.PI * 2);
+      g.fill();
+      g.fillStyle = 'rgba(40,58,28,0.95)';
+      g.beginPath();
+      g.arc(x, y, cr, 0, Math.PI * 2);
+      g.fill();
+      g.fillStyle = 'rgba(110,130,70,0.6)';
+      g.beginPath();
+      g.arc(x - cr * 0.3, y - cr * 0.3, cr * 0.45, 0, Math.PI * 2);
+      g.fill();
+    }
+    // A dark edge so the wood reads as a block of cover.
+    g.strokeStyle = 'rgba(26,36,18,0.55)';
+    g.lineWidth = 2;
+    g.setLineDash([3, 3]);
+    g.beginPath();
+    g.arc(f.x, f.y, f.r, 0, Math.PI * 2);
+    g.stroke();
+    g.setLineDash([]);
   }
   const grad = g.createRadialGradient(FIELD_W / 2, FIELD_H / 2, FIELD_H * 0.35, FIELD_W / 2, FIELD_H / 2, FIELD_W * 0.7);
   grad.addColorStop(0, 'rgba(0,0,0,0)');

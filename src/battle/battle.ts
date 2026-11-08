@@ -249,16 +249,16 @@ export class Battle {
   /** Thickness of the morning mist, 1 to 0 as it burns off. */
   mist(): number {
     if (!this.opts.fog) return 0;
-    return this.time < 200 ? 1 : Math.max(0, 1 - (this.time - 200) / 80);
+    return this.time < 90 ? 0.8 : Math.max(0, 0.8 - (this.time - 90) / 75);
   }
 
   /** How far a regiment can see. Scouts (light horse) and high ground see furthest. */
   sightOf(u: BUnit): number {
     const st = UNIT_STATS[u.type];
-    let r = st.role === 'raider' || st.role === 'skirmish' ? 430 : st.cls === 'cavalry' ? 340 : 300;
-    if (this.height(u) > 0.35) r *= 1.35;
-    r *= 1 - this.mist() * 0.5;
-    r *= 0.4 + 0.6 * this.light();
+    let r = st.role === 'raider' || st.role === 'skirmish' ? 580 : st.cls === 'cavalry' ? 490 : 440;
+    if (this.height(u) > 0.35) r *= 1.3;
+    r *= 1 - this.mist() * 0.3;
+    r *= 0.6 + 0.4 * this.light();
     return r;
   }
 
@@ -269,23 +269,23 @@ export class Battle {
 
   private canSee(o: BUnit, t: BUnit): boolean {
     const d = dist(o, t);
-    if (d < 95) return true;
+    if (d < 110) return true;
     let r = this.sightOf(o);
-    const close = d < 160;
+    const close = d < 240;
     const busy = t.fighting || t.aimId >= 0 || t.moving && t.rushing;
     // Woods and villages hide whoever keeps still in them.
     if (this.inForest(t)) r = Math.min(r, busy ? 230 : UNIT_STATS[t.type].wild ? 85 : 110);
     else if (this.inVillage(t)) r = Math.min(r, busy ? 260 : 160);
     if (d > r) return false;
     // Woods in between thin the view; a ridge in between blocks it.
-    const hMax = Math.max(this.height(o), this.height(t)) + 0.3;
+    const hMax = Math.max(this.height(o), this.height(t)) + 0.45;
     let thinned = false;
     for (let k = 1; k <= 5; k++) {
       const p = { x: o.x + (t.x - o.x) * k / 6, y: o.y + (t.y - o.y) * k / 6 };
       if (!close && this.height(p) > hMax) return false;
       if (!thinned && this.inForest(p) && dist(p, o) > 60 && dist(p, t) > 60) {
         thinned = true;
-        if (d > r * 0.55) return false;
+        if (d > r * 0.75) return false;
       }
     }
     return true;
