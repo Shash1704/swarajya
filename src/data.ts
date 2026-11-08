@@ -260,3 +260,24 @@ export function wallName(walls: number, kind: string, sea: boolean): string {
   if (sea) return 'Sea fort';
   return kind === 'fort' ? 'Hill fort' : 'Great walls';
 }
+
+/**
+ * Commanders who lead each realm's armies, in the order they take the field:
+ * [name, house]. When a realm runs out, captains are named generically.
+ */
+export const GENERALS: Record<Owner, [string, string][]> = {
+  mar: [['Shivaji', 'Bhonsle'], ['Netaji', 'Palkar'], ['Tanaji', 'Malusare'], ['Prataprao', 'Gujar'], ['Hambirrao', 'Mohite'],
+    ['Moropant', 'Pingale'], ['Yesaji', 'Kank'], ['Anaji', 'Datto'], ['Suryaji', 'Malusare'], ['Kondaji', 'Farzand']],
+  mug: [['Diler Khan', 'Daudzai'], ['Mahabat Khan', 'Mughal'], ['Aurangzeb', 'Timurid'], ['Shaista Khan', 'Mughal'], ['Ram Singh', 'Kachhwaha'],
+    ['Muazzam', 'Timurid'], ['Bahadur Khan', 'Kokaltash'], ['Daud Khan', 'Qureshi'], ['Khan Jahan', 'Mughal'], ['Ikhlas Khan', 'Mughal']],
+  bij: [['Ali Adil Shah', 'Adil Shahi'], ['Bahlol Khan', 'Miana'], ['Khawas Khan', 'Habshi'], ['Sharza Khan', 'Adil Shahi'], ['Siddi Masud', 'Habshi']],
+  gol: [['Abul Hasan', 'Qutb Shahi'], ['Madanna', 'Pandit'], ['Akkanna', 'Pandit'], ['Mir Jumla', 'Ardistani']],
+  raj: [['Raj Singh', 'Sisodia'], ['Jaswant Singh', 'Rathore'], ['Durgadas', 'Rathore'], ['Anup Singh', 'Rathore']],
+  sid: [['Siddi Qasim', 'Janjira'], ['Siddi Sambal', 'Janjira'], ['Siddi Khairiyat', 'Janjira']],
+  por: [['Luís de Mendonça', 'Furtado'], ['António de Melo', 'Castro']],
+  eng: [['Gerald Aungier', 'Company'], ['George Oxenden', 'Company']],
+  nay: [['Chokkanatha', 'Nayak'], ['Rangakrishna', 'Muthu Virappa']],
+  mys: [['Chikka Devaraja', 'Wodeyar'], ['Doddaiya', 'Dalavayi']],
+  aho: [['Lachit', 'Borphukan'], ['Udayaditya', 'Singha'], ['Atan', 'Burhagohain']],
+  ind: [['Local', 'Chieftain']],
+};

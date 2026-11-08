@@ -2,6 +2,10 @@
 
 A real-time grand-strategy game set in India in **1670**, the year Shivaji began retaking the forts he had surrendered to the Mughals at Purandar. You lead the Marathas from Raigad against the Mughal Empire, the Deccan sultanates and the coastal powers. As in Mount & Blade: Bannerlord, the campaign map runs continuously (pause any time): every realm marches, fights, besieges and plunders at once. Battles and sieges are fought in real time with pause.
 
+## Look
+
+Styled after painted history-map videos (such as History Marche): realm colours laid over shaded relief, pale seas with glowing coasts, realm names in spaced Roman capitals (Cinzel), and towns as ink dots. Every army marches under a named commander's standard (Shivaji Bhonsle, Diler Khan, Ali Adil Shah…). On the battlefield, regiments are square two-tone counters carrying their military symbol, the commander's standard flies over his regiment, and the place name is written across the field.
+
 ## Run it
 
 ```bash
@@ -22,13 +26,15 @@ Open the URL Vite prints. Add `?seed=123` to fix the random seed (terrain detail
 - **Raids (chauth):** plunder an enemy province's villages for 2 days for gold. It then pays its owner nothing for two months.
 - **Realms in 1670:** Marathas (you), Mughals, Bijapur, Golconda, the Siddis of Janjira, the Portuguese, the English, the Rajput states, Mysore, the Nayaks of Madurai, the Ahoms, and independent chiefs. You start at war with the Mughals and Siddis; the AI declares wars and makes peace on its own.
 - **Regions, building and diplomacy:** hold a whole region for +25% revenue there. Build walls or markets (one project a month per town). Declare war or send envoys for peace.
+- **Manpower:** every regiment is drawn from a realm's pool of fighting men, which regrows each month from provinces that are not devastated or besieged. Recruiting, refilling ranks and rebuilding garrisons all use it up; regiments are raised under-strength when men are short. A realm that bleeds its manpower dry sues for peace, accepts it readily, and its garrisons start opening their gates.
 - **Victory:** hold 35 provinces or take Delhi.
 
 ## Battles
 
 Battles are real-time with pause on a large field. Scroll (or pinch) to zoom; use WASD, the arrow keys or middle-drag to pan. First there is a deployment phase in which armies form up in ranks; press **Space** to begin, and Space again to pause at any time. Use **1/2/3** for speed. An army holds up to 20 regiments.
 
-- **Field battles:** terrain comes from the province (forest, hills, desert, plains). Flank and rear attacks deal extra damage, charges hit hard, and spears brace against horse and elephants. Morale breaks, and routs spread to nearby units.
+- **Terrain decides battles:** hills give the high ground (stronger blows, longer range, downhill charges; uphill marches are slow); rivers can be crossed safely only at the sandy fords; marshes bog down horse and elephants; villages and woods give cover. **Right-drag** (or long-press and drag) to draw a curved path for the selected regiments; they wheel through turns rather than sliding.
+- **Field battles:** terrain comes from the province (forest, hills, desert, plains, rivers, marsh). Flank and rear attacks deal extra damage, charges hit hard, and spears brace against horse and elephants. Morale breaks, and routs spread to nearby units.
 - **Sieges:** walls, a gate and towers that shoot attackers. Guns and elephants batter walls; infantry hack at the gate (much faster with a ram); ladders let infantry climb. The attacker wins by breaking the garrison, or by holding the town square.
 
 Every unit is marked with a NATO-style map symbol: a cross for infantry, a single diagonal for cavalry, a dot for gunpowder, and an oval for armour (elephants, armoured horse). Modifiers mark the type: a mountain for hill troops, a spearhead for pikes and lances, a bow arc for archers. A double frame marks guard troops. The **Troops** button on the campaign map opens the full tier list.

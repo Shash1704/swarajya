@@ -22,13 +22,19 @@ export interface BattleOptions {
   walls: number;
   ladders: boolean;
   ram: boolean;
+  /** A river crosses the field between the armies (fordable in a few places). */
+  river?: boolean;
+  /** Boggy ground: marshes slow horse and elephants. */
+  marsh?: boolean;
 }
 
 export type Order =
   | { kind: 'hold' }
   | { kind: 'move'; x: number; y: number }
   | { kind: 'attack'; target: number }
-  | { kind: 'breach'; seg: number };
+  | { kind: 'breach'; seg: number }
+  /** Follow a drawn (possibly curved) path, then attack `then` if given. */
+  | { kind: 'path'; pts: [number, number][]; i: number; then?: number };
 
 export interface BUnit {
   id: number;
@@ -66,6 +72,7 @@ export interface BUnit {
 }
 
 export interface Forest { x: number; y: number; r: number }
+export interface River { pts: [number, number][]; w: number; fords: Forest[] }
 export interface Hill { x: number; y: number; r: number; h: number }
 
 export interface WallSeg {
@@ -119,6 +126,8 @@ export const radiusOf = (t: UnitType) => {
   return c === 'elephant' ? 26 : c === 'artillery' ? 18 : 22;
 };
 const cls = (u: BUnit) => UNIT_STATS[u.type].cls;
+/** How fast each kind of unit can wheel, in radians per second. */
+const TURN_RATE: Record<string, number> = { infantry: 2.2, missile: 2.4, cavalry: 1.5, elephant: 1.1, artillery: 0.8 };
 const weapon = (u: BUnit) => UNIT_STATS[u.type].weapon;
 const canMountWalls = (t: UnitType) => {
   const c = UNIT_STATS[t].cls;
@@ -133,6 +142,9 @@ const canMountWalls = (t: UnitType) => {
 export class Battle {
   units: BUnit[] = [];
   forests: Forest[] = [];
+  rivers: River[] = [];
+  marshes: Forest[] = [];
+  villages: Forest[] = [];
   hills: Hill[] = [];
   walls: Walls | null = null;
   shots: Shot[] = [];
@@ -185,6 +197,97 @@ export class Battle {
     for (let i = 0; i < nHill; i++) {
       this.hills.push({ x: rng.range(80, FIELD_W - 80), y: rng.range(yMin - 40, yMax + 40), r: rng.range(90, 170), h: rng.range(0.5, 1) });
     }
+    if (siege) return;
+    // A river winding across the middle of the field, with two or three fords.
+    if (this.opts.river) {
+      const y0 = FIELD_H * 0.5 + rng.range(-50, 50);
+      const phase = rng.range(0, Math.PI * 2);
+      const pts: [number, number][] = [];
+      for (let x = -40; x <= FIELD_W + 40; x += 40) {
+        pts.push([x, y0 + Math.sin(x / 230 + phase) * 55 + Math.sin(x / 90 + phase * 2) * 12]);
+      }
+      const nFord = rng.int(2, 3);
+      const fords: Forest[] = [];
+      for (let i = 0; i < nFord; i++) {
+        const fx = FIELD_W * (i + 0.5) / nFord + rng.range(-120, 120);
+        const k = Math.max(0, Math.min(pts.length - 1, Math.round((fx + 40) / 40)));
+        fords.push({ x: pts[k][0], y: pts[k][1], r: 46 });
+      }
+      this.rivers.push({ pts, w: 38, fords });
+      // Nothing else grows in the river bed.
+      this.forests = this.forests.filter((f) => this.riverDist(f) > f.r + 20);
+    }
+    const nMarsh = this.opts.marsh ? rng.int(2, 4) : t === 'plains' && rng.chance(0.3) ? 1 : 0;
+    for (let i = 0; i < nMarsh; i++) {
+      this.marshes.push({ x: rng.range(120, FIELD_W - 120), y: rng.range(yMin, yMax), r: rng.range(60, 110) });
+    }
+    const nVillage = t === 'forest' ? rng.int(0, 1) : rng.int(1, 2);
+    for (let i = 0; i < nVillage; i++) {
+      for (let tries = 0; tries < 20; tries++) {
+        const v = { x: rng.range(150, FIELD_W - 150), y: rng.range(yMin + 20, yMax - 20), r: rng.range(45, 60) };
+        if (this.riverDist(v) > v.r + 30 && !this.marshes.some((m) => dist(m, v) < m.r + v.r)) {
+          this.villages.push(v);
+          break;
+        }
+      }
+    }
+  }
+
+  /** Distance from a point to the nearest river's centre line (Infinity if no river). */
+  riverDist(p: { x: number; y: number }): number {
+    let best = Infinity;
+    for (const r of this.rivers) {
+      for (let i = 1; i < r.pts.length; i++) {
+        const [ax, ay] = r.pts[i - 1];
+        const [bx, by] = r.pts[i];
+        const vx = bx - ax;
+        const vy = by - ay;
+        const t = Math.max(0, Math.min(1, ((p.x - ax) * vx + (p.y - ay) * vy) / (vx * vx + vy * vy)));
+        best = Math.min(best, Math.hypot(p.x - ax - vx * t, p.y - ay - vy * t));
+      }
+    }
+    return best;
+  }
+
+  onFord(p: { x: number; y: number }): boolean {
+    return this.rivers.some((r) => r.fords.some((f) => dist(p, f) < f.r));
+  }
+
+  /** Wading the river away from a ford: slow, and badly placed to fight. */
+  inRiver(p: { x: number; y: number }): boolean {
+    return this.rivers.length > 0 && this.riverDist(p) < this.rivers[0].w / 2 + 4 && !this.onFord(p);
+  }
+
+  inMarsh(p: { x: number; y: number }): boolean {
+    return this.marshes.some((m) => dist(p, m) < m.r);
+  }
+
+  inVillage(p: { x: number; y: number }): boolean {
+    return this.villages.some((v) => dist(p, v) < v.r);
+  }
+
+  /** Waypoints that take a march from `a` to `b` over the river by the nearest ford, if it has to cross. */
+  fordRoute(a: { x: number; y: number }, b: { x: number; y: number }): [number, number][] {
+    const r = this.rivers[0];
+    if (!r) return [];
+    const side = (p: { x: number; y: number }) => {
+      const k = Math.max(0, Math.min(r.pts.length - 1, Math.round((p.x + 40) / 40)));
+      return Math.sign(p.y - r.pts[k][1]);
+    };
+    if (side(a) === side(b)) return [];
+    let best: Forest | null = null;
+    let bd = Infinity;
+    for (const f of r.fords) {
+      const d = dist(a, f) + dist(f, b);
+      if (d < bd) {
+        bd = d;
+        best = f;
+      }
+    }
+    if (!best) return [];
+    const s = side(a);
+    // Approach, cross, and climb out the far bank.
+    return [[best.x, best.y + s * 55], [best.x, best.y], [best.x, best.y - s * 55]];
   }
 
   private makeWalls() {
@@ -342,8 +445,10 @@ export class Battle {
   private speedMod(u: BUnit): number {
     const st = UNIT_STATS[u.type];
     let m = this.opts.rain ? 0.9 : 1;
-    if (this.inForest(u)) m *= st.wild ? 0.95 : st.cls === 'cavalry' ? 0.45 : st.cls === 'artillery' ? 0.4 : 0.65;
-    else if (this.height(u) > 0.35 && !st.wild) m *= 0.85;
+    const big = st.cls === 'cavalry' || st.cls === 'elephant' || st.cls === 'artillery';
+    if (this.inRiver(u)) m *= big ? 0.35 : 0.3;
+    else if (this.inMarsh(u)) m *= big ? 0.35 : st.wild ? 0.8 : 0.55;
+    else if (this.inForest(u)) m *= st.wild ? 0.95 : st.cls === 'cavalry' ? 0.45 : st.cls === 'artillery' ? 0.4 : 0.65;
     return m;
   }
 
@@ -392,10 +497,21 @@ export class Battle {
     const dy = wy - u.y;
     const d = Math.hypot(dx, dy);
     if (d <= stop + 0.5) return false;
-    const s = Math.min(speed * dt, d - stop);
-    u.x += (dx / d) * s;
-    u.y += (dy / d) * s;
-    turnToward(u, Math.atan2(dy, dx), 5 * dt);
+    // Regiments wheel rather than slide: they turn at a limited rate and march
+    // along their facing, so changes of direction trace curves. Horse swing wide.
+    const want = Math.atan2(dy, dx);
+    turnToward(u, want, TURN_RATE[UNIT_STATS[u.type].cls] * dt);
+    const off = Math.abs(angDiff(u.facing, want));
+    const straight = d < 22 || off < 0.06;
+    const vx = straight ? dx / d : Math.cos(u.facing);
+    const vy = straight ? dy / d : Math.sin(u.facing);
+    let k = off > 1.6 ? 0.2 : Math.max(0.35, Math.cos(off));
+    // Climbing slows a march; going downhill does not speed it up much.
+    const climb = this.height({ x: u.x + vx * 12, y: u.y + vy * 12 }) - this.height(u);
+    if (climb > 0) k *= Math.max(0.55, 1 - climb * 6);
+    const s = Math.min(speed * k * dt, d - stop);
+    u.x += vx * s;
+    u.y += vy * s;
     return true;
   }
 
@@ -403,6 +519,10 @@ export class Battle {
     const o = u.order;
     if (o.kind === 'move') return o;
     if (o.kind === 'attack') return this.get(o.target) ?? null;
+    if (o.kind === 'path') {
+      const p = o.pts[o.pts.length - 1];
+      return p ? { x: p[0], y: p[1] } : null;
+    }
     return null;
   }
 
@@ -477,6 +597,7 @@ export class Battle {
           if (isLarge(u.type)) this.float(u.x, u.y, 'Charge!', '#ffe08a');
         }
         u.fighting = true;
+        if (this.inRiver(u)) u.moraleHit += 3 * dt; // fighting waist-deep in a river
         u.contactTime += dt;
         u.chargeT = Math.max(0, u.chargeT - dt);
         if (!u.climbing) turnToward(u, Math.atan2(contact.y - u.y, contact.x - u.x), 4 * dt);
@@ -655,6 +776,22 @@ export class Battle {
     if (o.kind === 'move') {
       moving = this.travel(u, o.x, o.y, speed, dt, 0);
       if (!moving && Math.hypot(o.x - u.x, o.y - u.y) < 3) u.order = { kind: 'hold' };
+    } else if (o.kind === 'path') {
+      const then = o.then !== undefined ? this.get(o.then) : undefined;
+      if (then && then.state === 'ok' && dist(u, then) < 90) {
+        u.order = { kind: 'attack', target: then.id }; // close enough: go in
+      } else {
+        const pt = o.pts[o.i];
+        if (!pt) u.order = then && then.state === 'ok' ? { kind: 'attack', target: then.id } : { kind: 'hold' };
+        else {
+          moving = this.travel(u, pt[0], pt[1], speed, dt, 0);
+          // Reached it, or stuck short of it against an obstacle or the field's edge: on to the next point.
+          if (Math.hypot(pt[0] - u.x, pt[1] - u.y) < 14 || (!moving && u.blocked)) o.i++;
+          else if (u.x <= 16 || u.y <= 16 || u.x >= FIELD_W - 16 || u.y >= FIELD_H - 16) {
+            if (Math.hypot(pt[0] - u.x, pt[1] - u.y) < 60) o.i++;
+          }
+        }
+      }
     } else if (o.kind === 'attack') {
       const t = this.get(o.target);
       const chase = st.cls === 'cavalry';
@@ -730,7 +867,7 @@ export class Battle {
   rangeMod(u: BUnit): number {
     let m = 1;
     if (this.onWall(u)) m *= 1.2;
-    if (this.height(u) > 0.4) m *= 1.1;
+    if (this.height(u) > 0.4) m *= 1.2;
     if (this.opts.rain && weapon(u) === 'bow') m *= 0.8;
     return m;
   }
@@ -740,6 +877,9 @@ export class Battle {
     const pierce = weapon(u) === 'gun' ? 0.25 : weapon(u) === 'cannon' ? 0 : 0.7;
     let m = (1 - tt.armor * pierce) / Math.max(1, tt.defense / 1.5);
     if (weapon(u) !== 'cannon' && this.inForest(t)) m *= 0.55;
+    if (this.inVillage(t)) m *= 0.6;
+    if (this.inRiver(t)) m *= 1.25;
+    if (this.height(u) - this.height(t) > 0.3) m *= 1.15;
     if (this.walls && this.region(u.y) === 'out') {
       const rt = this.region(t.y);
       if (rt === 'band' && !t.climbing) m *= 0.5;
@@ -821,19 +961,26 @@ export class Battle {
       mult *= 1.5; // flank or rear
       t.moraleHit += 4 * dt;
     }
-    if (a.chargeT > 0) {
+    if (a.chargeT > 0 && !this.inRiver(a) && !this.inMarsh(a)) {
       const braced = st.antiLarge > 1 && isLarge(a.type) && t.state === 'ok' && rel < 1.2;
-      if (!braced) mult *= sa.charge;
+      // A charge down a slope hits harder still.
+      if (!braced) mult *= sa.charge * (this.height(a) - this.height(t) > 0.2 ? 1.2 : 1);
     }
     if (isLarge(t.type)) mult *= sa.antiLarge;
     if (sa.wild && (this.inForest(a) || this.height(a) > 0.35)) mult *= 1.25;
     if (sa.cls === 'cavalry' && this.inForest(a)) mult *= 0.7;
-    if (this.height(a) - this.height(t) > 0.15) mult *= 1.2;
+    const dh = this.height(a) - this.height(t);
+    if (dh > 0.15) mult *= 1 + Math.min(0.4, dh * 0.8); // fighting downhill
+    else if (dh < -0.15) mult *= Math.max(0.7, 1 + dh * 0.6); // fighting uphill
+    if (this.inRiver(a)) mult *= 0.6;
+    if (isLarge(a.type) && this.inMarsh(a)) mult *= 0.7;
     if (this.walls) {
       if (a.climbing) mult *= 0.5;
       if (t.climbing && this.onWall(a)) mult *= 1.3;
     }
-    const def = st.defense * (this.onWall(t) && !this.onWall(a) ? 1.5 : 1);
+    const def = st.defense * (this.onWall(t) && !this.onWall(a) ? 1.5 : 1)
+      * (this.inRiver(t) ? 0.65 : 1)
+      * (this.inVillage(t) && st.cls !== 'cavalry' ? 1.25 : 1);
     t.dmgMelee += (MELEE_RATE * a.men * sa.melee * mult * dt) / def;
   }
 

@@ -4,7 +4,7 @@ import {
   type Army, armyById, armySpeed, AT_TOWN, autoResolve, autoResolveSiege, capture, cleanupArmies, CONTACT_RANGE,
   type CUnit, dist, findRoute, type GameState, garrisonCap, hostile, IND, isMonsoon, liftSiege, log, makePeace,
   maxSupplies, MAX_UNITS, monthOf, netIncome, newUnit, PLAYER, type Province, provinceUnder, RAID_DAYS, raidSpoils,
-  retreat, sack, setGoal, startSiege, townAt, unitsStrength,
+  retreat, sack, setGoal, startSiege, townAt, unitsStrength, manpowerRatio, maxManpower, manpowerRegen, drawMen,
 } from './state';
 
 export type BattleResult = 'att' | 'def' | 'escaped';
@@ -31,6 +31,8 @@ export interface Hooks {
   battle(b: BattleInfo): Promise<BattleResult>;
   arrival(army: Army, p: Province): Promise<'siege' | 'raid' | 'leave'>;
   chooseSack(p: Province): Promise<boolean>;
+  /** An exhausted AI realm sues the player for peace, offering tribute. */
+  peaceOffer(f: number, tribute: number): Promise<boolean>;
   changed(): void;
 }
 
@@ -40,6 +42,7 @@ export const autoHooks = (s: GameState): Hooks => ({
     (b.mode === 'siege' ? autoResolveSiege(s, b.attUnits, b.p, b.defUnits) : autoResolve(s, b.attUnits, b.defUnits)) ? 'att' : 'def',
   arrival: async () => 'siege',
   chooseSack: async (p) => p.wealth >= 8,
+  peaceOffer: async () => true,
   changed: () => {},
 });
 
@@ -68,6 +71,7 @@ export class World {
   hooks: Hooks;
   clashes: Clash[] = [];
   private pending = 0;
+  private lastOffer = new Map<number, number>();
   private replanAt = new Map<number, number>();
 
   constructor(state: GameState, hooks: Hooks) {
@@ -497,6 +501,16 @@ export class World {
       }
       p.siege.work += monsoon ? 0.4 : 1;
       p.supplies -= p.sea ? 0.5 : 1;
+      // A realm with no men left to send has no relief coming: its garrisons lose heart.
+      const ex = manpowerRatio(s, p.owner);
+      const despair = (ex < 0.35 ? (0.35 - ex) * 0.05 : 0) + (p.supplies <= 5 ? 0.01 : 0);
+      if (p.owner !== IND && s.rng.chance(despair)) {
+        log(s, `Seeing no relief coming, the garrison of ${p.town} opens its gates to the ${s.factions[besieger.owner].short}.`,
+          besieger.owner === PLAYER || p.owner === PLAYER);
+        if (besieger.owner === PLAYER) this.run(() => this.take(PLAYER, p));
+        else void this.take(besieger.owner, p);
+        continue;
+      }
       if (p.supplies <= 0) {
         for (const u of p.garrison) u.men = Math.floor(u.men * 0.96);
         p.garrison = p.garrison.filter((u) => u.men >= 5);
@@ -513,9 +527,10 @@ export class World {
     for (const a of s.armies) {
       const here = s.provinces[provinceUnder(s, a, a.node)];
       if (townAt(s, a) >= 0 && here.owner === a.owner && !monsoon) {
+        // Resting armies fill their ranks from the realm's pool of fighting men.
         for (const u of a.units) {
           const max = UNIT_STATS[u.type].maxMen;
-          u.men = Math.min(max, u.men + max * 0.004);
+          u.men += drawMen(s, a.owner, Math.min(max * 0.004, max - u.men));
         }
       } else if (monsoon && here.owner !== a.owner) {
         for (const u of a.units) u.men *= 0.9985;
@@ -527,15 +542,22 @@ export class World {
     const s = this.state;
     const m = monthOf(s.day);
     for (const f of s.factions) {
-      if (!f.alive || f.ai === 'none') continue;
+      if (!f.alive) continue;
+      s.manpower[f.id] = Math.min(maxManpower(s, f.id), s.manpower[f.id] + manpowerRegen(s, f.id));
+      if (f.ai === 'none') continue;
       s.gold[f.id] = Math.max(0, s.gold[f.id] + netIncome(s, f.id));
     }
     for (const p of s.provinces) {
       if (p.siege) continue;
       const f = s.factions[p.owner];
-      for (const u of p.garrison) u.men = Math.min(UNIT_STATS[u.type].maxMen, u.men + Math.ceil(UNIT_STATS[u.type].maxMen * 0.1));
+      for (const u of p.garrison) {
+        const max = UNIT_STATS[u.type].maxMen;
+        u.men += drawMen(s, p.owner, Math.min(Math.ceil(max * 0.1), max - u.men));
+      }
       if (p.garrison.length < garrisonCap(p) && m % 2 === 0) {
-        p.garrison.push(newUnit(f.garrison[p.garrison.length % f.garrison.length], 0.4));
+        const type = f.garrison[p.garrison.length % f.garrison.length];
+        const men = drawMen(s, p.owner, Math.round(UNIT_STATS[type].maxMen * 0.4));
+        if (men >= 5) p.garrison.push({ type, men });
       }
     }
     for (const f of s.factions) if (f.alive && f.id !== PLAYER) aiMonthly(s, f.id);
@@ -543,8 +565,28 @@ export class World {
     const n = s.factions.length;
     for (let a = 1; a < n; a++) {
       for (let b = a + 1; b < n; b++) {
-        if (s.war[a][b] && s.day - s.warSince[a][b] > 360 && s.rng.chance(0.03)) makePeace(s, a, b);
+        if (!s.war[a][b]) continue;
+        const exhausted = Math.min(manpowerRatio(s, a), manpowerRatio(s, b)) < 0.25;
+        if ((exhausted && s.rng.chance(0.25)) || (s.day - s.warSince[a][b] > 360 && s.rng.chance(0.03))) makePeace(s, a, b);
       }
+    }
+    // Exhausted enemies of the player sue for peace and offer tribute.
+    for (const f of s.factions) {
+      if (!f.alive || f.id === PLAYER || f.id === IND || !s.war[PLAYER][f.id]) continue;
+      if (manpowerRatio(s, f.id) >= 0.25 || s.day - s.warSince[PLAYER][f.id] < 180) continue;
+      if (s.day - (this.lastOffer.get(f.id) ?? -999) < 90 || !s.rng.chance(0.4)) continue;
+      this.lastOffer.set(f.id, s.day);
+      const tribute = Math.round(s.gold[f.id] * 0.3 + 40);
+      this.run(async () => {
+        if (!s.war[PLAYER][f.id]) return;
+        if (await this.hooks.peaceOffer(f.id, tribute)) {
+          const paid = Math.min(tribute, s.gold[f.id]);
+          s.gold[f.id] -= paid;
+          s.gold[PLAYER] += paid;
+          makePeace(s, PLAYER, f.id);
+          log(s, `The ${f.name} pays ${paid} gold in tribute.`, true);
+        } else log(s, `You send the ${f.name}'s envoys away. The war goes on.`, true);
+      });
     }
     if (m === 5) log(s, 'The monsoon breaks. Roads turn to mud, siege works stall and powder grows damp.', true);
     if (m === 9) log(s, 'The rains end. The campaigning season begins.', true);

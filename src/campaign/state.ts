@@ -1,7 +1,7 @@
 import { RNG } from '../rng';
 import { CELL, MH, MW } from '../geo';
 import { generateMap, type MapData } from './mapgen';
-import { ELITE_CAP, FACTION_DEFS, START_YEAR, UNIT_STATS, type FactionDef, type UnitType } from '../data';
+import { ELITE_CAP, FACTION_DEFS, GENERALS, START_YEAR, UNIT_STATS, type FactionDef, type UnitType } from '../data';
 import { PROVINCES, type Kind } from '../india';
 
 export const PLAYER = 0;
@@ -28,6 +28,8 @@ export type Goal =
 export interface Army {
   id: number;
   owner: number;
+  /** The commander whose standard the army marches under. */
+  general: { name: string; house: string };
   units: CUnit[];
   /** World position in pixels. */
   x: number;
@@ -107,6 +109,8 @@ export interface GameState {
   armies: Army[];
   factions: Faction[];
   gold: number[];
+  /** Men of fighting age each realm can still call up (a depleting pool). */
+  manpower: number[];
   war: boolean[][];
   ally: boolean[][];
   warSince: number[][];
@@ -155,7 +159,7 @@ export function newGame(seed: number): GameState {
       garrison: [], supplies: 0, siege: null, devastated: 0, builtDay: -999,
     };
     p.supplies = maxSupplies(p);
-    p.garrison = garrisonFor(factions[owner], p, 0.8);
+    p.garrison = garrisonFor(factions[owner], p, rng.range(0.6, 0.95));
     return p;
   });
 
@@ -163,7 +167,7 @@ export function newGame(seed: number): GameState {
   const grid = <T,>(v: T) => Array.from({ length: n }, () => new Array<T>(n).fill(v));
   const state: GameState = {
     seed, day: 0, map, provinces, armies: [], factions,
-    gold: factions.map((f) => (f.id === PLAYER ? 150 : 100)),
+    gold: factions.map((f) => (f.id === PLAYER ? 150 : 100)), manpower: factions.map(() => 0),
     war: grid(false), ally: grid(false), warSince: grid(0),
     nextArmyId: 1, log: [], rng, over: null,
   };
@@ -179,7 +183,8 @@ export function newGame(seed: number): GameState {
   const army = (key: string, units: [UnitType, number][]) => {
     const p = provinces.find((q) => q.key === key)!;
     const list: CUnit[] = [];
-    for (const [t, count] of units) for (let i = 0; i < count; i++) list.push(newUnit(t));
+    // Regiments go to war at uneven strength: some full, some thinned by desertion and sickness.
+    for (const [t, count] of units) for (let i = 0; i < count; i++) list.push(newUnit(t, rng.range(0.62, 1)));
     spawnArmy(state, p.owner, p.id, list);
   };
   army('raigad', [['mavala', 5], ['huzurat', 1], ['shiledar', 1], ['lightcav', 2], ['archer', 2], ['musket', 2]]);
@@ -200,16 +205,28 @@ export function newGame(seed: number): GameState {
   army('garhgaon', [['spear', 4], ['archer', 3], ['musket', 2]]);
   army('kamrup', [['spear', 3], ['archer', 2], ['musket', 1]]);
 
+  for (const f of factions) state.manpower[f.id] = Math.round(maxManpower(state, f.id) * 0.75);
   // Armies start the year in winter quarters.
   for (const a of state.armies) a.aiNext = rng.range(15, 35);
   log(state, 'January 1670. Shivaji resolves to retake the forts surrendered at Purandar. Kondhana (Sinhagad) looms over Pune.', true);
   return state;
 }
 
+/** The next commander of a realm not already leading an army. */
+function nextGeneral(state: GameState, owner: number): { name: string; house: string } {
+  const pool = GENERALS[state.factions[owner].key];
+  const busy = new Set(state.armies.filter((a) => a.owner === owner).map((a) => a.general.name));
+  const free = pool.find(([n]) => !busy.has(n));
+  if (free) return { name: free[0], house: free[1] };
+  let k = 2;
+  while (busy.has(`Sardar ${k}`)) k++;
+  return { name: `Sardar ${k}`, house: state.factions[owner].short };
+}
+
 export function spawnArmy(state: GameState, owner: number, province: number, units: CUnit[]): Army {
   const p = state.provinces[province];
   const a: Army = {
-    id: state.nextArmyId++, owner, units, x: p.x, y: p.y, node: province, route: [], goal: null,
+    id: state.nextArmyId++, owner, general: nextGeneral(state, owner), units, x: p.x, y: p.y, node: province, route: [], goal: null,
     siegeOf: -1, raidUntil: 0, raidProv: -1, busyUntil: 0, safeUntil: 0, aiNext: state.day + 1,
   };
   state.armies.push(a);
@@ -439,6 +456,10 @@ export function makePeace(state: GameState, a: number, b: number) {
 /** Would AI faction `ai` accept peace with `other` right now? */
 export function acceptsPeace(state: GameState, ai: number, other: number): boolean {
   const days = state.day - state.warSince[ai][other];
+  const ex = manpowerRatio(state, ai);
+  // A realm that has bled itself white takes whatever peace it can get.
+  if (ex < 0.15) return true;
+  if (ex < 0.3 && state.rng.chance(0.6)) return true;
   if (state.factions[ai].key === 'mug' && days < 240) return false; // Aurangzeb does not bargain early
   const mine = factionStrength(state, ai) + 1;
   const theirs = factionStrength(state, other) + 1;
@@ -618,10 +639,57 @@ export function recruit(state: GameState, p: Province, type: UnitType, f = PLAYE
   if (eliteErr) return eliteErr;
   let a = armyAtTown(state, p, f);
   if (a && a.units.length >= MAX_UNITS) return `An army holds at most ${MAX_UNITS} regiments.`;
+  const levy = levyFraction(state, f, type);
+  if (levy <= 0) return 'Not enough men of fighting age left to raise this regiment.';
   if (!a) a = spawnArmy(state, f, p.id, []);
-  a.units.push(newUnit(type));
+  const u = newUnit(type, levy);
+  a.units.push(u);
+  state.manpower[f] -= u.men;
   state.gold[f] -= cost;
   return null;
+}
+
+// ---------------------------------------------------------------- manpower
+
+/** Fighting men a province can supply over time, from its population (wealth stands in for it). */
+export const MEN_PER_WEALTH = 60;
+
+/** Ceiling of a realm's manpower pool: what its provinces could ever put in the field. */
+export function maxManpower(state: GameState, f: number): number {
+  let m = 0;
+  for (const p of state.provinces) if (p.owner === f) m += p.wealth * MEN_PER_WEALTH;
+  // Every realm with land can also call on its nobles' retainers and hereditary soldiers.
+  return m > 0 ? m + 400 : 0;
+}
+
+/** Men who come of age (or come back from the fields) each month, from provinces not ravaged by war. */
+export function manpowerRegen(state: GameState, f: number): number {
+  let m = 0;
+  for (const p of state.provinces) if (p.owner === f && p.devastated <= 0 && !p.siege) m += p.wealth * MEN_PER_WEALTH * 0.05;
+  return Math.round(m > 0 ? m + 20 : 0);
+}
+
+/** 1 = a full pool, 0 = nobody left to call up. */
+export function manpowerRatio(state: GameState, f: number): number {
+  const max = maxManpower(state, f);
+  return max > 0 ? Math.max(0, Math.min(1, state.manpower[f] / max)) : 0;
+}
+
+export function manpowerLabel(r: number): string {
+  return r > 0.6 ? 'Fresh' : r > 0.35 ? 'Strained' : r > 0.15 ? 'Exhausted' : 'Bled white';
+}
+
+/** How full a new regiment can be with the men left (0 = cannot raise it at all). */
+export function levyFraction(state: GameState, f: number, type: UnitType): number {
+  const frac = Math.min(1, state.manpower[f] / UNIT_STATS[type].maxMen);
+  return frac < 0.3 ? 0 : frac;
+}
+
+/** Draws up to `want` men from the pool; returns how many came. */
+export function drawMen(state: GameState, f: number, want: number): number {
+  const got = Math.max(0, Math.min(want, state.manpower[f]));
+  state.manpower[f] -= got;
+  return got;
 }
 
 export const wallsCost = (p: Province) => 40 * (p.walls + 1);

@@ -17,7 +17,7 @@ html, body {
   height: 100%;
   background: var(--bg);
   color: var(--ink);
-  font: 14px/1.4 "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+  font: 15px/1.4 "EB Garamond", "Iowan Old Style", Georgia, serif;
 }
 
 body { display: flex; flex-direction: column; overflow: hidden; }
@@ -183,3 +183,11 @@ button.recruit .muted { margin-left: 6px; }
 .stat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 2px 12px; margin-top: 4px; }
 .stat-line { display: grid; grid-template-columns: 52px 1fr; align-items: center; gap: 6px; font-size: 11.5px; }
 .stat-line .bar { margin-top: 0; }
+
+/* History-map typography: Roman capitals for names and titles. */
+#topbar .brand, .card h3, #modal h2, .tier-section h3 {
+  font-family: "Cinzel", "Trajan Pro", Georgia, serif;
+  letter-spacing: 0.06em;
+}
+#topbar .brand { font-size: 17px; }
+#modal h2 { font-size: 22px; }

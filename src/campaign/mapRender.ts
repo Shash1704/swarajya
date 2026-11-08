@@ -8,13 +8,13 @@ type RGB = [number, number, number];
 const lerp = (a: RGB, b: RGB, t: number): RGB => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
 const clamp01 = (t: number) => Math.max(0, Math.min(1, t));
 
-const DESERT: RGB = [214, 192, 140];
-const GRASS: RGB = [164, 178, 112];
-const JUNGLE: RGB = [96, 138, 80];
-const ROCK: RGB = [150, 134, 112];
+const DESERT: RGB = [226, 208, 164];
+const GRASS: RGB = [190, 192, 140];
+const JUNGLE: RGB = [132, 156, 104];
+const ROCK: RGB = [168, 152, 126];
 const SNOW: RGB = [244, 244, 247];
-const DEEP: RGB = [38, 74, 116];
-const SHALLOW: RGB = [92, 146, 182];
+const DEEP: RGB = [104, 152, 190];
+const SHALLOW: RGB = [156, 198, 218];
 
 function terrainColor(e: number, m: number): RGB {
   let c = m < 0.5 ? lerp(DESERT, GRASS, m / 0.5) : lerp(GRASS, JUNGLE, (m - 0.5) / 0.5);
@@ -318,11 +318,14 @@ export class MapRenderer {
     ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(this.seaImg, 0, 0, WW, WH);
 
-    // Shallow-water glow along every shore.
+    // Pale glow along every shore, as on a painted atlas.
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
-    ctx.strokeStyle = 'rgba(170,210,226,0.22)';
-    ctx.lineWidth = px(10);
+    ctx.strokeStyle = 'rgba(214,236,244,0.35)';
+    ctx.lineWidth = px(22);
+    ctx.stroke(this.coastPath);
+    ctx.strokeStyle = 'rgba(228,244,250,0.55)';
+    ctx.lineWidth = px(9);
     ctx.stroke(this.coastPath);
 
     ctx.save();
@@ -331,20 +334,25 @@ export class MapRenderer {
 
     // Rivers.
     const rz = Math.max(0.7, Math.min(1.6, z));
-    for (const r of this.rivers) {
-      ctx.strokeStyle = 'rgba(62,112,152,0.9)';
-      ctx.lineWidth = px((r.major ? 2.4 : 1.4) * rz);
-      ctx.stroke(r.path);
-    }
-
-    // Faction colours.
+    // Realm colours, multiplied over the relief so hills and valleys show through the paint.
     const { provinces, factions } = state;
+    ctx.globalCompositeOperation = 'multiply';
     for (const p of provinces) {
-      const path = this.provPaths[p.id];
       const f = factions[p.owner];
-      const a = f.id === IND ? 0.1 : 0.34;
+      const a = f.id === IND ? 0.22 : 0.82;
       ctx.fillStyle = `rgba(${f.rgb[0]},${f.rgb[1]},${f.rgb[2]},${a})`;
-      ctx.fill(path, 'evenodd');
+      ctx.fill(this.provPaths[p.id], 'evenodd');
+    }
+    // A wash of light keeps the colours soft rather than muddy.
+    ctx.globalCompositeOperation = 'screen';
+    ctx.fillStyle = 'rgba(255,248,230,0.16)';
+    ctx.fill(this.landClip);
+    ctx.globalCompositeOperation = 'source-over';
+
+    for (const r of this.rivers) {
+      ctx.strokeStyle = 'rgba(96,146,184,0.85)';
+      ctx.lineWidth = px((r.major ? 1.9 : 1.1) * rz);
+      ctx.stroke(r.path);
     }
     const pattern = ctx.createPattern(this.stripes, 'repeat')!;
     pattern.setTransform(new DOMMatrix().scale(1 / z));
@@ -366,23 +374,23 @@ export class MapRenderer {
     }
     ctx.restore();
 
-    // Borders.
-    ctx.strokeStyle = 'rgba(40,28,16,0.28)';
-    ctx.lineWidth = px(0.9);
+    // Borders: faint between provinces, crisp between realms.
+    ctx.strokeStyle = 'rgba(40,24,12,0.13)';
+    ctx.lineWidth = px(0.7);
     ctx.stroke(this.innerPath);
-    ctx.strokeStyle = 'rgba(255,248,232,0.35)';
-    ctx.lineWidth = px(4);
+    ctx.strokeStyle = 'rgba(255,246,226,0.28)';
+    ctx.lineWidth = px(3);
     ctx.stroke(this.realmPath);
-    ctx.strokeStyle = 'rgba(36,24,12,0.8)';
-    ctx.lineWidth = px(1.8);
+    ctx.strokeStyle = 'rgba(64,30,18,0.6)';
+    ctx.lineWidth = px(1.2);
     ctx.stroke(this.realmPath);
     ctx.strokeStyle = 'rgba(60,45,30,0.6)';
     ctx.lineWidth = px(1.4);
     ctx.setLineDash([px(6), px(4)]);
     ctx.stroke(this.frontierPath);
     ctx.setLineDash([]);
-    ctx.strokeStyle = 'rgba(28,46,68,0.75)';
-    ctx.lineWidth = px(1.3);
+    ctx.strokeStyle = 'rgba(58,92,122,0.55)';
+    ctx.lineWidth = px(1);
     ctx.stroke(this.coastPath);
     if (selected >= 0) {
       ctx.strokeStyle = 'rgba(255,224,140,0.95)';
@@ -418,8 +426,8 @@ function paintTerrain(map: MapData, seed: number): [HTMLCanvasElement, HTMLCanva
       const s = lerp(DEEP, SHALLOW, t * t);
       simg.data.set([s[0] + g * 4, s[1] + g * 4, s[2] + g * 5, 255], i * 4);
       let c = terrainColor(Math.max(0, elev[i]) + g * 0.04, moist[i]);
-      const shade = (E(x - 1, y - 1) - E(x + 1, y + 1)) * 3;
-      const k = 1 + Math.max(-0.22, Math.min(0.22, shade)) + g * 0.05;
+      const shade = (E(x - 1, y - 1) - E(x + 1, y + 1)) * 5 + (E(x - 2, y) - E(x + 2, y)) * 1.5;
+      const k = 1 + Math.max(-0.32, Math.min(0.32, shade)) + g * 0.07;
       c = [c[0] * k, c[1] * k, c[2] * k];
       if (prov[i] === FOREIGN) {
         const grey = (c[0] + c[1] + c[2]) / 3;

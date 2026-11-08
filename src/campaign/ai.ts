@@ -2,7 +2,7 @@ import { ELITE_CAP, isBreaker, UNIT_STATS, type UnitType } from '../data';
 import {
   type Army, armyById, armyStrength, declareWar, dist, eliteCount, factionStrength, type GameState, type Goal,
   hostile, IND, isMonsoon, MAX_UNITS, nearestOwned, newUnit, PLAYER, provinceUnder, provincesOf, setGoal,
-  siegeEquipment, spawnArmy, townAt, unitsStrength, wallFactor,
+  siegeEquipment, spawnArmy, townAt, unitsStrength, wallFactor, manpowerRatio, levyFraction,
 } from './state';
 
 export interface WorldLike {
@@ -34,6 +34,19 @@ export function thinkArmy(w: WorldLike, a: Army) {
   }
 
   if (a.goal && stillValid(s, a, a.goal)) return;
+  const exhausted = manpowerRatio(s, a.owner) < 0.2;
+
+  // Small armies close together join up instead of being beaten one at a time.
+  if (a.units.length < 12) {
+    const friend = s.armies
+      .filter((o) => o !== a && o.owner === a.owner && o.siegeOf < 0 && dist(a, o) < 90
+        && o.units.length >= a.units.length && o.units.length + a.units.length <= MAX_UNITS)
+      .sort((x, y) => dist(a, x) - dist(a, y))[0];
+    if (friend) {
+      setGoal(s, a, { kind: 'join', army: friend.id });
+      return;
+    }
+  }
 
   // Drive besiegers off our own towns.
   for (const p of provincesOf(s, a.owner)) {
@@ -51,7 +64,7 @@ export function thinkArmy(w: WorldLike, a: Army) {
     .filter((e) => dist(a, e) < reach && str > armyStrength(e) * 1.4 && s.day >= e.safeUntil
       && (fac.ai === 'major' || s.provinces[provinceUnder(s, e, e.node)].owner === a.owner))
     .sort((x, y) => dist(a, x) - dist(a, y))[0];
-  if (prey) {
+  if (prey && !exhausted) {
     setGoal(s, a, { kind: 'chase', army: prey.id });
     return;
   }
@@ -65,7 +78,7 @@ export function thinkArmy(w: WorldLike, a: Army) {
   }
 
   // Conquest: pick a town worth taking that we can actually take.
-  if (fac.ai === 'major' && !isMonsoon(s.day)) {
+  if (fac.ai === 'major' && !isMonsoon(s.day) && !exhausted) {
     let best = -1;
     let bestScore = -Infinity;
     for (const p of s.provinces) {
@@ -84,6 +97,17 @@ export function thinkArmy(w: WorldLike, a: Army) {
     }
     if (best >= 0) {
       setGoal(s, a, { kind: 'siege', prov: best });
+      return;
+    }
+  }
+
+  // No town worth a siege: plunder an enemy province nearby instead.
+  if (fac.ai === 'major' && !isMonsoon(s.day) && !exhausted && s.rng.chance(0.5)) {
+    const loot = s.provinces
+      .filter((p) => p.owner !== IND && hostile(s, a.owner, p.owner) && p.devastated <= 0 && dist(a, p) < 160)
+      .sort((x, y) => y.wealth - x.wealth)[0];
+    if (loot) {
+      setGoal(s, a, { kind: 'raid', prov: loot.id });
       return;
     }
   }
@@ -171,7 +195,12 @@ function recruit(s: GameState, f: number) {
     if (!target) break;
     const town = townAt(s, target);
     if (UNIT_STATS[type].elite && (town < 0 || s.provinces[town].capitalOf !== f || eliteCount(s, f, type) >= ELITE_CAP)) continue;
-    target.units.push(newUnit(type));
+    // Raised from the realm's manpower, at whatever strength it can still muster.
+    const levy = levyFraction(s, f, type);
+    if (levy <= 0) break;
+    const u = newUnit(type, Math.max(0.3, levy * s.rng.range(0.75, 1)));
+    target.units.push(u);
+    s.manpower[f] -= u.men;
     s.gold[f] -= cost;
   }
 }

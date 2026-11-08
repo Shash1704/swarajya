@@ -12,7 +12,7 @@ import {
   hostile, IND, isMonsoon, log, makePeace, marketCost, MAX_UNITS, maxSupplies, maxWalls, maxWealth, netIncome,
   newGame, PLAYER, type Province, provinceIncome, provincesOf, provinceUnder, RAID_DAYS, recruit, regionOwners,
   seasonOf, setGoal, siegeEquipment, townAt, unitsMen, unitsStrength, upkeep, VICTORY_PROVINCES, wallFactor,
-  wallsCost,
+  wallsCost, manpowerLabel, manpowerRatio, manpowerRegen, maxManpower, levyFraction,
 } from './state';
 import { BattleScene } from '../battle/scene';
 import type { Terrain } from '../battle/battle';
@@ -39,7 +39,8 @@ export class CampaignScene implements Scene {
   private hoverProv = -1;
   private keys = new Set<string>();
   private peaceTried = new Map<number, number>();
-  private centroids: { f: number; x: number; y: number; cells: number }[] = [];
+  /** Where to write each realm's name: centre, slant along its lands, and length. */
+  private centroids: { f: number; x: number; y: number; cells: number; angle: number; span: number }[] = [];
   /** Cached rendering of the map layer; redrawn only when the view or the realm changes. */
   private layer = document.createElement('canvas');
   private layerKey = '';
@@ -146,7 +147,28 @@ export class CampaignScene implements Scene {
       c.cells += p.cells;
       acc.set(p.owner, c);
     }
-    this.centroids = [...acc].map(([f, c]) => ({ f, x: c.x / c.cells, y: c.y / c.cells, cells: c.cells }));
+    // Principal axis of each realm's provinces, so its name runs along the lie of its land.
+    this.centroids = [...acc].map(([f, c]) => {
+      const mx = c.x / c.cells;
+      const my = c.y / c.cells;
+      let sxx = 0;
+      let syy = 0;
+      let sxy = 0;
+      for (const p of this.state.provinces) {
+        if (p.owner !== f) continue;
+        const dx = p.x - mx;
+        const dy = p.y - my;
+        sxx += dx * dx * p.cells;
+        syy += dy * dy * p.cells;
+        sxy += dx * dy * p.cells;
+      }
+      sxx /= c.cells;
+      syy /= c.cells;
+      sxy /= c.cells;
+      const angle = Math.max(-0.6, Math.min(0.6, 0.5 * Math.atan2(2 * sxy, sxx - syy)));
+      const l1 = (sxx + syy) / 2 + Math.sqrt(((sxx - syy) / 2) ** 2 + sxy * sxy);
+      return { f, x: mx, y: my, cells: c.cells, angle, span: Math.sqrt(l1) * 2.6 + 40 };
+    });
   }
 
   private drawMapLayer(ctx: CanvasRenderingContext2D) {
@@ -184,28 +206,33 @@ export class CampaignScene implements Scene {
     ctx.textBaseline = 'middle';
     ctx.lineJoin = 'round';
 
-    ctx.font = `italic 600 ${Math.round(Math.max(10, 13 * Math.min(1.3, z)))}px Georgia, serif`;
+    ctx.font = `italic 600 ${Math.round(Math.max(11, 15 * Math.min(1.3, z)))}px "EB Garamond", Georgia, serif`;
     for (const l of FOREIGN_LABELS) {
       const [sx, sy] = this.toScreen(...toWorld(...l.at));
-      ctx.fillStyle = l.sea ? 'rgba(190,215,240,0.55)' : 'rgba(235,228,210,0.55)';
+      ctx.fillStyle = l.sea ? 'rgba(70,110,140,0.55)' : 'rgba(90,72,50,0.5)';
       ctx.fillText(l.name.split('').join(' '), sx, sy);
     }
 
-    if (z < 0.8) {
+    // Realm names in great spaced capitals, slanted along the realm, as on a painted history map.
+    if (z < 2.2) {
       ctx.save();
-      ctx.globalAlpha = Math.min(1, (0.8 - z) * 4);
+      ctx.globalAlpha = z < 1.6 ? 1 : (2.2 - z) / 0.6;
       for (const c of this.centroids) {
         const f = s.factions[c.f];
-        const size = Math.min(34, Math.sqrt(c.cells) * 0.33 * z);
-        if (size < 9) continue;
+        const label = f.short.toUpperCase();
+        const size = Math.min(64, (c.span * z) / (label.length * 0.95));
+        if (size < 10) continue;
         const [sx, sy] = this.toScreen(c.x, c.y);
-        ctx.font = `700 ${size}px Georgia, serif`;
-        ctx.lineWidth = 4;
-        ctx.strokeStyle = 'rgba(20,15,10,0.6)';
-        const label = f.short.toUpperCase().split('').join(' ');
-        ctx.strokeText(label, sx, sy);
-        ctx.fillStyle = 'rgba(255,248,230,0.9)';
-        ctx.fillText(label, sx, sy);
+        ctx.save();
+        ctx.translate(sx, sy);
+        ctx.rotate(c.angle);
+        ctx.font = `600 ${size}px Cinzel, "Trajan Pro", Georgia, serif`;
+        (ctx as CanvasRenderingContext2D & { letterSpacing?: string }).letterSpacing = `${(size * 0.14).toFixed(1)}px`;
+        ctx.shadowColor = 'rgba(40,20,10,0.35)';
+        ctx.shadowBlur = 6;
+        ctx.fillStyle = 'rgba(255,250,238,0.62)';
+        ctx.fillText(label, 0, 0);
+        ctx.restore();
       }
       ctx.restore();
     }
@@ -217,14 +244,17 @@ export class CampaignScene implements Scene {
       const [sx, sy] = this.toScreen(p.x, p.y);
       if (sx < -40 || sy < -40 || sx > VIEW_W + 40 || sy > VIEW_H + 40) continue;
       this.drawSettlement(ctx, p, sx, sy, icon);
-      const showName = z >= 0.85 || (p.capitalOf >= 0 && z >= 0.5) || p.id === this.selProv;
+      const showName = z >= 1.0 || (p.capitalOf >= 0 && z >= 0.6) || p.id === this.selProv;
       if (showName) {
-        ctx.font = p.capitalOf >= 0 ? '700 12px Georgia, serif' : '600 11px Georgia, serif';
+        const big = p.capitalOf >= 0;
+        ctx.font = `${big ? 700 : 600} ${big ? 11 : 9.5}px Cinzel, Georgia, serif`;
+        ctx.textAlign = 'left';
         ctx.lineWidth = 3;
-        ctx.strokeStyle = 'rgba(245,238,220,0.85)';
-        ctx.strokeText(p.name, sx, sy + icon + 7);
-        ctx.fillStyle = '#2a2216';
-        ctx.fillText(p.name, sx, sy + icon + 7);
+        ctx.strokeStyle = 'rgba(250,244,228,0.75)';
+        ctx.strokeText(p.town, sx + 5, sy + 1);
+        ctx.fillStyle = 'rgba(42,29,18,0.9)';
+        ctx.fillText(p.town, sx + 5, sy + 1);
+        ctx.textAlign = 'center';
       }
     }
 
@@ -305,142 +335,164 @@ export class CampaignScene implements Scene {
     ctx.restore();
   }
 
+  /** Settlements are small ink dots, as on a historical atlas; capitals get a ring. */
   private drawSettlement(ctx: CanvasRenderingContext2D, p: Province, x: number, y: number, s: number) {
-    const f = this.state.factions[p.owner];
+    const r = Math.max(2, Math.min(4, s * 0.28));
     ctx.save();
-    ctx.translate(x, y);
-    ctx.fillStyle = f.color;
-    ctx.strokeStyle = '#1d160e';
-    ctx.lineWidth = p.walls >= 3 ? 2 : 1.2;
-    ctx.beginPath();
+    ctx.fillStyle = 'rgba(42,29,18,0.92)';
     if (p.kind === 'fort') {
-      const w = s;
-      const t = -s * 0.55;
-      const m = w / 5;
-      ctx.moveTo(-w / 2, s * 0.45);
-      ctx.lineTo(-w / 2, t);
-      for (let i = 0; i < 5; i++) {
-        const x0 = -w / 2 + i * m;
-        if (i % 2 === 0) ctx.lineTo(x0 + m, t);
-        else {
-          ctx.lineTo(x0, t + m);
-          ctx.lineTo(x0 + m, t + m);
-          ctx.lineTo(x0 + m, t);
-        }
-      }
-      ctx.lineTo(w / 2, s * 0.45);
-      ctx.closePath();
+      ctx.fillRect(x - r, y - r, r * 2, r * 2); // forts as small squares
     } else {
-      ctx.rect(-s * 0.5, -s * 0.1, s, s * 0.55);
-      ctx.moveTo(s * 0.32, -s * 0.1);
-      ctx.arc(0, -s * 0.1, s * 0.32, 0, Math.PI, true);
-    }
-    ctx.fill();
-    ctx.stroke();
-    if (p.kind === 'port') {
-      ctx.lineWidth = 1.4;
       ctx.beginPath();
-      ctx.moveTo(s * 0.7, -s * 0.4);
-      ctx.lineTo(s * 0.7, s * 0.4);
-      ctx.moveTo(s * 0.45, s * 0.25);
-      ctx.quadraticCurveTo(s * 0.7, s * 0.6, s * 0.95, s * 0.25);
-      ctx.stroke();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fill();
     }
     if (p.capitalOf >= 0) {
-      ctx.fillStyle = '#ffd86b';
-      ctx.font = `${Math.round(s * 1.1)}px Georgia, serif`;
-      ctx.textAlign = 'center';
-      ctx.fillText('♛', 0, -s * 1.05);
+      ctx.strokeStyle = 'rgba(42,29,18,0.9)';
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.arc(x, y, r + 3, 0, Math.PI * 2);
+      ctx.stroke();
     }
     if (p.siege) {
-      ctx.strokeStyle = '#ff5a4a';
+      ctx.strokeStyle = '#b3261e';
       ctx.lineWidth = 2;
       ctx.setLineDash([3, 3]);
       ctx.lineDashOffset = -this.t * 6;
       ctx.beginPath();
-      ctx.arc(0, 0, s * 1.15, 0, Math.PI * 2);
+      ctx.arc(x, y, r + 7, 0, Math.PI * 2);
       ctx.stroke();
       ctx.setLineDash([]);
     }
     if (p.devastated > 0) {
-      ctx.font = `${Math.round(s)}px sans-serif`;
+      ctx.font = `${Math.round(Math.max(9, s))}px sans-serif`;
       ctx.textAlign = 'center';
-      ctx.fillText('🔥', s * 0.9, s * 0.2);
+      ctx.fillText('🔥', x - r - 6, y - r - 2);
     }
     ctx.restore();
   }
 
-  /** Banner rectangle in screen space. Armies sharing a spot are stacked. */
-  private armyRect(a: Army, icon: number) {
-    const [sx, sy] = this.toScreen(a.x, a.y);
-    const k = Math.max(0.8, Math.min(1.15, 0.7 + this.cam.z * 0.3));
-    const w = 50 * k;
-    const hh = 17 * k;
-    const stack = this.state.armies.filter((o) => Math.abs(o.x - a.x) < 1 && Math.abs(o.y - a.y) < 1);
+  /** Geometry of an army's commander standard on screen: pole, banner cloth and nameplate. */
+  private armyRect(a: Army, _icon: number) {
+    const s = this.state;
+    const [gx, gy] = this.toScreen(a.x, a.y);
+    const k = Math.max(0.6, Math.min(1.1, 0.5 + this.cam.z * 0.28));
+    const plate = this.cam.z >= 0.75;
+    const bw = 30 * k;
+    const bh = 40 * k;
+    const pole = 62 * k;
+    // Several armies on one spot stand side by side.
+    const stack = s.armies.filter((o) => Math.abs(o.x - a.x) < 1 && Math.abs(o.y - a.y) < 1);
     const i = stack.indexOf(a);
-    const atTown = townAt(this.state, a) >= 0 || a.siegeOf >= 0;
-    const x = (atTown ? sx + icon * 0.6 : sx - w / 2) + i * 6;
-    const y = (atTown ? sy - icon * 0.6 - hh : sy - hh - 8) - i * (hh + 4);
-    return { x, y, w, h: hh, sx, sy, field: !atTown };
+    const sx = gx + i * (bw + 10 * k);
+    const top = gy - pole;
+    const plateH = plate ? 26 * k : 0;
+    return { x: sx - 34 * k, y: top - plateH - 4, w: 68 * k, h: pole + plateH + 4, sx, sy: gy, gx, gy, k, bw, bh, top, plate, field: false };
   }
 
   private drawArmy(ctx: CanvasRenderingContext2D, a: Army, icon: number) {
     const r = this.armyRect(a, icon);
-    if (r.x < -60 || r.y < -60 || r.x > VIEW_W + 60 || r.y > VIEW_H + 60) return;
+    if (r.x < -80 || r.y < -80 || r.x > VIEW_W + 80 || r.y > VIEW_H + 80) return;
     const s = this.state;
     const f = s.factions[a.owner];
     const sel = a === this.selArmy;
+    const { k, bw, bh, top } = r;
+    const px = r.sx;
     ctx.save();
-    ctx.strokeStyle = '#3a2c1c';
-    ctx.lineWidth = 2;
+    // Shadow on the ground and the pole.
+    ctx.fillStyle = 'rgba(30,20,10,0.25)';
     ctx.beginPath();
-    ctx.moveTo(r.x + 1, r.y - 8);
-    ctx.lineTo(r.x + 1, r.y + r.h);
-    if (r.field) ctx.lineTo(r.sx, r.sy);
-    ctx.stroke();
-    ctx.fillStyle = f.color;
-    ctx.beginPath();
-    ctx.moveTo(r.x + 2, r.y - 8);
-    ctx.lineTo(r.x + 12, r.y - 5);
-    ctx.lineTo(r.x + 2, r.y - 2);
+    ctx.ellipse(px + 6 * k, r.sy, 12 * k, 4 * k, 0, 0, Math.PI * 2);
     ctx.fill();
-    if (r.field) {
-      ctx.strokeStyle = '#1d160e';
-      ctx.lineWidth = 1.5;
+    ctx.strokeStyle = '#4a3420';
+    ctx.lineWidth = 3 * k;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(px, r.sy);
+    ctx.lineTo(px, top - 6 * k);
+    ctx.stroke();
+    // Crossbar with finials.
+    const cw = bw * 0.62 + 4 * k;
+    ctx.lineWidth = 2.5 * k;
+    ctx.beginPath();
+    ctx.moveTo(px - cw, top);
+    ctx.lineTo(px + cw, top);
+    ctx.stroke();
+    ctx.fillStyle = '#c9a24a';
+    for (const dx of [-cw, cw]) {
       ctx.beginPath();
-      ctx.arc(r.sx, r.sy, 3.5, 0, Math.PI * 2);
+      ctx.arc(px + dx, top, 2.4 * k, 0, Math.PI * 2);
       ctx.fill();
-      ctx.stroke();
     }
-    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    // The banner cloth: swallow-tailed, in the realm's colours.
+    const bx = px - bw / 2;
+    const by = top + 2 * k;
+    const grad = ctx.createLinearGradient(bx, by, bx + bw, by + bh);
+    grad.addColorStop(0, `rgb(${Math.min(255, f.rgb[0] + 40)},${Math.min(255, f.rgb[1] + 40)},${Math.min(255, f.rgb[2] + 40)})`);
+    grad.addColorStop(1, `rgb(${f.rgb[0] * 0.72},${f.rgb[1] * 0.72},${f.rgb[2] * 0.72})`);
+    ctx.fillStyle = grad;
+    ctx.strokeStyle = sel ? '#ffd86b' : 'rgba(30,18,10,0.9)';
+    ctx.lineWidth = sel ? 2.6 : 1.2;
     ctx.beginPath();
-    ctx.roundRect(r.x + 2, r.y + 3, r.w, r.h, 4);
+    ctx.moveTo(bx, by);
+    ctx.lineTo(bx + bw, by);
+    ctx.lineTo(bx + bw, by + bh);
+    ctx.lineTo(bx + bw * 0.5, by + bh * 0.78);
+    ctx.lineTo(bx, by + bh);
+    ctx.closePath();
     ctx.fill();
-    ctx.fillStyle = f.color;
-    ctx.beginPath();
-    ctx.roundRect(r.x, r.y, r.w, r.h, 4);
-    ctx.fill();
-    ctx.lineWidth = sel ? 3 : 1.5;
-    ctx.strokeStyle = sel ? '#ffd86b' : 'rgba(20,15,10,0.85)';
     ctx.stroke();
+    if (sel) {
+      ctx.shadowColor = 'rgba(255,216,107,0.8)';
+      ctx.shadowBlur = 10;
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+    }
+    // Emblem: the army's main arm, and its strength.
     const ink = inkFor(f.rgb);
-    const sw = r.h * 1.15;
-    if (a.units.length) drawSymbol(ctx, mainUnit(a.units), r.x + 3 + sw / 2, r.y + r.h / 2, sw, f.color, ink, ink);
+    if (a.units.length) drawSymbol(ctx, mainUnit(a.units), px, by + bh * 0.3, bw * 0.62, f.color, ink, ink);
     ctx.fillStyle = ink;
-    ctx.font = `700 ${Math.round(r.h * 0.62)}px ui-sans-serif, system-ui, sans-serif`;
+    ctx.font = `700 ${Math.round(10 * k + 1)}px Cinzel, Georgia, serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(fmt(unitsMen(a.units)), r.x + 3 + sw + (r.w - sw - 3) / 2, r.y + r.h / 2 + 0.5);
+    ctx.fillText(fmt(unitsMen(a.units)), px, by + bh * 0.6);
+    // Nameplate: the commander and his house.
+    if (r.plate) {
+      const nameFont = `700 ${(11 * k).toFixed(1)}px Cinzel, Georgia, serif`;
+      const houseFont = `600 ${(8.5 * k).toFixed(1)}px Cinzel, Georgia, serif`;
+      ctx.font = nameFont;
+      const nw = ctx.measureText(a.general.name.toUpperCase()).width;
+      ctx.font = houseFont;
+      const hw = ctx.measureText(a.general.house.toUpperCase()).width;
+      const w = Math.max(nw, hw) + 14 * k;
+      const ph = 25 * k;
+      const py = top - 6 * k - ph;
+      ctx.fillStyle = '#f1e6c8';
+      ctx.strokeStyle = sel ? '#c9962b' : '#3a2a18';
+      ctx.lineWidth = sel ? 2 : 1.2;
+      ctx.beginPath();
+      ctx.rect(px - w / 2, py, w, ph);
+      ctx.fill();
+      ctx.stroke();
+      ctx.strokeStyle = 'rgba(58,42,24,0.6)';
+      ctx.lineWidth = 0.8;
+      ctx.beginPath();
+      ctx.moveTo(px - w / 2 + 4 * k, py + ph * 0.58);
+      ctx.lineTo(px + w / 2 - 4 * k, py + ph * 0.58);
+      ctx.stroke();
+      ctx.fillStyle = '#2a1d12';
+      ctx.font = nameFont;
+      ctx.fillText(a.general.name.toUpperCase(), px, py + ph * 0.32);
+      ctx.font = houseFont;
+      ctx.fillText(a.general.house.toUpperCase(), px, py + ph * 0.78);
+    }
     if (a.raidUntil > s.day) {
-      ctx.font = `${Math.round(r.h)}px sans-serif`;
-      ctx.fillText('🔥', r.x + r.w + 9, r.y + r.h / 2 + Math.sin(this.t * 6) * 1.5);
+      ctx.font = `${Math.round(14 * k)}px sans-serif`;
+      ctx.fillText('🔥', px + bw * 0.8, by + bh * 0.5 + Math.sin(this.t * 6) * 1.5);
     }
     if (s.day < a.busyUntil) {
-      ctx.strokeStyle = '#ff5a4a';
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.roundRect(r.x - 2, r.y - 2, r.w + 4, r.h + 4, 5);
-      ctx.stroke();
+      ctx.font = `${Math.round(16 * k)}px sans-serif`;
+      ctx.fillText('⚔', px - bw * 0.9, by + bh * 0.4);
     }
     ctx.restore();
   }
@@ -481,8 +533,7 @@ export class CampaignScene implements Scene {
     const icon = Math.max(6, Math.min(14, 5 + 4 * this.cam.z));
     for (const a of [...this.state.armies].reverse()) {
       const r = this.armyRect(a, icon);
-      if (sx >= r.x - 2 && sx <= r.x + r.w + 2 && sy >= r.y - 9 && sy <= r.y + r.h + 2) return a;
-      if (r.field && Math.hypot(sx - r.sx, sy - r.sy) < 7) return a;
+      if (sx >= r.x && sx <= r.x + r.w && sy >= r.y && sy <= r.y + r.h + 4) return a;
     }
     return null;
   }
@@ -610,6 +661,26 @@ export class CampaignScene implements Scene {
     );
   }
 
+  /** Rivers and marshes around a battle site, read off the campaign map. */
+  private featuresAt(p: { x: number; y: number }): { river: boolean; marsh: boolean } {
+    const { river, moist, elev } = this.state.map;
+    const cx = Math.floor(p.x / CELL);
+    const cy = Math.floor(p.y / CELL);
+    let nearRiver = false;
+    for (let dy = -5; dy <= 5 && !nearRiver; dy++) {
+      for (let dx = -5; dx <= 5; dx++) {
+        const x = cx + dx;
+        const y = cy + dy;
+        if (x >= 0 && y >= 0 && x < MW && river[y * MW + x]) {
+          nearRiver = true;
+          break;
+        }
+      }
+    }
+    const i = cy * MW + cx;
+    return { river: nearRiver, marsh: moist[i] > 0.72 && elev[i] < 0.18 };
+  }
+
   private terrainAt(p: { x: number; y: number }): Terrain {
     const { elev, moist } = this.state.map;
     const i = Math.floor(p.y / CELL) * MW + Math.floor(p.x / CELL);
@@ -626,6 +697,16 @@ export class CampaignScene implements Scene {
       battle: (b) => this.battlePrompt(b),
       arrival: (a, p) => this.arrivalPrompt(a, p),
       chooseSack: (p) => this.sackPrompt(p),
+      peaceOffer: (f, tribute) => new Promise((resolve) => {
+        const fac = this.state.factions[f];
+        showModal(`The ${fac.short} sue for peace`, h('div', {},
+          h('p', {}, `Envoys of the ${fac.name} arrive under a white flag. Their realm has run short of fighting men (${manpowerLabel(manpowerRatio(this.state, f)).toLowerCase()}), and they offer ${tribute} gold in tribute for peace.`),
+          h('p', { class: 'muted' }, 'Accept, and the war ends: sieges against them are lifted and armies in their land go home. Refuse, and you can keep bleeding them.'),
+        ), [
+          { label: 'Refuse', onClick: () => { hideModal(); resolve(false); } },
+          { label: `Accept (+${tribute} gold)`, primary: true, onClick: () => { hideModal(); resolve(true); } },
+        ]);
+      }),
       changed: () => {
         this.dirty = true;
       },
@@ -717,6 +798,10 @@ export class CampaignScene implements Scene {
               mode, playerUnits: mine, enemyUnits: theirs, playerAttacks, title,
               seed: Math.floor(s.seed * 31 + s.day * 7 + p.id), terrain: this.terrainAt(siege || garrison ? p : (defArmy ?? p)),
               rain: isMonsoon(s.day), walls: siege ? p.walls : 0, ladders: eq >= 1, ram: eq >= 2,
+              ...(siege ? {} : this.featuresAt(garrison ? p : (defArmy ?? p))),
+              place: siege || garrison ? p.town : where.name,
+              playerGeneral: myArmy?.general.name ?? `Qiledar of ${p.town}`,
+              enemyGeneral: enemyArmy?.general.name ?? `Qiledar of ${p.town}`,
               playerFaction: s.factions[PLAYER], enemyFaction: enemy,
               onDone: (playerWon) => {
                 app.setScene(this);
@@ -781,7 +866,7 @@ export class CampaignScene implements Scene {
       return h('div', { class: 'card' },
         h('div', { class: 'row' }, h('span', {}, swatch(f.color), h('b', {}, f.name)), h('span', { class: war ? 'neg' : 'pos' }, war ? 'At war' : 'At peace')),
         h('div', { class: 'row muted' },
-          h('span', {}, `${provincesOf(s, f.id).length} provinces · armies ${str > mine * 1.5 ? 'far stronger' : str > mine ? 'stronger' : str > mine * 0.6 ? 'comparable' : 'weaker'}`),
+          h('span', {}, `${provincesOf(s, f.id).length} provinces · armies ${str > mine * 1.5 ? 'far stronger' : str > mine ? 'stronger' : str > mine * 0.6 ? 'comparable' : 'weaker'} · manpower ${manpowerLabel(manpowerRatio(s, f.id)).toLowerCase()}`),
           allies.length ? h('span', {}, `Allied: ${allies.join(', ')}`) : null),
         h('div', { class: 'btns' },
           war
@@ -850,7 +935,7 @@ export class CampaignScene implements Scene {
     const p = this.selProv >= 0 ? s.provinces[this.selProv] : null;
     const prov = p ? `${p.id}:${p.owner}:${p.garrison.map((u) => Math.round(u.men / 5)).join(',')}:${!!p.siege}:${p.walls}:${p.wealth}:${p.devastated > 0}:${canBuild(s, p)}:${armyAtTown(s, p, PLAYER)?.units.length ?? -1}` : '';
     const mine = s.armies.filter((x) => x.owner === PLAYER).map((x) => `${x.id}/${Math.round(unitsMen(x.units) / 10)}`).join(',');
-    return [army, prov, s.gold[PLAYER], mine, s.log.length, provincesOf(s, PLAYER).length, this.paused, this.speed].join('|');
+    return [army, prov, s.gold[PLAYER], Math.round(s.manpower[PLAYER] / 25), mine, s.log.length, provincesOf(s, PLAYER).length, this.paused, this.speed].join('|');
   }
 
   /** A text node refreshed every frame (ETAs, food left...). */
@@ -884,6 +969,8 @@ export class CampaignScene implements Scene {
         }, `${v}×`)),
       ),
       h('div', { class: 'stat' }, `💰 ${s.gold[PLAYER]}`, h('span', { class: net >= 0 ? 'pos' : 'neg' }, `(${net >= 0 ? '+' : ''}${net}/mo)`)),
+      h('div', { class: 'stat', title: 'Fighting men left to recruit and replace losses (regrows each month from untouched provinces)' },
+        `👥 ${fmt(s.manpower[PLAYER])}/${fmt(maxManpower(s, PLAYER))}`),
       h('div', { class: 'stat', title: `Victory: hold ${VICTORY_PROVINCES} provinces, or take Delhi` }, `🏰 ${provincesOf(s, PLAYER).length}/${VICTORY_PROVINCES}`),
       h('button', { class: 'push', onclick: () => this.openTroops() }, 'Troops'),
       h('button', { onclick: () => this.openDiplomacy() }, 'Diplomacy'),
@@ -913,6 +1000,7 @@ export class CampaignScene implements Scene {
         h('li', {}, 'Click your saffron banner to select an army, then right-click a town to march, or an enemy army to attack it.'),
         h('li', {}, 'At an enemy town you choose: besiege, storm, or raid its villages. Mavalas bring ladders from day one.'),
         h('li', {}, 'Sack captured towns for a fortune, or occupy them for steady income. In the monsoon, everyone slows down.'),
+        h('li', {}, 'Every regiment is drawn from your fighting men (👥). Losses are not replaced for free: guard your manpower, and bleed your enemies of theirs until they sue for peace.'),
         h('li', {}, `Win by holding ${VICTORY_PROVINCES} provinces or taking Delhi.`),
       ),
     );
@@ -1026,9 +1114,11 @@ export class CampaignScene implements Scene {
         ...s.factions[PLAYER].roster.map((t: UnitType) => {
           const st = UNIT_STATS[t];
           const elite = eliteBlock(s, p, t);
+          const levy = levyFraction(s, PLAYER, t);
+          const levyNote = levy <= 0 ? 'Not enough fighting men left. ' : levy < 1 ? `Only ${Math.round(levy * st.maxMen)} of ${st.maxMen} men can be found. ` : '';
           return h('button', {
-            class: 'small recruit', title: `${st.name} (tier ${st.tier}). ${elite ? elite + ' ' : ''}${st.blurb} Upkeep ${st.upkeep}/month.`,
-            disabled: full || s.gold[PLAYER] < st.cost || !!elite,
+            class: 'small recruit', title: `${st.name} (tier ${st.tier}). ${elite ? elite + ' ' : ''}${levyNote}${st.blurb} Upkeep ${st.upkeep}/month.`,
+            disabled: full || s.gold[PLAYER] < st.cost || !!elite || levy <= 0,
             onclick: () => {
               const err = recruit(s, p, t);
               if (err) log(s, err, true);
@@ -1092,6 +1182,9 @@ export class CampaignScene implements Scene {
       h('div', { class: 'row muted' }, h('span', {}, 'Revenue'), h('span', {}, `+${grossIncome(s, PLAYER)}/month`)),
       h('div', { class: 'row muted' }, h('span', {}, 'Army upkeep'), h('span', {}, `-${upkeep(s, PLAYER)}/month`)),
       h('div', { class: 'row muted' }, h('span', {}, 'Provinces'), h('span', {}, `${provincesOf(s, PLAYER).length} of ${VICTORY_PROVINCES} for victory`)),
+      h('div', { class: 'row muted' }, h('span', {}, 'Fighting men'),
+        h('span', {}, `${fmt(s.manpower[PLAYER])} · +${manpowerRegen(s, PLAYER)}/month · ${manpowerLabel(manpowerRatio(s, PLAYER))}`)),
+      bar(manpowerRatio(s, PLAYER), manpowerRatio(s, PLAYER) > 0.35 ? 'var(--gold)' : 'var(--neg)'),
       h('div', { class: 'muted' }, regions.length ? `Whole regions held (+25% revenue): ${regions.join(', ')}` : 'Hold every province of a region for +25% revenue there.'),
       h('div', { class: 'muted' }, this.liveText(() => `Season: ${seasonOf(s.day)}`)),
       armies.length ? h('div', { class: 'btns' }, ...armies.map((a) =>

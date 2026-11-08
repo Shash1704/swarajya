@@ -132,3 +132,65 @@ export function tierBadge(t: Tier): HTMLElement {
   s.title = `Tier ${t}`;
   return s;
 }
+
+/**
+ * A unit's branch marks drawn across a whole square tile (the battle-map
+ * counter), centred on the origin. Archers get a drawn bow and arrow.
+ */
+export function drawTileSymbol(ctx: CanvasRenderingContext2D, type: UnitType, size: number, ink: string) {
+  const st = UNIT_STATS[type];
+  const X = (u: number) => -size / 2 + u * size;
+  const lw = Math.max(1.2, size / 13);
+  ctx.save();
+  ctx.strokeStyle = ink;
+  ctx.fillStyle = ink;
+  ctx.lineWidth = lw;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  for (const part of st.symbol) {
+    if (part === 'bow') {
+      // Bow, string and nocked arrow, laid across the tile.
+      ctx.beginPath();
+      ctx.moveTo(X(0.22), X(0.62));
+      ctx.quadraticCurveTo(X(0.3), X(0.3), X(0.62), X(0.22));
+      ctx.stroke();
+      ctx.lineWidth = lw * 0.5;
+      ctx.beginPath();
+      ctx.moveTo(X(0.22), X(0.62));
+      ctx.lineTo(X(0.62), X(0.22));
+      ctx.stroke();
+      ctx.lineWidth = lw * 0.8;
+      ctx.beginPath();
+      ctx.moveTo(X(0.3), X(0.3));
+      ctx.lineTo(X(0.8), X(0.8));
+      ctx.moveTo(X(0.8), X(0.8));
+      ctx.lineTo(X(0.66), X(0.79));
+      ctx.moveTo(X(0.8), X(0.8));
+      ctx.lineTo(X(0.79), X(0.66));
+      ctx.stroke();
+      ctx.lineWidth = lw;
+      continue;
+    }
+    for (const op of PARTS[part]) {
+      ctx.beginPath();
+      if (op.k === 'line' || op.k === 'fill') {
+        op.pts.forEach(([u, v], i) => (i ? ctx.lineTo(X(u), X(v)) : ctx.moveTo(X(u), X(v))));
+        if (op.k === 'fill') {
+          ctx.closePath();
+          ctx.fill();
+        } else ctx.stroke();
+      } else if (op.k === 'oval') {
+        ctx.ellipse(X(op.cx), X(op.cy), op.rx * size, op.ry * size * 0.85, 0, 0, Math.PI * 2);
+        ctx.stroke();
+      } else if (op.k === 'dot') {
+        ctx.arc(X(op.cx), X(op.cy), op.r * size, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        ctx.moveTo(X(op.a[0]), X(op.a[1]));
+        ctx.quadraticCurveTo(X(op.c[0]), X(op.c[1]), X(op.b[0]), X(op.b[1]));
+        ctx.stroke();
+      }
+    }
+  }
+  ctx.restore();
+}
