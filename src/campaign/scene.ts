@@ -92,7 +92,7 @@ export class CampaignScene implements Scene {
       this.world.tick(dt * this.speed * DAYS_PER_SEC);
     }
     if (this.selArmy && !s.armies.includes(this.selArmy)) this.selArmy = null;
-    if (this.dateEl) this.dateEl.textContent = `${isMonsoon(s.day) ? '🌧 ' : ''}${dateLabel(s.day)}`;
+    if (this.dateEl) this.dateEl.textContent = `${isMonsoon(s.day) ? '🌧 ' : ''}${dateLabel(s.day)} · Day ${Math.floor(s.day) + 1}`;
     for (const f of this.live) f();
     this.renderUI();
     if (s.over && !this.overShown && !modalOpen()) this.showOver();
@@ -289,7 +289,7 @@ export class CampaignScene implements Scene {
   private drawRoute(ctx: CanvasRenderingContext2D, a: Army, selected: boolean) {
     const s = this.state;
     const pts: [number, number][] = [this.toScreen(a.x, a.y)];
-    for (const id of a.route) pts.push(this.toScreen(s.provinces[id].x, s.provinces[id].y));
+    for (const p of a.route) pts.push(this.toScreen(p.x, p.y));
     if (a.goal && (a.goal.kind === 'chase' || a.goal.kind === 'join')) {
       const t = armyById(s, a.goal.army);
       if (t) pts.push(this.toScreen(t.x, t.y));
@@ -706,7 +706,12 @@ export class CampaignScene implements Scene {
       if (p < 0) return;
       const prov = s.provinces[p];
       if (prov.owner !== PLAYER && !(await this.ensureWar(prov.owner, `march into ${prov.name}`))) return;
-      setGoal(s, a, { kind: 'go', prov: p });
+      // Click on (or right by) a town to march there; anywhere else, the army marches straight to that spot.
+      const [tx, ty] = this.toScreen(prov.x, prov.y);
+      const [wx, wy] = this.toWorldPt(x, y);
+      if (Math.hypot(tx - x, ty - y) < 16) setGoal(s, a, { kind: 'go', prov: p });
+      else setGoal(s, a, { kind: 'point', x: wx, y: wy });
+      if (!a.goal) log(s, 'There is no way over land to get there.', true);
     }
     this.renderUI(true);
   }
@@ -1185,11 +1190,11 @@ export class CampaignScene implements Scene {
     const s = this.state;
     const me = s.factions[PLAYER];
     const net = netIncome(s, PLAYER);
-    this.dateEl = h('span', {}, dateLabel(s.day));
+    this.dateEl = h('span', { title: 'Days since the campaign began' }, `${dateLabel(s.day)} · Day ${Math.floor(s.day) + 1}`);
     clear(ui.top).append(
       h('div', { class: 'brand' }, '🚩 Swarajya'),
       h('div', { class: 'stat' }, swatch(me.color), me.short),
-      h('div', { class: 'stat', style: 'min-width:118px' }, this.dateEl),
+      h('div', { class: 'stat', style: 'min-width:178px' }, this.dateEl),
       h('div', { class: 'stat btns', style: 'margin:0' },
         h('button', { class: `small ${this.paused ? 'primary' : ''}`, title: 'Pause or resume (Space)', onclick: () => this.setPaused(!this.paused) }, this.paused ? '▶ Resume' : '⏸ Pause'),
         ...SPEEDS.map((v, i) => h('button', {
@@ -1228,7 +1233,8 @@ export class CampaignScene implements Scene {
       h('p', {}, 'At Purandar in 1665 Shivaji surrendered 23 forts to the Mughals. Now he means to take them back.'),
       h('ul', { class: 'help' },
         h('li', {}, 'Time flows: Space pauses, 1/2/3 set the speed. Every realm marches, fights and besieges at once.'),
-        h('li', {}, 'Click your saffron banner to select an army, then right-click a town to march, or an enemy army to attack it.'),
+        h('li', {}, 'Click your saffron banner to select an army, then right-click a town to march there, anywhere else to march straight across country to that spot, or an enemy army to attack it. Armies go round the sea and over the passes; hills slow them.'),
+        h('li', {}, 'Beat an army near one of its own forts and the garrison flees with it: the fort stands empty for a while, yours to walk into.'),
         h('li', {}, 'At an enemy town you choose: besiege, storm, or raid its villages. Mavalas bring ladders from day one.'),
         h('li', {}, 'Sack captured towns for a fortune, or occupy them for steady income. In the monsoon, everyone slows down.'),
         h('li', {}, 'Every regiment is drawn from your fighting men (👥). Losses are not replaced for free: guard your manpower, and bleed your enemies of theirs until they sue for peace.'),
@@ -1258,9 +1264,9 @@ export class CampaignScene implements Scene {
     const s = this.state;
     let d = 0;
     let prev: { x: number; y: number } = a;
-    for (const id of a.route) {
-      d += dist(prev, s.provinces[id]);
-      prev = s.provinces[id];
+    for (const p of a.route) {
+      d += dist(prev, p);
+      prev = p;
     }
     return d / armySpeed(s, a);
   }
@@ -1279,6 +1285,7 @@ export class CampaignScene implements Scene {
       return t ? `${g.kind === 'chase' ? 'Pursuing' : 'Joining'} the ${s.factions[t.owner].short} army (${fmt(unitsMen(t.units))})` : 'Searching';
     }
     if (a.route.length && g && 'prov' in g) return `Marching to ${s.provinces[g.prov].name}: ${this.eta(a).toFixed(1)} days`;
+    if (a.route.length && g?.kind === 'point') return `Marching across country: ${this.eta(a).toFixed(1)} days`;
     const town = townAt(s, a);
     return town >= 0 ? `Encamped at ${s.provinces[town].town}` : `In the field near ${s.provinces[provinceUnder(s, a, a.node)].name}`;
   }

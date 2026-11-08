@@ -3,6 +3,7 @@ import { CELL, MH, MW } from '../geo';
 import { generateMap, type MapData } from './mapgen';
 import { ELITE_CAP, FACTION_DEFS, GENERALS, START_YEAR, UNIT_STATS, type FactionDef, type UnitType, vetRank } from '../data';
 import { PROVINCES, type Kind } from '../india';
+import { findPath, type Pt } from './paths';
 
 export const PLAYER = 0;
 export const IND = FACTION_DEFS.length - 1;
@@ -22,6 +23,8 @@ export interface CUnit {
 /** What an army means to do when it gets where it is going. */
 export type Goal =
   | { kind: 'go'; prov: number }
+  /** March to a spot in open country. */
+  | { kind: 'point'; x: number; y: number }
   | { kind: 'siege'; prov: number }
   | { kind: 'raid'; prov: number }
   | { kind: 'chase'; army: number }
@@ -67,10 +70,10 @@ export interface Army {
   /** World position in pixels. */
   x: number;
   y: number;
-  /** Last settlement passed or stood at. */
+  /** Province the army is standing in. */
   node: number;
-  /** Settlements still to pass through, in order. */
-  route: number[];
+  /** Waypoints still to march through, in order (straight legs across country). */
+  route: Pt[];
   goal: Goal | null;
   /** Province this army is besieging, or -1. */
   siegeOf: number;
@@ -135,6 +138,8 @@ export interface Province {
   /** Last attempts at bribery or demands, so they can't be spammed. */
   lastIntrigue: number;
   lastSortie: number;
+  /** Abandoned by its garrison after a lost battle nearby: empty, and no new garrison until this day. */
+  unguardedUntil: number;
 }
 
 export type Faith = 'hindu' | 'muslim' | 'mixed';
@@ -280,7 +285,7 @@ export function newGame(seed: number): GameState {
       unrest: rng.range(5, 20), faith: faithOf(d.region),
       // The Desh and the Konkan are Maratha country, whoever holds the forts.
       culture: d.region === 'Desh' || d.region === 'Konkan' ? (d.owner === 'sid' || d.owner === 'eng' || d.owner === 'por' ? owner : 0) : owner,
-      tribute: null, jagir: false, famineUntil: 0, takenDay: -999, lastIntrigue: -999, lastSortie: -999,
+      tribute: null, jagir: false, famineUntil: 0, takenDay: -999, lastIntrigue: -999, lastSortie: -999, unguardedUntil: 0,
     };
     p.supplies = maxSupplies(p);
     p.garrison = garrisonFor(factions[owner], p, rng.range(0.6, 0.95));
@@ -465,6 +470,9 @@ export function armySpeed(state: GameState, a: Army): number {
   if (cls.length && cls.every((c) => c === 'cavalry')) v = 22 * (a.general.trait === 'horseman' ? 1.1 : 1);
   else if (cls.some((c) => c === 'elephant' || c === 'artillery')) v = 9;
   if (a.general.trait === 'raider') v *= 1.1;
+  // Hill country is slow going (mountain-bred Maratha armies least of all).
+  const e = state.map.elev[Math.max(0, Math.min(MH - 1, Math.floor(a.y / CELL))) * MW + Math.max(0, Math.min(MW - 1, Math.floor(a.x / CELL)))];
+  if (e > 0.32) v *= a.owner === PLAYER ? 0.85 : 0.75;
   if (state.day < a.quarantineUntil) return 0;
   // Enemy hill forts command the passes: marching under their guns is slow going.
   if (state.provinces.some((p) => p.kind === 'fort' && p.walls >= 2 && p.garrison.length && hostile(state, a.owner, p.owner) && dist(a, p) < 25 && a.siegeOf !== p.id)) v *= 0.8;
@@ -556,39 +564,20 @@ export function log(state: GameState, text: string, mine = false) {
 
 // ---------------------------------------------------------------- roads
 
-/**
- * Shortest road (settlement to settlement) from where the army stands to a
- * province's settlement. Returns the settlements to pass through, in order.
- */
-export function findRoute(state: GameState, a: Army, target: number): number[] | null {
-  const P = state.provinces;
-  const N = P.length;
-  const cost = new Float64Array(N).fill(Infinity);
-  const prev = new Int32Array(N).fill(-1);
-  const done = new Uint8Array(N);
-  // Start from the settlement behind us and, if marching, the one ahead.
-  cost[a.node] = dist(a, P[a.node]);
-  if (a.route.length) cost[a.route[0]] = Math.min(cost[a.route[0]], dist(a, P[a.route[0]]));
-  for (;;) {
-    let u = -1;
-    let best = Infinity;
-    for (let i = 0; i < N; i++) if (!done[i] && cost[i] < best) { best = cost[i]; u = i; }
-    if (u < 0) return null;
-    if (u === target) break;
-    done[u] = 1;
-    for (const v of P[u].neighbors) {
-      const c = best + dist(P[u], P[v]);
-      if (c < cost[v]) {
-        cost[v] = c;
-        prev[v] = u;
-      }
-    }
+/** Where a goal leads: a town, a spot, or another army's position. */
+export function goalPoint(state: GameState, g: Goal): Pt | null {
+  if (g.kind === 'point') return { x: g.x, y: g.y };
+  if (g.kind === 'chase' || g.kind === 'join') {
+    const t = armyById(state, g.army);
+    return t ? { x: t.x, y: t.y } : null;
   }
-  const path: number[] = [];
-  for (let v = target; v >= 0; v = prev[v]) path.unshift(v);
-  // Drop the starting settlement if we are already standing on it.
-  if (path.length && dist(a, P[path[0]]) <= AT_TOWN) path.shift();
-  return path;
+  const p = state.provinces[g.prov];
+  return { x: p.x, y: p.y };
+}
+
+/** A march across country from where the army stands to a point. */
+export function findRoute(state: GameState, a: Army, to: Pt): Pt[] | null {
+  return findPath(state.map, a, to);
 }
 
 export function setGoal(state: GameState, a: Army, goal: Goal | null) {
@@ -599,15 +588,14 @@ export function setGoal(state: GameState, a: Army, goal: Goal | null) {
     a.route = [];
     return;
   }
-  const target = goal.kind === 'chase' || goal.kind === 'join'
-    ? (() => { const t = armyById(state, goal.army); return t ? provinceUnder(state, t, t.node) : -1; })()
-    : goal.prov;
-  if (target < 0) {
+  const target = goalPoint(state, goal);
+  const route = target ? findRoute(state, a, target) : null;
+  if (!route) {
     a.goal = null;
     a.route = [];
     return;
   }
-  a.route = findRoute(state, a, target) ?? [];
+  a.route = route;
 }
 
 export function nearestOwned(state: GameState, a: Army, avoidBesieged = true): number {
@@ -785,7 +773,7 @@ export function retreat(state: GameState, army: Army, threat?: { x: number; y: n
   if (army.owner !== IND) {
     let best = Infinity;
     for (const p of state.provinces) {
-      if (p.owner !== army.owner || p.siege) continue;
+      if (p.owner !== army.owner || p.siege || p.unguardedUntil > state.day) continue;
       // Prefer close refuges that lie away from whoever is chasing us.
       const score = dist(army, p) - (threat ? Math.min(dist(threat, p), 120) * 0.9 : 0);
       if (score < best && !(threat && dist(threat, p) < 15)) {

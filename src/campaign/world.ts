@@ -70,6 +70,8 @@ export interface Clash {
 
 /** Armies within this distance of a battle march to the sound of the guns. */
 export const REINFORCE_RANGE = 60;
+/** A battle lost within this distance of one of your forts empties it. */
+export const ABANDON_RANGE = 25;
 
 const STEP = 0.1; // days per simulation step
 
@@ -162,7 +164,7 @@ export class World {
           a.route = []; // close enough to make straight for them
         } else if ((this.replanAt.get(a.id) ?? 0) <= s.day) {
           this.replanAt.set(a.id, s.day + 0.5);
-          a.route = findRoute(s, a, provinceUnder(s, target, target.node)) ?? [];
+          a.route = findRoute(s, a, target) ?? [];
         }
       }
       let budget = armySpeed(s, a) * dt;
@@ -170,9 +172,8 @@ export class World {
         let tx: number;
         let ty: number;
         if (a.route.length) {
-          const p = s.provinces[a.route[0]];
-          tx = p.x;
-          ty = p.y;
+          tx = a.route[0].x;
+          ty = a.route[0].y;
         } else if (target && dist(a, target) < 20) {
           tx = target.x;
           ty = target.y;
@@ -182,7 +183,7 @@ export class World {
           a.x = tx;
           a.y = ty;
           budget -= d;
-          if (a.route.length) a.node = a.route.shift()!;
+          if (a.route.length) a.route.shift();
           else break;
         } else {
           a.x += ((tx - a.x) / d) * budget;
@@ -190,11 +191,17 @@ export class World {
           budget = 0;
         }
       }
+      a.node = provinceUnder(s, a, a.node);
       const g = a.goal;
-      if (g && !a.route.length && (g.kind === 'go' || g.kind === 'siege' || g.kind === 'raid')
-        && dist(a, s.provinces[g.prov]) <= AT_TOWN) {
-        this.arrive(a);
-        if (this.waiting) return;
+      if (g?.kind === 'point' && !a.route.length) a.goal = null;
+      if (g && !a.route.length && (g.kind === 'go' || g.kind === 'siege' || g.kind === 'raid')) {
+        const p = s.provinces[g.prov];
+        if (dist(a, p) <= AT_TOWN) {
+          // Standing at the town: it's the army's own province now (for townAt).
+          a.node = p.id;
+          this.arrive(a);
+          if (this.waiting) return;
+        } else setGoal(s, a, g); // knocked off its march (a battle): head on again
       }
     }
   }
@@ -379,6 +386,7 @@ export class World {
     const [winners, losers] = attWon ? [b.attArmies, b.defArmies] : [b.defArmies, b.attArmies];
     const threat = winners.find((x) => this.alive(x)) ?? (attWon ? b.att : b.p);
     battleRenown(s, winners.filter((x) => this.alive(x)), losers.filter((x) => this.alive(x)));
+    if (b.mode === 'field') this.abandonForts(b, attWon);
     const captor = attWon ? b.att.owner : b.defOwner;
     // Auto-resolved defeats: the commander may fall. (Fought battles decide that on the field.)
     if (!this.involvesPlayer(b)) for (const x of losers) if (this.alive(x)) generalFate(s, x, captor, 0.12);
@@ -391,6 +399,40 @@ export class World {
       if (!this.alive(x)) continue;
       x.busyUntil = 0;
       if (x.goal?.kind === 'chase') x.goal = null;
+    }
+  }
+
+  /**
+   * A beaten army near one of its own forts takes the garrison with it as it flees: the fort is
+   * left standing empty, and the victors can walk in before a new garrison is found.
+   */
+  private abandonForts(b: BattleInfo, attWon: boolean) {
+    const s = this.state;
+    const lead = attWon ? b.def : b.att;
+    const loser = attWon ? b.defOwner : b.att.owner;
+    const winner = attWon ? b.att.owner : b.defOwner;
+    if (!lead || loser === IND) return;
+    const flee = (attWon ? b.defArmies : b.attArmies).find((x) => this.alive(x));
+    // Only the nearest fort to the battlefield; a royal capital's household guard never abandons it.
+    const p = s.provinces
+      .filter((q) => q.walls > 0 && !q.siege && q.garrison.length && q.capitalOf < 0 && dist(lead, q) <= ABANDON_RANGE
+        && (q.owner === loser || s.ally[q.owner][loser]) && hostile(s, winner, q.owner))
+      .sort((x, y) => dist(lead, x) - dist(lead, y))[0];
+    if (p) {
+      // The garrison marches out with the beaten army (as many as it can take); the rest scatter.
+      if (flee) {
+        for (const u of p.garrison) if (flee.units.length < MAX_UNITS) flee.units.push(u);
+      }
+      p.garrison = [];
+      p.unguardedUntil = s.day + 20;
+      log(s, `Seeing the battle lost, the garrison of ${p.town} abandons the fort. ${p.town} stands empty!`,
+        p.owner === PLAYER || winner === PLAYER);
+      // AI victors make straight for the empty fort.
+      const taker = (attWon ? b.attArmies : b.defArmies).find((x) => this.alive(x) && x.owner !== PLAYER && x.owner === winner);
+      if (taker && taker.siegeOf < 0) {
+        setGoal(s, taker, { kind: 'siege', prov: p.id });
+        taker.aiNext = s.day + 3;
+      }
     }
   }
 
@@ -613,7 +655,7 @@ export class World {
       s.gold[f.id] = Math.max(0, s.gold[f.id] + netIncome(s, f.id));
     }
     for (const p of s.provinces) {
-      if (p.siege) continue;
+      if (p.siege || p.unguardedUntil > s.day) continue;
       const f = s.factions[p.owner];
       for (const u of p.garrison) {
         const max = UNIT_STATS[u.type].maxMen;
