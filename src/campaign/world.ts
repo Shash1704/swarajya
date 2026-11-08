@@ -5,9 +5,14 @@ import {
   type CUnit, dist, findRoute, type GameState, garrisonCap, hostile, IND, isMonsoon, liftSiege, log, makePeace,
   maxSupplies, MAX_UNITS, monthOf, netIncome, newUnit, PLAYER, type Province, provinceUnder, RAID_DAYS, raidSpoils,
   retreat, sack, setGoal, startSiege, townAt, unitsStrength, manpowerRatio, maxManpower, manpowerRegen, drawMen,
+  generalK, releaseGeneral, blockaded, capture as captureProv,
 } from './state';
+import {
+  aiSpiesMonthly, battleRenown, captivesMonthly, cessionFor, demandChauth, diplomacyMonthly, fleetsMove, type GameEvent,
+  generalFate, grantChauth, landEvent, loyaltyMonthly, navyMonthly, pickEvent, siegeRate, sortiesDaily, supplyDaily, unrestMonthly,
+} from './realm';
 
-export type BattleResult = 'att' | 'def' | 'escaped';
+export type BattleResult = 'att' | 'def' | 'escaped' | 'draw';
 
 /** Everyone fighting in one battle: the lead armies, any reinforcements nearby, and a garrison. */
 export interface BattleInfo {
@@ -31,18 +36,24 @@ export interface Hooks {
   battle(b: BattleInfo): Promise<BattleResult>;
   arrival(army: Army, p: Province): Promise<'siege' | 'raid' | 'leave'>;
   chooseSack(p: Province): Promise<boolean>;
-  /** An exhausted AI realm sues the player for peace, offering tribute. */
-  peaceOffer(f: number, tribute: number): Promise<boolean>;
+  /** An exhausted AI realm sues the player for peace, offering tribute (and perhaps a province, or -1). */
+  peaceOffer(f: number, tribute: number, cede: number): Promise<boolean>;
+  /** Something happens in the realm: the player picks one of its choices. */
+  event(ev: GameEvent): Promise<number>;
+  /** An enemy army before one of the player's towns demands chauth. True = pay. */
+  chauthDemand(a: Army, p: Province): Promise<boolean>;
   changed(): void;
 }
 
 /** Auto-resolves everything: for headless tests. */
 export const autoHooks = (s: GameState): Hooks => ({
   battle: async (b) =>
-    (b.mode === 'siege' ? autoResolveSiege(s, b.attUnits, b.p, b.defUnits) : autoResolve(s, b.attUnits, b.defUnits)) ? 'att' : 'def',
+    (b.mode === 'siege' ? autoResolveSiege(s, b.attUnits, b.p, b.defUnits, generalK(b.att, true)) : autoResolve(s, b.attUnits, b.defUnits, generalK(b.att), generalK(b.def))) ? 'att' : 'def',
   arrival: async () => 'siege',
   chooseSack: async (p) => p.wealth >= 8,
   peaceOffer: async () => true,
+  event: async () => 0,
+  chauthDemand: async () => false,
   changed: () => {},
 });
 
@@ -95,6 +106,11 @@ export class World {
       });
   }
 
+  /** Puts an event in front of the player; the clock holds until they choose. */
+  private ask(ev: GameEvent) {
+    this.run(async () => ev.apply(await this.hooks.event(ev)));
+  }
+
   private alive(a: Army) {
     return this.state.armies.includes(a);
   }
@@ -121,6 +137,7 @@ export class World {
       thinkArmy(this, a);
     }
     this.move(dt);
+    fleetsMove(s, dt);
     if (!this.waiting) this.detect();
   }
 
@@ -199,8 +216,19 @@ export class World {
       });
       return;
     }
-    if (g.kind === 'raid') this.startRaid(a, p);
-    else if (a.owner === PLAYER || p.owner === PLAYER) this.run(() => this.attackTown(a, p));
+    if (g.kind === 'raid') {
+      // Before burning the villages, an AI raider may offer to spare them for chauth.
+      if (a.owner !== PLAYER && p.owner === PLAYER && s.rng.chance(0.35)) {
+        this.run(async () => {
+          if (!this.alive(a) || !hostile(s, a.owner, p.owner)) return;
+          if (await this.hooks.chauthDemand(a, p)) grantChauth(s, a, p);
+          else this.startRaid(a, p);
+        });
+        return;
+      }
+      if (a.owner !== PLAYER && p.owner !== IND && s.rng.chance(0.3) && demandChauth(s, a, p)[0]) return;
+      this.startRaid(a, p);
+    } else if (a.owner === PLAYER || p.owner === PLAYER) this.run(() => this.attackTown(a, p));
     else void this.attackTown(a, p);
   }
 
@@ -211,7 +239,7 @@ export class World {
     if (!hostile(s, a.owner, p.owner)) return;
     a.goal = null;
     a.route = [];
-    a.raidUntil = s.day + RAID_DAYS;
+    a.raidUntil = s.day + RAID_DAYS * (a.general.trait === 'raider' ? 0.65 : 1);
     a.raidProv = p.id;
     log(s, `The ${s.factions[a.owner].short} begin plundering the villages of ${p.name}.`, a.owner === PLAYER || p.owner === PLAYER);
     this.hooks.changed();
@@ -222,7 +250,16 @@ export class World {
     const p = s.provinces[a.raidProv];
     a.raidUntil = 0;
     a.raidProv = -1;
-    if (p && hostile(s, a.owner, p.owner)) raidSpoils(s, a, p);
+    if (p && hostile(s, a.owner, p.owner)) {
+      const before = s.gold[a.owner];
+      raidSpoils(s, a, p);
+      if (a.general.trait === 'raider') s.gold[a.owner] += Math.round((s.gold[a.owner] - before) * 0.5);
+      // Burning villages that pay you chauth ends the arrangement.
+      if (p.tribute?.to === a.owner) {
+        p.tribute = null;
+        log(s, `${p.name} stops paying chauth after being plundered.`, a.owner === PLAYER || p.owner === PLAYER);
+      }
+    }
     a.aiNext = s.day;
     this.hooks.changed();
   }
@@ -239,9 +276,14 @@ export class World {
     }
     const b = this.townBattle('field', a, p);
     if (b.defUnits.length) {
-      const won = this.involvesPlayer(b)
-        ? (await this.hooks.battle(b)) === 'att'
-        : autoResolve(s, b.attUnits, b.defUnits);
+      const r = this.involvesPlayer(b) ? await this.hooks.battle(b) : null;
+      if (r === 'draw' || r === 'escaped') {
+        cleanupArmies(s);
+        if (this.alive(a)) a.safeUntil = s.day + 1;
+        this.hooks.changed();
+        return;
+      }
+      const won = r ? r === 'att' : autoResolve(s, b.attUnits, b.defUnits, generalK(a));
       cleanupArmies(s);
       this.settle(b, won);
       if (!won || !this.alive(a)) {
@@ -274,7 +316,7 @@ export class World {
       return won ? this.take(a.owner, p) : Promise.resolve();
     };
     if (this.involvesPlayer(b)) this.run(async () => after((await this.hooks.battle(b)) === 'att'));
-    else void after(autoResolveSiege(s, b.attUnits, p, b.defUnits));
+    else void after(autoResolveSiege(s, b.attUnits, p, b.defUnits, generalK(a, true)));
   }
 
   // ---------------------------------------------------------------- who fights
@@ -336,6 +378,10 @@ export class World {
     const s = this.state;
     const [winners, losers] = attWon ? [b.attArmies, b.defArmies] : [b.defArmies, b.attArmies];
     const threat = winners.find((x) => this.alive(x)) ?? (attWon ? b.att : b.p);
+    battleRenown(s, winners.filter((x) => this.alive(x)), losers.filter((x) => this.alive(x)));
+    const captor = attWon ? b.att.owner : b.defOwner;
+    // Auto-resolved defeats: the commander may fall. (Fought battles decide that on the field.)
+    if (!this.involvesPlayer(b)) for (const x of losers) if (this.alive(x)) generalFate(s, x, captor, 0.12);
     for (const x of losers) {
       // A failed assault leaves the besiegers in their lines; any other defeat sends an army packing.
       if (!this.alive(x) || (b.mode === 'siege' && x.siegeOf === b.p.id)) continue;
@@ -431,6 +477,7 @@ export class World {
     }
     into.units.push(...from.units);
     this.state.armies = this.state.armies.filter((x) => x !== from);
+    releaseGeneral(this.state, from);
     this.hooks.changed();
   }
 
@@ -439,6 +486,15 @@ export class World {
     this.run(async () => {
       const r = await this.hooks.battle(b);
       cleanupArmies(s);
+      if (r === 'draw') {
+        for (const x of [...b.attArmies, ...b.defArmies]) {
+          if (!this.alive(x)) continue;
+          x.busyUntil = 0;
+          x.safeUntil = s.day + 1.5;
+          if (x.goal?.kind === 'chase') x.goal = null;
+        }
+        return;
+      }
       if (r === 'escaped') {
         const playerAttacked = b.attArmies.some((x) => x.owner === PLAYER);
         const mine = [...b.attArmies, ...b.defArmies].filter((x) => x.owner === PLAYER && this.alive(x));
@@ -472,7 +528,7 @@ export class World {
         defUnits: [...defArmies.flatMap((x) => x.units), ...(tp && tp.owner === defArmies[0].owner ? tp.garrison : [])],
         defOwner: defArmies[0].owner, p: tp ?? s.provinces[provinceUnder(s, defArmies[0], defArmies[0].node)], garrison: !!tp,
       };
-      const won = autoResolve(s, b.attUnits, b.defUnits);
+      const won = autoResolve(s, b.attUnits, b.defUnits, generalK(b.att), generalK(b.def));
       const f = s.factions;
       const size = attArmies.length + defArmies.length > 2 ? 'great battle' : 'battle';
       log(s, won ? `The ${f[b.att.owner].short} rout the ${f[b.defOwner].short} in a ${size} near ${b.p.name}.`
@@ -499,8 +555,9 @@ export class World {
         liftSiege(s, p);
         continue;
       }
-      p.siege.work += monsoon ? 0.4 : 1;
-      p.supplies -= p.sea ? 0.5 : 1;
+      p.siege.work += (monsoon ? 0.4 : 1) * siegeRate(besieger);
+      // Sea forts are fed by boat, unless a hostile squadron closes the sea.
+      p.supplies -= p.sea && !blockaded(s, p) ? 0.5 : 1;
       // A realm with no men left to send has no relief coming: its garrisons lose heart.
       const ex = manpowerRatio(s, p.owner);
       const despair = (ex < 0.35 ? (0.35 - ex) * 0.05 : 0) + (p.supplies <= 5 ? 0.01 : 0);
@@ -528,14 +585,22 @@ export class World {
       const here = s.provinces[provinceUnder(s, a, a.node)];
       if (townAt(s, a) >= 0 && here.owner === a.owner && !monsoon) {
         // Resting armies fill their ranks from the realm's pool of fighting men.
+        // Hill forts are recruiting grounds: ranks fill twice as fast there.
+        const k = here.kind === 'fort' ? 2 : 1;
         for (const u of a.units) {
           const max = UNIT_STATS[u.type].maxMen;
-          u.men += drawMen(s, a.owner, Math.min(max * 0.004, max - u.men));
+          const add = drawMen(s, a.owner, Math.min(max * 0.004 * k, max - u.men));
+          // Raw recruits dilute a veteran regiment's experience.
+          if (add > 0 && u.xp) u.xp *= u.men / (u.men + add);
+          u.men += add;
         }
       } else if (monsoon && here.owner !== a.owner) {
         for (const u of a.units) u.men *= 0.9985;
       }
     }
+    supplyDaily(s);
+    sortiesDaily(s);
+    cleanupArmies(s);
   }
 
   private monthly() {
@@ -561,6 +626,19 @@ export class World {
       }
     }
     for (const f of s.factions) if (f.alive && f.id !== PLAYER) aiMonthly(s, f.id);
+    unrestMonthly(s);
+    captivesMonthly(s);
+    diplomacyMonthly(s);
+    navyMonthly(s);
+    aiSpiesMonthly(s);
+    for (const p of s.provinces) if (p.tribute && p.tribute.until < s.day) {
+      log(s, `${p.name}'s year of chauth to the ${s.factions[p.tribute.to].short} has run out.`, p.tribute.to === PLAYER || p.owner === PLAYER);
+      p.tribute = null;
+    }
+    // The player's commanders and the events of the age.
+    for (const r of loyaltyMonthly(s)) this.ask(landEvent(s, r));
+    const ev = pickEvent(s);
+    if (ev) this.ask(ev);
     cleanupArmies(s);
     const n = s.factions.length;
     for (let a = 1; a < n; a++) {
@@ -577,13 +655,16 @@ export class World {
       if (s.day - (this.lastOffer.get(f.id) ?? -999) < 90 || !s.rng.chance(0.4)) continue;
       this.lastOffer.set(f.id, s.day);
       const tribute = Math.round(s.gold[f.id] * 0.3 + 40);
+      // Bled white, they offer land as well.
+      const cede = manpowerRatio(s, f.id) < 0.15 ? cessionFor(s, f.id)?.id ?? -1 : -1;
       this.run(async () => {
         if (!s.war[PLAYER][f.id]) return;
-        if (await this.hooks.peaceOffer(f.id, tribute)) {
+        if (await this.hooks.peaceOffer(f.id, tribute, cede)) {
           const paid = Math.min(tribute, s.gold[f.id]);
           s.gold[f.id] -= paid;
           s.gold[PLAYER] += paid;
           makePeace(s, PLAYER, f.id);
+          if (cede >= 0 && s.provinces[cede].owner === f.id) captureProv(s, s.provinces[cede], PLAYER);
           log(s, `The ${f.name} pays ${paid} gold in tribute.`, true);
         } else log(s, `You send the ${f.name}'s envoys away. The war goes on.`, true);
       });

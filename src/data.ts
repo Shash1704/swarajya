@@ -75,6 +75,39 @@ export interface UnitStats {
 
 export const ELITE_CAP = 3;
 
+/** Experience ranks a regiment earns by surviving battles. */
+export const VET_NAMES = ['Raw', 'Seasoned', 'Veteran', 'Elite'];
+export const vetRank = (xp = 0) => (xp >= 5 ? 3 : xp >= 2.5 ? 2 : xp >= 1 ? 1 : 0);
+
+/** Battle formations, and which kinds of regiment can take them up. */
+export type Formation = 'normal' | 'tight' | 'loose' | 'brace' | 'wedge';
+export const FORMATION_NAMES: Record<Formation, string> = {
+  normal: 'Open order', tight: 'Tight block', loose: 'Loose order', brace: 'Spear hedge', wedge: 'Wedge',
+};
+export const FORMATION_HELP: Record<Formation, string> = {
+  normal: 'The usual order of battle.',
+  tight: 'Shoulder to shoulder: holds a charge and resists rout, but slow, clumsy in woods, and a fat target for guns.',
+  loose: 'Spread out: arrows and shot do far less harm and woods are easy going, but it gives way to a charge.',
+  brace: 'Shields locked and spears levelled: cavalry and elephants break on it, but it cannot move.',
+  wedge: 'A cavalry wedge: a far heavier charge, but exposed flanks.',
+};
+export function formationsFor(t: UnitType): Formation[] {
+  const c = UNIT_STATS[t].cls;
+  if (c === 'infantry') return ['normal', 'tight', 'loose', 'brace'];
+  if (c === 'missile') return ['normal', 'loose'];
+  if (c === 'cavalry') return ['normal', 'wedge'];
+  return ['normal'];
+}
+/** Arrows (seconds of shooting) or volleys a missile regiment carries into battle. */
+export function ammoFor(t: UnitType): number {
+  const st = UNIT_STATS[t];
+  if (!st.range) return 0;
+  if (st.weapon === 'bow') return st.cls === 'cavalry' ? 55 : 70;
+  if (st.weapon === 'rocket') return 8;
+  if (st.weapon === 'cannon') return 30;
+  return t === 'firangi' ? 16 : 14;
+}
+
 const foot = {
   cls: 'infantry' as UnitClass, role: 'line' as Role, weapon: null as Weapon, elite: false,
   charge: 1, range: 0, missile: 0, reload: 0, armor: 0.1, antiLarge: 1, fear: 0, climb: 1,

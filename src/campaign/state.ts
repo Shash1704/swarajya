@@ -1,7 +1,7 @@
 import { RNG } from '../rng';
 import { CELL, MH, MW } from '../geo';
 import { generateMap, type MapData } from './mapgen';
-import { ELITE_CAP, FACTION_DEFS, GENERALS, START_YEAR, UNIT_STATS, type FactionDef, type UnitType } from '../data';
+import { ELITE_CAP, FACTION_DEFS, GENERALS, START_YEAR, UNIT_STATS, type FactionDef, type UnitType, vetRank } from '../data';
 import { PROVINCES, type Kind } from '../india';
 
 export const PLAYER = 0;
@@ -15,6 +15,8 @@ export const AT_TOWN = 3;
 export interface CUnit {
   type: UnitType;
   men: number;
+  /** Battle experience; see vetRank. */
+  xp?: number;
 }
 
 /** What an army means to do when it gets where it is going. */
@@ -25,11 +27,42 @@ export type Goal =
   | { kind: 'chase'; army: number }
   | { kind: 'join'; army: number };
 
+/** What a commander is good at. */
+export type Trait = 'bold' | 'cautious' | 'horseman' | 'sapper' | 'raider' | 'quartermaster';
+export const TRAITS: Record<Trait, { name: string; help: string }> = {
+  bold: { name: 'Bold', help: 'Men follow him in: steadier morale and harder charges, but he defends carelessly.' },
+  cautious: { name: 'Cautious', help: 'Never caught napping: stouter defence, lighter losses, men tire less.' },
+  horseman: { name: 'Horseman', help: 'Born in the saddle: his cavalry ride faster and strike harder.' },
+  sapper: { name: 'Siege master', help: 'Ladders and rams built far faster, and his assaults go better.' },
+  raider: { name: 'Raider', help: 'Ganimi kava: his army marches faster and carries off half as much again in plunder.' },
+  quartermaster: { name: 'Quartermaster', help: 'His men eat half as much and lose few to hunger and sickness.' },
+};
+
+export interface General {
+  name: string;
+  house: string;
+  trait: Trait;
+  /** Battles fought and won raise his rank (see generalRank). */
+  xp: number;
+  /** 0..100. A disloyal commander may defect with his army. */
+  loyalty: number;
+  /** Granted a jagir (land) by the crown. */
+  landed: boolean;
+}
+export const generalRank = (g: General) => (g.xp >= 9 ? 3 : g.xp >= 5 ? 2 : g.xp >= 2 ? 1 : 0);
+export const RANK_NAMES = ['Captain', 'Commander', 'Veteran commander', 'Great captain'];
+
 export interface Army {
   id: number;
   owner: number;
   /** The commander whose standard the army marches under. */
-  general: { name: string; house: string };
+  general: General;
+  /** Days of food carried. Out of food, the army starves. */
+  food: number;
+  /** Enemy armies: their numbers are known exactly until this day (spies and scouts). */
+  scoutedUntil: number;
+  /** Camp quarantined against sickness: it may not march until this day. */
+  quarantineUntil: number;
   units: CUnit[];
   /** World position in pixels. */
   x: number;
@@ -86,7 +119,43 @@ export interface Province {
   devastated: number;
   /** Day the last building project finished (one a month). */
   builtDay: number;
+  buildings: { temple: boolean; stables: boolean; granary: boolean; shipyard: boolean };
+  /** 0..100: discontent. Past 80 the province may rise in revolt. */
+  unrest: number;
+  faith: Faith;
+  /** The realm whose people these are (they resent other rulers). */
+  culture: number;
+  /** Chauth: this province pays a share of its revenue to another realm until a day. */
+  tribute: { to: number; until: number } | null;
+  /** Granted as a jagir to a commander: half its revenue goes to him. */
+  jagir: boolean;
+  famineUntil: number;
+  /** Day it last changed hands. */
+  takenDay: number;
+  /** Last attempts at bribery or demands, so they can't be spammed. */
+  lastIntrigue: number;
+  lastSortie: number;
 }
+
+export type Faith = 'hindu' | 'muslim' | 'mixed';
+export type Policy = { tax: 'light' | 'normal' | 'heavy'; faith: 'tolerant' | 'zealous' };
+
+/** A squadron of ships based at a port. */
+export interface Fleet {
+  id: number;
+  owner: number;
+  ships: number;
+  home: number;
+  mission: 'port' | 'raid' | 'patrol' | 'blockade';
+  /** Target province (raid, blockade). */
+  target: number;
+  x: number;
+  y: number;
+  /** Sailing back home after a raid. */
+  returning: boolean;
+}
+
+export interface Captive { gen: General; owner: number; by: number; day: number }
 
 export interface Faction extends FactionDef {
   id: number;
@@ -118,6 +187,19 @@ export interface GameState {
   log: LogEntry[];
   rng: RNG;
   over: null | 'won' | 'lost';
+  /** -100..100 goodwill between realms. */
+  relations: number[][];
+  /** Hostages exchanged: no war until this day. */
+  truceUntil: number[][];
+  marriage: boolean[][];
+  policy: Policy[];
+  /** Commanders not leading an army, per realm. */
+  officers: General[][];
+  captives: Captive[];
+  fleets: Fleet[];
+  nextFleetId: number;
+  /** Events that have already happened (one-off ones). */
+  eventsDone: string[];
 }
 
 export const VICTORY_PROVINCES = 35;
@@ -136,6 +218,43 @@ export function seasonOf(day: number): 'Winter' | 'Spring' | 'Monsoon' | 'Autumn
   return 'Autumn';
 }
 export const isMonsoon = (day: number) => seasonOf(day) === 'Monsoon';
+
+// ---------------------------------------------------------------- faith
+
+const MUSLIM_REGIONS = new Set(['Sindh', 'Punjab']);
+const MIXED_REGIONS = new Set(['Hindustan', 'Bengal', 'Bijapur', 'Golconda', 'Mughal Deccan', 'Gujarat', 'Awadh & Bihar', 'Malwa', 'Kashmir & Hills', 'Khandesh & Berar']);
+export function faithOf(region: string): Faith {
+  return MUSLIM_REGIONS.has(region) ? 'muslim' : MIXED_REGIONS.has(region) ? 'mixed' : 'hindu';
+}
+/** The faith of a realm's court. */
+export function courtFaith(state: GameState, f: number): 'hindu' | 'muslim' | 'christian' {
+  const k = state.factions[f].key;
+  return k === 'mug' || k === 'bij' || k === 'gol' || k === 'sid' ? 'muslim' : k === 'por' || k === 'eng' ? 'christian' : 'hindu';
+}
+/** 0 = same faith as the ruler, 0.5 = a mixed population, 1 = wholly another faith. */
+export function faithGap(state: GameState, p: Province): number {
+  const c = courtFaith(state, p.owner);
+  if (p.faith === 'mixed') return 0.5;
+  return p.faith === c ? 0 : 1;
+}
+
+/** Ports and sea forts: where fleets sail from and raid. */
+export const isCoastal = (p: Province) => p.kind === 'port' || p.sea;
+/** West coast or east coast (fleets stay on their own sea). */
+export const seaOf = (p: Province) => (p.region === 'Golconda' || p.region === 'Bengal' || p.region === 'Orissa' || p.region === 'Carnatic' || p.region === 'Tamil Nadu' ? 1 : 0);
+
+/**
+ * The key fort of each region: whoever holds it commands the country around.
+ * (The strongest fort; ties go to the richer.)
+ */
+export function keyFort(state: GameState, region: string): Province | null {
+  let best: Province | null = null;
+  for (const p of state.provinces) {
+    if (p.region !== region || p.kind !== 'fort') continue;
+    if (!best || p.walls * 10 + p.wealth > best.walls * 10 + best.wealth) best = p;
+  }
+  return best;
+}
 
 // ---------------------------------------------------------------- setup
 
@@ -157,6 +276,11 @@ export function newGame(seed: number): GameState {
       walls: d.walls, wealth: d.wealth, baseWealth: d.wealth, owner,
       capitalOf: factions[owner].capital === d.key ? owner : -1,
       garrison: [], supplies: 0, siege: null, devastated: 0, builtDay: -999,
+      buildings: { temple: false, stables: false, granary: false, shipyard: d.key === 'malvan' || d.key === 'janjira' || d.key === 'goa' || d.key === 'bombay' || d.key === 'surat' },
+      unrest: rng.range(5, 20), faith: faithOf(d.region),
+      // The Desh and the Konkan are Maratha country, whoever holds the forts.
+      culture: d.region === 'Desh' || d.region === 'Konkan' ? (d.owner === 'sid' || d.owner === 'eng' || d.owner === 'por' ? owner : 0) : owner,
+      tribute: null, jagir: false, famineUntil: 0, takenDay: -999, lastIntrigue: -999, lastSortie: -999,
     };
     p.supplies = maxSupplies(p);
     p.garrison = garrisonFor(factions[owner], p, rng.range(0.6, 0.95));
@@ -170,6 +294,10 @@ export function newGame(seed: number): GameState {
     gold: factions.map((f) => (f.id === PLAYER ? 150 : 100)), manpower: factions.map(() => 0),
     war: grid(false), ally: grid(false), warSince: grid(0),
     nextArmyId: 1, log: [], rng, over: null,
+    relations: grid(0), truceUntil: grid(0), marriage: grid(false),
+    policy: factions.map((f) => ({ tax: 'normal', faith: f.key === 'mug' ? 'zealous' : 'tolerant' })),
+    officers: factions.map((f) => (GENERALS[f.key] ?? []).map(([name, house], i) => makeGeneral(rng, name, house, i === 0 ? 3 : rng.range(0, 4)))),
+    captives: [], fleets: [], nextFleetId: 1, eventsDone: [],
   };
 
   const setWar = (a: string, b: string) => {
@@ -179,6 +307,21 @@ export function newGame(seed: number): GameState {
   setWar('mar', 'sid');
   setWar('mug', 'aho');
   state.ally[fid('mug')][fid('sid')] = state.ally[fid('sid')][fid('mug')] = true;
+  for (let a = 0; a < n; a++) {
+    for (let b = 0; b < n; b++) {
+      if (a !== b) state.relations[a][b] = state.war[a][b] ? -40 : state.ally[a][b] ? 50 : 0;
+    }
+  }
+  // Fleets: the Siddis, the Portuguese and the English rule the Konkan waters; Shivaji's navy is young.
+  const fleet = (key: string, ships: number) => {
+    const p = provinces.find((q) => q.key === key)!;
+    state.fleets.push({ id: state.nextFleetId++, owner: p.owner, ships, home: p.id, mission: 'port', target: -1, x: p.x, y: p.y, returning: false });
+  };
+  fleet('malvan', 4);
+  fleet('janjira', 8);
+  fleet('goa', 9);
+  fleet('bombay', 5);
+  fleet('surat', 4);
 
   const army = (key: string, units: [UnitType, number][]) => {
     const p = provinces.find((q) => q.key === key)!;
@@ -212,29 +355,50 @@ export function newGame(seed: number): GameState {
   return state;
 }
 
-/** The next commander of a realm not already leading an army. */
-function nextGeneral(state: GameState, owner: number): { name: string; house: string } {
-  const pool = GENERALS[state.factions[owner].key];
-  const busy = new Set(state.armies.filter((a) => a.owner === owner).map((a) => a.general.name));
-  const free = pool.find(([n]) => !busy.has(n));
-  if (free) return { name: free[0], house: free[1] };
-  let k = 2;
-  while (busy.has(`Sardar ${k}`)) k++;
-  return { name: `Sardar ${k}`, house: state.factions[owner].short };
+const TRAIT_LIST: Trait[] = ['bold', 'cautious', 'horseman', 'sapper', 'raider', 'quartermaster'];
+/** Historical commanders keep their known gifts. */
+const KNOWN_TRAITS: Record<string, Trait> = {
+  Shivaji: 'raider', 'Netaji': 'horseman', Tanaji: 'bold', Prataprao: 'bold', Hambirrao: 'horseman', Moropant: 'sapper',
+  Yesaji: 'cautious', Anaji: 'quartermaster', 'Diler Khan': 'bold', Aurangzeb: 'sapper', 'Shaista Khan': 'cautious',
+  'Bahlol Khan': 'horseman', Lachit: 'cautious', Durgadas: 'raider', 'Ram Singh': 'cautious', 'Mir Jumla': 'sapper',
+};
+
+export function makeGeneral(rng: RNG, name: string, house: string, xp = 0): General {
+  return { name, house, trait: KNOWN_TRAITS[name] ?? rng.pick(TRAIT_LIST), xp, loyalty: rng.range(55, 85), landed: false };
 }
 
-export function spawnArmy(state: GameState, owner: number, province: number, units: CUnit[]): Army {
+/** The next commander of a realm not already leading an army. */
+function nextGeneral(state: GameState, owner: number): General {
+  const pool = state.officers[owner];
+  if (pool?.length) return pool.shift()!;
+  const busy = new Set([...state.armies.filter((a) => a.owner === owner).map((a) => a.general.name),
+    ...state.captives.filter((c) => c.owner === owner).map((c) => c.gen.name)]);
+  let k = 2;
+  while (busy.has(`Sardar ${k}`)) k++;
+  return makeGeneral(state.rng, `Sardar ${k}`, state.factions[owner].short);
+}
+
+/** The army's commander goes back to court (when it disbands or merges). */
+export function releaseGeneral(state: GameState, a: Army) {
+  if (state.factions[a.owner]?.alive && !state.officers[a.owner].some((g) => g.name === a.general.name)) state.officers[a.owner].push(a.general);
+}
+
+export const maxFood = (a: Army) => (a.general.trait === 'quartermaster' ? 45 : 30);
+
+export function spawnArmy(state: GameState, owner: number, province: number, units: CUnit[], general?: General): Army {
   const p = state.provinces[province];
   const a: Army = {
-    id: state.nextArmyId++, owner, general: nextGeneral(state, owner), units, x: p.x, y: p.y, node: province, route: [], goal: null,
+    id: state.nextArmyId++, owner, general: general ?? nextGeneral(state, owner), units, x: p.x, y: p.y, node: province, route: [], goal: null,
     siegeOf: -1, raidUntil: 0, raidProv: -1, busyUntil: 0, safeUntil: 0, aiNext: state.day + 1,
+    food: 30, scoutedUntil: 0, quarantineUntil: 0,
   };
+  a.food = maxFood(a);
   state.armies.push(a);
   return a;
 }
 
 export function maxSupplies(p: Province): number {
-  return 20 + p.walls * 12 + (p.sea ? 15 : 0) + (p.capitalOf >= 0 ? 10 : 0);
+  return Math.round((20 + p.walls * 12 + (p.sea ? 15 : 0) + (p.capitalOf >= 0 ? 10 : 0)) * (p.buildings?.granary ? 1.5 : 1));
 }
 
 export function garrisonCap(p: Province): number {
@@ -256,7 +420,7 @@ export function unitsMen(units: CUnit[]): number {
 }
 
 export function unitsStrength(units: CUnit[]): number {
-  return units.reduce((s, u) => s + u.men * UNIT_STATS[u.type].value, 0);
+  return units.reduce((s, u) => s + u.men * UNIT_STATS[u.type].value * (1 + vetRank(u.xp) * 0.07), 0);
 }
 
 export function armyStrength(a: Army): number {
@@ -298,8 +462,12 @@ export function hostile(state: GameState, a: number, b: number): boolean {
 export function armySpeed(state: GameState, a: Army): number {
   const cls = a.units.map((u) => UNIT_STATS[u.type].cls);
   let v = 13;
-  if (cls.length && cls.every((c) => c === 'cavalry')) v = 22;
+  if (cls.length && cls.every((c) => c === 'cavalry')) v = 22 * (a.general.trait === 'horseman' ? 1.1 : 1);
   else if (cls.some((c) => c === 'elephant' || c === 'artillery')) v = 9;
+  if (a.general.trait === 'raider') v *= 1.1;
+  if (state.day < a.quarantineUntil) return 0;
+  // Enemy hill forts command the passes: marching under their guns is slow going.
+  if (state.provinces.some((p) => p.kind === 'fort' && p.walls >= 2 && p.garrison.length && hostile(state, a.owner, p.owner) && dist(a, p) < 25 && a.siegeOf !== p.id)) v *= 0.8;
   return v * (isMonsoon(state.day) ? 0.6 : 1);
 }
 
@@ -315,9 +483,43 @@ export function regionOwners(state: GameState): Map<string, number> {
   return owners;
 }
 
+/** A port blockaded by a hostile fleet earns nothing from the sea. */
+export function blockaded(state: GameState, p: Province): boolean {
+  return state.fleets.some((f) => f.mission === 'blockade' && f.target === p.id && !f.returning && dist(f, p) < 6 && hostile(state, f.owner, p.owner));
+}
+
+/** Gross revenue a province yields its owner (before chauth and jagirs). */
 export function provinceIncome(state: GameState, p: Province, regions = regionOwners(state)): number {
   if (p.devastated > 0 || p.siege) return 0;
-  return p.wealth * (regions.get(p.region) === p.owner ? 1.25 : 1);
+  let v = p.wealth * (regions.get(p.region) === p.owner ? 1.25 : 1);
+  const key = keyFort(state, p.region);
+  if (key && key.owner === p.owner) v *= 1.15;
+  const pol = state.policy[p.owner];
+  if (pol) {
+    v *= pol.tax === 'heavy' ? 1.3 : pol.tax === 'light' ? 0.8 : 1;
+    if (pol.faith === 'zealous') v *= 1 + 0.1 * faithGap(state, p); // jizya
+  }
+  if (p.unrest > 50) v *= 0.5;
+  if (state.day < p.famineUntil) v *= 0.5;
+  if (isCoastal(p)) {
+    if (blockaded(state, p)) v *= 0.4;
+    else if (state.fleets.some((f) => f.owner === p.owner && f.mission === 'patrol' && dist(f, p) < 300)) v *= 1.15;
+  }
+  return v;
+}
+
+/** Share of a province's revenue that goes out as chauth (and sardeshmukhi). */
+export function tributeShare(state: GameState, p: Province): number {
+  const t = p.tribute;
+  if (!t || t.until < state.day) return 0;
+  // Sardeshmukhi: a further tenth, claimed by a realm that already holds land in the region.
+  const sardesh = state.provinces.some((q) => q.owner === t.to && q.region === p.region);
+  return 0.25 + (sardesh ? 0.1 : 0);
+}
+
+/** What a province actually puts in its owner's treasury. */
+export function netProvinceIncome(state: GameState, p: Province, regions = regionOwners(state)): number {
+  return provinceIncome(state, p, regions) * (1 - tributeShare(state, p)) * (p.jagir ? 0.5 : 1);
 }
 
 /** Army upkeep per month. */
@@ -332,7 +534,10 @@ export function upkeep(state: GameState, f: number): number {
 export function grossIncome(state: GameState, f: number): number {
   const regions = regionOwners(state);
   let g = 0;
-  for (const p of state.provinces) if (p.owner === f) g += provinceIncome(state, p, regions);
+  for (const p of state.provinces) {
+    if (p.owner === f) g += netProvinceIncome(state, p, regions);
+    else if (p.tribute?.to === f && p.tribute.until >= state.day) g += provinceIncome(state, p, regions) * tributeShare(state, p);
+  }
   return Math.round(g * state.factions[f].incomeMult);
 }
 
@@ -424,6 +629,15 @@ export function nearestOwned(state: GameState, a: Army, avoidBesieged = true): n
 export function declareWar(state: GameState, a: number, b: number) {
   if (a === b || state.war[a][b]) return;
   const f = state.factions;
+  // Breaking a truce sealed with hostages: the hostages pay for it, and every court hears of it.
+  if (state.truceUntil[a][b] > state.day) {
+    log(state, `The ${f[a].short} break their oath to the ${f[b].short}; the hostages are put to death.`, a === PLAYER || b === PLAYER);
+    for (let c = 0; c < f.length; c++) if (c !== a) state.relations[c][a] -= 15;
+    if (a === PLAYER) for (const x of state.armies) if (x.owner === PLAYER) x.general.loyalty -= 10;
+    state.truceUntil[a][b] = state.truceUntil[b][a] = 0;
+  }
+  state.relations[a][b] -= 40;
+  state.relations[b][a] -= 40;
   const pairs: [number, number][] = [[a, b]];
   for (let c = 0; c < f.length; c++) if (c !== a && state.ally[b][c] && f[c].alive) pairs.push([a, c]);
   for (const [x, y] of pairs) {
@@ -437,6 +651,8 @@ export function makePeace(state: GameState, a: number, b: number) {
   if (!state.war[a][b]) return;
   state.war[a][b] = state.war[b][a] = false;
   state.warSince[a][b] = state.warSince[b][a] = state.day;
+  state.relations[a][b] += 15;
+  state.relations[b][a] += 15;
   // Sieges end and armies in the other's land head home.
   for (const army of state.armies) {
     if (army.owner !== a && army.owner !== b) continue;
@@ -470,9 +686,10 @@ export function acceptsPeace(state: GameState, ai: number, other: number): boole
 
 // ---------------------------------------------------------------- war on the map
 
-export function removeArmy(state: GameState, a: Army) {
+export function removeArmy(state: GameState, a: Army, keepGeneral = true) {
   if (a.siegeOf >= 0) liftSiege(state, state.provinces[a.siegeOf]);
   state.armies = state.armies.filter((x) => x !== a);
+  if (keepGeneral) releaseGeneral(state, a);
 }
 
 export function cleanupArmies(state: GameState) {
@@ -509,12 +726,18 @@ export function capture(state: GameState, p: Province, owner: number) {
   p.owner = owner;
   p.supplies = maxSupplies(p);
   p.garrison = [newUnit(state.factions[owner].garrison[0], 0.5)];
+  p.tribute = null;
+  p.jagir = false;
+  p.takenDay = state.day;
+  // Liberators are welcomed; conquerors are not.
+  p.unrest = p.culture === owner ? Math.max(0, p.unrest - 25) : Math.min(100, p.unrest + 20);
   const f = state.factions;
   log(state, `The ${f[owner].short} take ${p.town} (${p.name})${p.capitalOf >= 0 ? ', a royal capital!' : '.'}`,
     owner === PLAYER || prev === PLAYER);
   if (prev !== IND && !state.provinces.some((q) => q.owner === prev)) {
     f[prev].alive = false;
     state.armies = state.armies.filter((a) => a.owner !== prev);
+    state.fleets = state.fleets.filter((x) => x.owner !== prev);
     log(state, `The ${f[prev].name} is no more.`, true);
   }
   checkOver(state);
@@ -587,14 +810,16 @@ function applyLosses(units: CUnit[], frac: number) {
 }
 
 /** Quick open-field battle. Mutates casualties; returns true if the attacker won. */
-export function autoResolve(state: GameState, att: CUnit[], def: CUnit[]): boolean {
+export function autoResolve(state: GameState, att: CUnit[], def: CUnit[], attK = 1, defK = 1): boolean {
   const rng = state.rng;
-  const A = unitsStrength(att) * rng.range(0.85, 1.15);
-  const D = unitsStrength(def) * 1.1 * rng.range(0.85, 1.15);
+  const A = unitsStrength(att) * attK * rng.range(0.85, 1.15);
+  const D = unitsStrength(def) * defK * 1.1 * rng.range(0.85, 1.15);
   const won = rng.next() < (A * A) / (A * A + D * D);
   const [ws, ls] = won ? [A, D] : [D, A];
   applyLosses(won ? att : def, Math.min(0.5, (0.25 * ls) / Math.max(1, ws)));
   applyLosses(won ? def : att, rng.range(0.35, 0.6));
+  for (const u of won ? att : def) if (u.men > 0) u.xp = (u.xp ?? 0) + 0.45;
+  for (const u of won ? def : att) if (u.men > 0) u.xp = (u.xp ?? 0) + 0.2;
   return won;
 }
 
@@ -609,17 +834,30 @@ export function wallFactor(p: Province, attackers: CUnit[], equipment: number): 
 }
 
 /** Quick siege assault. Mutates casualties; returns true if the walls fell. */
-export function autoResolveSiege(state: GameState, att: CUnit[], p: Province, def: CUnit[] = p.garrison): boolean {
+export function autoResolveSiege(state: GameState, att: CUnit[], p: Province, def: CUnit[] = p.garrison, attK = 1): boolean {
   const rng = state.rng;
   const eq = p.siege ? siegeEquipment(p.siege) : 0;
-  const A = unitsStrength(att) * rng.range(0.85, 1.15);
+  const A = unitsStrength(att) * attK * rng.range(0.85, 1.15);
   const D = (unitsStrength(def) + 10) * wallFactor(p, att, eq) * rng.range(0.85, 1.15);
   const won = rng.next() < (A * A) / (A * A + D * D);
   applyLosses(att, won ? Math.min(0.45, (0.3 * D) / Math.max(1, A)) : rng.range(0.3, 0.5));
   // A garrison that loses its walls dies there; field armies inside break out with what they can.
   applyLosses(p.garrison, won ? 1 : rng.range(0.15, 0.35));
   applyLosses(def.filter((u) => !p.garrison.includes(u)), won ? rng.range(0.4, 0.6) : rng.range(0.15, 0.35));
+  for (const u of att) if (u.men > 0) u.xp = (u.xp ?? 0) + (won ? 0.5 : 0.3);
   return won;
+}
+
+/** Strength multiplier a commander brings to an auto-resolved battle. */
+export function generalK(a: Army | null | undefined, siege = false): number {
+  if (!a) return 1;
+  const g = a.general;
+  let k = 1 + generalRank(g) * 0.05;
+  if (g.trait === 'bold') k *= 1.05;
+  if (g.trait === 'cautious') k *= 1.03;
+  if (g.trait === 'horseman' && a.units.filter((u) => UNIT_STATS[u.type].cls === 'cavalry').length * 2 >= a.units.length) k *= 1.06;
+  if (siege && g.trait === 'sapper') k *= 1.12;
+  return k;
 }
 
 // ---------------------------------------------------------------- recruiting and building
@@ -630,8 +868,14 @@ export function armyAtTown(state: GameState, p: Province, f: number): Army | und
 }
 
 /** Raises a regiment at a settlement; returns an error message, or null on success. */
+/** Recruiting cost here: stables breed horses cheaper. */
+export function recruitCost(p: Province, type: UnitType): number {
+  const st = UNIT_STATS[type];
+  return Math.round(st.cost * (st.cls === 'cavalry' && p.buildings.stables ? 0.85 : 1));
+}
+
 export function recruit(state: GameState, p: Province, type: UnitType, f = PLAYER): string | null {
-  const cost = UNIT_STATS[type].cost;
+  const cost = recruitCost(p, type);
   if (p.owner !== f) return 'Not your province.';
   if (p.siege) return 'The settlement is under siege.';
   if (state.gold[f] < cost) return 'Not enough gold.';
@@ -643,6 +887,8 @@ export function recruit(state: GameState, p: Province, type: UnitType, f = PLAYE
   if (levy <= 0) return 'Not enough men of fighting age left to raise this regiment.';
   if (!a) a = spawnArmy(state, f, p.id, []);
   const u = newUnit(type, levy);
+  // Horse bred and broken at the province's own stables come to the army already seasoned.
+  if (UNIT_STATS[type].cls === 'cavalry' && p.buildings.stables) u.xp = 1.2;
   a.units.push(u);
   state.manpower[f] -= u.men;
   state.gold[f] -= cost;
@@ -665,7 +911,11 @@ export function maxManpower(state: GameState, f: number): number {
 /** Men who come of age (or come back from the fields) each month, from provinces not ravaged by war. */
 export function manpowerRegen(state: GameState, f: number): number {
   let m = 0;
-  for (const p of state.provinces) if (p.owner === f && p.devastated <= 0 && !p.siege) m += p.wealth * MEN_PER_WEALTH * 0.05;
+  for (const p of state.provinces) {
+    if (p.owner !== f || p.devastated > 0 || p.siege || p.unrest > 70 || state.day < p.famineUntil) continue;
+    const key = keyFort(state, p.region);
+    m += p.wealth * MEN_PER_WEALTH * 0.05 * (key && key.owner === f ? 1.25 : 1);
+  }
   return Math.round(m > 0 ? m + 20 : 0);
 }
 

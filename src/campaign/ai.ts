@@ -4,6 +4,7 @@ import {
   hostile, IND, isMonsoon, MAX_UNITS, nearestOwned, newUnit, PLAYER, provinceUnder, provincesOf, setGoal,
   siegeEquipment, spawnArmy, townAt, unitsStrength, wallFactor, manpowerRatio, levyFraction,
 } from './state';
+import { supplied, warBlocked } from './realm';
 
 export interface WorldLike {
   state: GameState;
@@ -17,7 +18,24 @@ export function thinkArmy(w: WorldLike, a: Army) {
   a.aiNext = s.day + (a.siegeOf >= 0 ? 1 : 1.2 + s.rng.next());
   if (fac.ai === 'none' || a.raidUntil > s.day) return;
   if (a.siegeOf >= 0) {
+    // Starving before the walls: storm now or give it up.
+    if (a.food < 3) {
+      const p = s.provinces[a.siegeOf];
+      const D = (unitsStrength(p.garrison) + 10) * wallFactor(p, a.units, p.siege ? siegeEquipment(p.siege) : 0);
+      if (armyStrength(a) > D * 1.05) w.assault(a);
+      else {
+        const home = nearestOwned(s, a);
+        if (home >= 0) setGoal(s, a, { kind: 'go', prov: home });
+      }
+      return;
+    }
     considerAssault(w, a);
+    return;
+  }
+  // Wagons nearly empty in enemy country: fall back to our own lands to eat.
+  if (a.food < 6 && supplied(s, a) === 'none') {
+    const home = nearestOwned(s, a);
+    if (home >= 0 && !(a.goal?.kind === 'go' && a.goal.prov === home)) setGoal(s, a, { kind: 'go', prov: home });
     return;
   }
   const str = armyStrength(a);
@@ -163,7 +181,7 @@ function maybeDeclareWar(s: GameState, f: number) {
   const neighbours = new Set<number>();
   for (const p of provincesOf(s, f)) for (const n of p.neighbors) neighbours.add(s.provinces[n].owner);
   const victims = [...neighbours].filter((o) => o !== f && o !== IND && s.factions[o].alive && !s.war[f][o]
-    && factionStrength(s, o) < mine * 0.7);
+    && !warBlocked(s, f, o) && factionStrength(s, o) < mine * (s.relations[f][o] < -30 ? 0.9 : 0.7));
   if (victims.length) declareWar(s, f, s.rng.pick(victims));
 }
 

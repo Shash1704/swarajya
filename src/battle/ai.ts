@@ -16,18 +16,96 @@ function closest(u: BUnit, list: BUnit[], weight: (e: BUnit) => number = () => 1
   return best;
 }
 
+const cls = (u: BUnit) => UNIT_STATS[u.type].cls;
 const strength = (list: BUnit[]) => list.reduce((s, u) => s + u.men * UNIT_STATS[u.type].value, 0);
 
 /** Re-plans orders for one side. Called every second or two of battle time. */
 export function planSide(b: Battle, side: 0 | 1) {
   const mine = b.units.filter((u) => u.side === side && u.state === 'ok' && !u.climbing);
-  const foes = b.units.filter((u) => u.side !== side && u.state === 'ok');
-  if (!foes.length || !mine.length) return;
+  // The AI knows only what its scouts can see.
+  const foes = b.units.filter((u) => u.side !== side && u.state === 'ok' && b.sees(side, u));
+  if (!mine.length) return;
   if (b.walls) {
+    if (!foes.length) return;
     if (side === b.attacker) planSiegeAttack(b, mine, foes);
     else planSiegeDefense(b, mine, foes);
+  } else if (!foes.length) {
+    probe(b, side, mine);
   } else {
     planField(b, side, mine, foes);
+  }
+  if (!b.walls) afterPlan(b, side, mine, foes);
+}
+
+/** Cheap repeatable dice for the planner: the same unit rolls the same for ten seconds at a time. */
+const roll = (b: Battle, u: BUnit) => (((u.id * 73856093) ^ (Math.floor(b.time / 10) * 19349663)) >>> 0) % 100;
+
+/** No enemy in sight: hold if defending, otherwise feel forward toward where they were last seen. */
+function probe(b: Battle, side: 0 | 1, mine: BUnit[]) {
+  const attacking = side === b.attacker;
+  if (!attacking && b.time < 300) return;
+  let goal: Pt = { x: FIELD_W / 2, y: b.homeTop(side) ? FIELD_H * 0.8 : FIELD_H * 0.2 };
+  let latest = -1;
+  for (const p of b.lastSeen[side].values()) if (p.t > latest) { latest = p.t; goal = p; }
+  const M = centroid(mine);
+  for (const u of mine) {
+    if (u.fighting || cls(u) === 'artillery') continue;
+    // Keep formation: everyone moves by the same offset.
+    const step = Math.min(160, dist(M, goal));
+    const L = dist(M, goal) || 1;
+    march(b, u, { x: u.x + ((goal.x - M.x) / L) * step, y: u.y + ((goal.y - M.y) / L) * step });
+  }
+}
+
+/** Formations, rest, resupply, rallying and the feigned flight, laid over the main plan. */
+function afterPlan(b: Battle, side: 0 | 1, mine: BUnit[], foes: BUnit[]) {
+  const horseFoes = foes.filter((f) => isLarge(f.type));
+  const shotFoes = foes.filter((f) => UNIT_STATS[f.type].range > 0);
+  for (const u of mine) {
+    const st = UNIT_STATS[u.type];
+    if (u.feignT > 0) continue;
+    // Chase a fleeing horseman? Most do; the steadier troops keep their place.
+    const runner = foes.find((f) => f.feignT > 0 && dist(u, f) < 320);
+    if (runner && !u.fighting && u.id !== b.generalIds[side] && cls(u) !== 'artillery' && cls(u) !== 'missile') {
+      const keen = cls(u) === 'cavalry' ? 85 : st.role === 'pike' ? 30 : st.wild ? 50 : cls(u) === 'elephant' ? 40 : 60;
+      if (roll(b, u) < keen) {
+        u.order = { kind: 'attack', target: runner.id };
+        u.formation = 'normal';
+        continue;
+      }
+    }
+    // Out of arrows or powder: back to the baggage, unless someone is on top of us.
+    if (u.maxAmmo > 0 && u.ammo <= 0 && !u.fighting && cls(u) !== 'artillery') {
+      if (!foes.some((f) => dist(f, u) < 100)) {
+        march(b, u, { x: u.x, y: b.homeTop(side) ? 90 : FIELD_H - 90 });
+        continue;
+      }
+    }
+    // Spent men rest if nobody is close.
+    if (u.fatigue > 0.7 && !u.fighting && !foes.some((f) => dist(f, u) < 170) && u.order.kind !== 'hold') {
+      u.order = { kind: 'hold' };
+    }
+    // Formations.
+    const near = (list: BUnit[], r: number) => list.some((f) => dist(f, u) < r);
+    if (cls(u) === 'infantry') {
+      const horseClose = near(horseFoes, 220);
+      if (horseClose && st.role === 'pike' && !u.fighting && u.order.kind !== 'attack') b.setFormation(u, 'brace');
+      else if (horseClose) b.setFormation(u, 'tight');
+      else if (near(shotFoes, 260) && !near(foes.filter((f) => UNIT_STATS[f.type].range === 0), 200)) b.setFormation(u, 'loose');
+      else if (u.formation !== 'brace' || !horseClose) b.setFormation(u, 'normal');
+    } else if (cls(u) === 'missile') {
+      b.setFormation(u, near(shotFoes, 280) ? 'loose' : 'normal');
+    } else if (cls(u) === 'cavalry' && st.role === 'shock') {
+      const charging = u.order.kind === 'attack' || (u.order.kind === 'path' && u.order.then !== undefined);
+      b.setFormation(u, charging && !u.fighting ? 'wedge' : 'normal');
+    }
+  }
+  // The commander rallies the line when it starts to waver.
+  const g = b.get(b.generalIds[side]);
+  if (g && g.state === 'ok' && b.rallyCd[side] <= 0) {
+    const wavering = b.units.filter((u) => u.side === side && dist(u, g) < 260
+      && (u.state === 'routing' || (u.state === 'ok' && u.morale < u.maxMorale * 0.35))).length;
+    if (wavering >= 2) b.rally(side);
   }
 }
 
@@ -107,7 +185,6 @@ function planField(b: Battle, side: 0 | 1, mine: BUnit[], foes: BUnit[]) {
 
   // A defender (or a much weaker side with time on its hands) holds good ground and lets the enemy come.
   const patient = !attacking && b.time < 360 && nearestGap > 200 && myStr < foeStr * 1.4;
-  const cls = (u: BUnit) => UNIT_STATS[u.type].cls;
   const role = (u: BUnit) => UNIT_STATS[u.type].role;
 
   // Pull regiments out of fights they're losing: horse stuck against a wall of foot, or a unit about to break.
@@ -116,7 +193,9 @@ function planField(b: Battle, side: 0 | 1, mine: BUnit[], foes: BUnit[]) {
     const horse = cls(u) === 'cavalry';
     const stuck = horse && u.contactTime > 5 && u.morale < u.maxMorale * 0.6;
     const failing = u.morale < u.maxMorale * 0.22 && u.contactTime > 3;
-    if ((stuck || failing) && b.disengage(u)) march(b, u, { x: u.x - ax * 220, y: u.y - ay * 220 });
+    const light = role(u) === 'raider' || role(u) === 'skirmish';
+    if (stuck && light) b.feign(u);
+    else if ((stuck || failing) && b.disengage(u)) march(b, u, { x: u.x - ax * 220, y: u.y - ay * 220 });
   }
 
   // Broken regiments fall back behind the line to recover their nerve.
@@ -130,10 +209,11 @@ function planField(b: Battle, side: 0 | 1, mine: BUnit[], foes: BUnit[]) {
     if (threat && dist(general, threat) < 140) engage(b, general, threat);
     else march(b, general, { x: M.x - ax * 130, y: M.y - ay * 130 });
   }
-  const free = (u: BUnit) => u !== general && !shaken(u);
-  const line = mine.filter((u) => free(u) && (cls(u) === 'infantry' || cls(u) === 'elephant'));
+  const lurking = (u: BUnit) => patient && b.forests.some((w) => dist(w, u) < w.r) && (UNIT_STATS[u.type].wild || role(u) === 'raider');
+  const free = (u: BUnit) => u !== general && !shaken(u) && u.feignT <= 0 && !(u.luredT > 0 && u.order.kind === 'attack');
+  const line = mine.filter((u) => free(u) && !lurking(u) && (cls(u) === 'infantry' || cls(u) === 'elephant'));
   const shooters = mine.filter((u) => free(u) && cls(u) === 'missile');
-  const horse = mine.filter((u) => free(u) && cls(u) === 'cavalry');
+  const horse = mine.filter((u) => free(u) && !lurking(u) && cls(u) === 'cavalry');
   const guns = mine.filter((u) => cls(u) === 'artillery');
 
   // Endgame: with the main lines gone, or nothing happening, the survivors close in and finish it.
@@ -145,6 +225,20 @@ function planField(b: Battle, side: 0 | 1, mine: BUnit[], foes: BUnit[]) {
       if (t) engage(b, u, t);
     }
     return;
+  }
+
+  // ---- ambush: a patient defender hides hill foot and light horse in a wood on its own side
+  if (patient) {
+    const wood = b.forests.filter((w) => dist(w, M) < 380 && dist(w, E) > dist(w, M) + 60).sort((p, q) => dist(p, M) - dist(q, M))[0];
+    if (wood) {
+      for (const u of mine) {
+        if (u === general || u.fighting || !(UNIT_STATS[u.type].wild || role(u) === 'raider')) continue;
+        const prey = closest(u, foes);
+        if (prey && dist(u, prey) < 200) { engage(b, u, prey); continue; }
+        if (dist(u, wood) > wood.r * 0.5) march(b, u, { x: wood.x, y: wood.y });
+        else u.order = { kind: 'hold' };
+      }
+    }
   }
 
   // ---- where the line should stand
