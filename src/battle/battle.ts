@@ -65,6 +65,10 @@ export interface BUnit {
   blocked: boolean;
   /** Running or galloping in to close with the enemy this step. */
   rushing: boolean;
+  /** Seconds left breaking away from a melee: it won't fight back while it pulls clear. */
+  disengageT: number;
+  /** Battle time of the last disengage, so the AI doesn't flit in and out. */
+  lastDisengage: number;
   rallied: boolean;
   dmgMelee: number;
   dmgMissile: number;
@@ -395,7 +399,7 @@ export class Battle {
       id: this.nextId++, side, type: ref.type, ref, men: ref.men, maxMen: st.maxMen, startMen: ref.men,
       x, y, facing, morale: st.morale, maxMorale: st.morale, order: { kind: 'hold' }, state: 'ok',
       contactTime: 0, chargeT: 0, movingT: 0, calm: 10, fighting: false, moving: false, aimId: -1,
-      reload: st.reload * this.rng.range(0.3, 0.8), climbing: false, climbT: 0, blocked: false, rushing: false, rallied: false,
+      reload: st.reload * this.rng.range(0.3, 0.8), climbing: false, climbT: 0, blocked: false, rushing: false, disengageT: 0, lastDisengage: -99, rallied: false,
       dmgMelee: 0, dmgMissile: 0, moraleHit: 0, px: x, py: y,
     });
   }
@@ -511,12 +515,14 @@ export class Battle {
     // Regiments wheel rather than slide: they turn at a limited rate and march
     // along their facing, so changes of direction trace curves. Horse swing wide.
     const want = Math.atan2(dy, dx);
-    turnToward(u, want, TURN_RATE[UNIT_STATS[u.type].cls] * dt);
+    // A regiment falling back from a melee simply about-faces rather than wheeling round.
+    const away = u.disengageT > 0;
+    turnToward(u, want, TURN_RATE[UNIT_STATS[u.type].cls] * (away ? 3 : 1) * dt);
     const off = Math.abs(angDiff(u.facing, want));
     const straight = d < 22 || off < 0.06;
     const vx = straight ? dx / d : Math.cos(u.facing);
     const vy = straight ? dy / d : Math.sin(u.facing);
-    const nimble = UNIT_STATS[u.type].cls === 'infantry' || UNIT_STATS[u.type].cls === 'missile';
+    const nimble = away || UNIT_STATS[u.type].cls === 'infantry' || UNIT_STATS[u.type].cls === 'missile';
     let k = off > 1.6 ? (nimble ? 0.4 : 0.2) : Math.max(nimble ? 0.6 : 0.35, Math.cos(off));
     // Climbing slows a march; going downhill does not speed it up much.
     const climb = this.height({ x: u.x + vx * 12, y: u.y + vy * 12 }) - this.height(u);
@@ -605,6 +611,14 @@ export class Battle {
 
     // 1. Melee: anything within reach of an enemy stops and fights.
     for (const u of live) {
+      if (u.disengageT > 0) {
+        // Breaking away: it turns its back and takes blows, but isn't pinned in place.
+        u.disengageT -= dt;
+        u.contactTime = 0;
+        u.chargeT = 0;
+        if (u.disengageT > 0) continue;
+        u.movingT = 0; // caught again straight away: no fresh charge
+      }
       let contact: BUnit | null = null;
       let best = Infinity;
       for (const e of hittable) {
@@ -998,6 +1012,23 @@ export class Battle {
     const shock = (dmg * 35) / victim.maxMen * (cls(victim) === 'elephant' ? 4 : isLarge(victim.type) ? 1.5 : 1);
     if (weapon(u) !== 'bow') victim.moraleHit += shock;
     this.shots.push({ kind: weapon(u) === 'cannon' ? 'cannon' : weapon(u) === 'rocket' ? 'rocket' : 'musket', x0: u.x, y0: u.y, x1: victim.x, y1: victim.y, t: 0 });
+  }
+
+  /**
+   * Pulls a regiment out of the melee it's locked in so it can follow new orders. For a few
+   * seconds it won't strike back and the foe gets it from behind; cavalry slips away quickest.
+   */
+  disengage(u: BUnit): boolean {
+    if (u.state !== 'ok' || !u.fighting || u.disengageT > 0) return false;
+    const c = cls(u);
+    u.disengageT = c === 'cavalry' ? 2.2 : c === 'elephant' ? 3 : 3.2;
+    u.lastDisengage = this.time;
+    u.fighting = false;
+    u.contactTime = 0;
+    u.chargeT = 0;
+    u.morale -= c === 'cavalry' ? 3 : 6;
+    this.float(u.x, u.y, 'Falling back!', '#cfe0ff');
+    return true;
   }
 
   /** Where a blow lands on the target: its front, a flank, or its rear. */

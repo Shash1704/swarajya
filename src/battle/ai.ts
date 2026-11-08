@@ -110,6 +110,15 @@ function planField(b: Battle, side: 0 | 1, mine: BUnit[], foes: BUnit[]) {
   const cls = (u: BUnit) => UNIT_STATS[u.type].cls;
   const role = (u: BUnit) => UNIT_STATS[u.type].role;
 
+  // Pull regiments out of fights they're losing: horse stuck against a wall of foot, or a unit about to break.
+  for (const u of mine) {
+    if (!u.fighting || b.time - u.lastDisengage < 12 || u.id === b.generalIds[side]) continue;
+    const horse = cls(u) === 'cavalry';
+    const stuck = horse && u.contactTime > 5 && u.morale < u.maxMorale * 0.6;
+    const failing = u.morale < u.maxMorale * 0.22 && u.contactTime > 3;
+    if ((stuck || failing) && b.disengage(u)) march(b, u, { x: u.x - ax * 220, y: u.y - ay * 220 });
+  }
+
   // Broken regiments fall back behind the line to recover their nerve.
   const shaken = (u: BUnit) => !u.fighting && u.morale < u.maxMorale * 0.3;
   for (const u of mine) if (shaken(u)) march(b, u, { x: M.x - ax * 120, y: M.y - ay * 120 });

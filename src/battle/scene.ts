@@ -329,6 +329,7 @@ export class BattleScene implements Scene {
       const oy = sel.length === 1 ? 0 : u.y - cy;
       const mine: [number, number][] = pts.slice(1).map(([x, y]) => [clamp(x + ox, FIELD_W), clamp(y + oy, FIELD_H)]);
       u.order = { kind: 'path', pts: mine, i: 0, then: enemy?.id };
+      this.breakAway(u, enemy?.id);
     }
     this.refreshList();
   }
@@ -357,7 +358,10 @@ export class BattleScene implements Scene {
     }
     const enemy = this.unitAt(x, y, 1);
     if (enemy) {
-      for (const u of sel) u.order = { kind: 'attack', target: enemy.id };
+      for (const u of sel) {
+        u.order = { kind: 'attack', target: enemy.id };
+        this.breakAway(u, enemy.id);
+      }
       this.refreshList();
       return;
     }
@@ -369,6 +373,7 @@ export class BattleScene implements Scene {
         const st = UNIT_STATS[u.type];
         if (st.cls === 'artillery' || st.cls === 'elephant' || (W.segs[seg].gate && st.gate > 0)) {
           u.order = { kind: 'breach', seg };
+          this.breakAway(u);
           any = true;
         }
       }
@@ -378,8 +383,21 @@ export class BattleScene implements Scene {
       }
       if (!W.segs[seg].gate) this.say('Only guns and elephants can batter a wall. Infantry can hack at the gate.');
     }
-    for (const u of sel) u.order = { kind: 'move', ...spot(u) };
+    for (const u of sel) {
+      u.order = { kind: 'move', ...spot(u) };
+      this.breakAway(u);
+    }
     this.refreshList();
+  }
+
+  /** A regiment locked in melee and sent somewhere else breaks off the fight (unless it's already fighting its new target). */
+  private breakAway(u: BUnit, target?: number) {
+    if (!u.fighting) return;
+    if (target !== undefined) {
+      const t = this.b.get(target);
+      if (t && Math.hypot(t.x - u.x, t.y - u.y) < 50) return;
+    }
+    this.b.disengage(u);
   }
 
   // ---------------------------------------------------------------- drawing
@@ -1011,6 +1029,7 @@ export class BattleScene implements Scene {
         h('ul', { class: 'help' },
           h('li', {}, 'Left-click or drag to select. Shift adds. Right-click: move, or attack an enemy.'),
           h('li', {}, 'Right-drag to draw a curved path; the regiments follow it in formation (end it on an enemy to attack).'),
+          h('li', {}, 'A regiment locked in melee breaks off when you order it elsewhere: it falls back for a few seconds, taking blows from behind and a little morale.'),
           h('li', {}, 'Terrain matters: hold high ground, cross rivers only at the sandy fords, keep horse out of marshes, and use villages and woods as cover.'),
           siege && s.playerAttacks ? h('li', {}, 'Right-click the gate or a wall section with guns or elephants to batter it. Infantry can hack at the gate.') : null,
           siege && s.playerAttacks && s.ladders ? h('li', {}, 'You have ladders: send infantry at the walls and they will climb.') : null,
@@ -1079,6 +1098,7 @@ function statusOf(u: BUnit, b: Battle): string {
   if (u.state === 'fled') return 'fled';
   if (u.state === 'routing') return 'routing!';
   if (u.climbing) return 'climbing';
+  if (u.disengageT > 0) return 'falling back';
   if (u.fighting) return 'fighting';
   if (u.aimId >= 0) return 'shooting';
   if (u.order.kind === 'breach') return 'battering';
