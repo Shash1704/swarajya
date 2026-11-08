@@ -58,6 +58,10 @@ export class BattleScene implements Scene {
   private drag: { x0: number; y0: number; x1: number; y1: number } | null = null;
   /** A path being drawn with the right mouse button (or a long press), in world coords. */
   private sketch: [number, number][] | null = null;
+  /** The drag being drawn is a battle line (straight, sets frontage and facing) rather than a march path. */
+  private sketchLine = false;
+  /** Right-drags draw battle lines (toggle with Q, or hold Shift for one drag). */
+  private lineMode = false;
   private mouse = { x: -100, y: -100 };
   /** Mouse position on the battlefield (world coords). */
   private mouseW = { x: -100, y: -100 };
@@ -228,9 +232,11 @@ export class BattleScene implements Scene {
     }
     const [x, y] = this.toW(sx, sy);
     if (button === 2) {
-      // Start sketching a path; a plain right-click (no drag) becomes an ordinary order on release.
-      if (this.phase === 'live' && this.mySelected().length) this.sketch = [[x, y]];
-      else this.issueOrder(x, y);
+      // Start sketching a path or a battle line; a plain right-click (no drag) becomes an ordinary order on release.
+      if (this.mySelected().length) {
+        this.sketch = [[x, y]];
+        this.sketchLine = this.phase === 'deploy' || this.lineMode || e.shiftKey || e.altKey;
+      } else this.issueOrder(x, y);
       return;
     }
     if (button !== 0) return;
@@ -276,7 +282,9 @@ export class BattleScene implements Scene {
       this.sketch = null;
       let len = 0;
       for (let i = 1; i < pts.length; i++) len += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
-      if (len > 40) this.issuePath(pts);
+      const [ex, ey] = pts[pts.length - 1];
+      if (this.sketchLine && Math.hypot(ex - pts[0][0], ey - pts[0][1]) > 30) this.issueLine(pts[0], [ex, ey]);
+      else if (!this.sketchLine && len > 40) this.issuePath(pts);
       else this.issueOrder(pts[0][0], pts[0][1]);
       return;
     }
@@ -318,6 +326,11 @@ export class BattleScene implements Scene {
     } else if (k === 'h') {
       for (const u of this.mySelected()) u.order = { kind: 'hold' };
       this.refreshList();
+    } else if (k === 'q') {
+      this.lineMode = !this.lineMode;
+      this.say(this.lineMode ? 'Line mode: right-drag to draw a battle line.' : 'Path mode: right-drag to draw a march path.');
+      this.ordersSig = '';
+      this.refreshOrders();
     } else if (this.phase === 'live' && k === 'f') {
       this.feignSelected();
     } else if (this.phase === 'live' && k === 'r') {
@@ -325,6 +338,63 @@ export class BattleScene implements Scene {
     } else if (FORM_KEYS[k]) {
       this.formSelected(FORM_KEYS[k]);
     }
+  }
+
+  /**
+   * Where each selected regiment stands on a line drawn from a to b: spread evenly along it,
+   * in ranks if there are more than fit (foot in front, then shooters, horse, guns), facing
+   * square to the line (to the left of the drag direction).
+   */
+  private lineSlots(a: [number, number], b: [number, number]): { u: BUnit; x: number; y: number }[] & { face?: number } {
+    const sel = this.mySelected();
+    const out: { u: BUnit; x: number; y: number }[] & { face?: number } = [];
+    if (!sel.length) return out;
+    const len = Math.max(1, Math.hypot(b[0] - a[0], b[1] - a[1]));
+    const dx = (b[0] - a[0]) / len;
+    const dy = (b[1] - a[1]) / len;
+    // The line faces to the left of the drag: drawn left to right it faces up the field,
+    // drawn right to left it faces down. Draw it the other way round to turn about.
+    const mx = (a[0] + b[0]) / 2;
+    const my = (a[1] + b[1]) / 2;
+    const nx = dy;
+    const ny = -dx;
+    out.face = Math.atan2(ny, nx);
+    const GAP = 58;
+    const perRow = Math.max(1, Math.min(sel.length, Math.floor(len / GAP) + 1));
+    const rankOf = (u: BUnit) => ({ infantry: 0, elephant: 0, missile: 1, cavalry: 2, artillery: 3 } as Record<string, number>)[UNIT_STATS[u.type].cls];
+    const units = [...sel].sort((p, q) => rankOf(p) - rankOf(q));
+    const spacing = perRow > 1 ? Math.min(len / (perRow - 1), GAP * 2.5) : 0;
+    for (let r = 0; r * perRow < units.length; r++) {
+      // Within a rank, keep left-to-right order so regiments don't cross each other.
+      const row = units.slice(r * perRow, (r + 1) * perRow).sort((p, q) => (p.x * dx + p.y * dy) - (q.x * dx + q.y * dy));
+      row.forEach((u, k) => {
+        const along = (k - (row.length - 1) / 2) * spacing;
+        out.push({ u, x: mx + dx * along - nx * 56 * r, y: my + dy * along - ny * 56 * r });
+      });
+    }
+    return out;
+  }
+
+  /** Forms the selected regiments up on a drawn line, facing square to it. */
+  private issueLine(a: [number, number], b: [number, number]) {
+    const slots = this.lineSlots(a, b);
+    const face = slots.face ?? 0;
+    const clamp = (v: number, hi: number) => Math.max(15, Math.min(hi - 15, v));
+    if (this.phase === 'deploy') {
+      const [y0, y1] = this.b.deployZone(0);
+      for (const s of slots) {
+        s.u.x = clamp(s.x, FIELD_W);
+        s.u.y = Math.max(y0, Math.min(y1, s.y));
+        s.u.facing = face;
+        s.u.order = { kind: 'hold', face };
+      }
+      return;
+    }
+    for (const s of slots) {
+      s.u.order = { kind: 'move', x: clamp(s.x, FIELD_W), y: clamp(s.y, FIELD_H), face };
+      this.breakAway(s.u);
+    }
+    this.refreshList();
   }
 
   private formSelected(form: Formation) {
@@ -528,9 +598,15 @@ export class BattleScene implements Scene {
         ctx.lineTo(o.x, o.y);
         ctx.stroke();
         ctx.setLineDash([]);
-        ctx.beginPath();
-        ctx.arc(o.x, o.y, 5, 0, Math.PI * 2);
-        ctx.stroke();
+        if (o.face !== undefined) {
+          ctx.globalAlpha = alpha;
+          this.drawGhostSlot(ctx, o.x, o.y, o.face, u);
+          ctx.globalAlpha = 1;
+        } else {
+          ctx.beginPath();
+          ctx.arc(o.x, o.y, 5, 0, Math.PI * 2);
+          ctx.stroke();
+        }
       } else if (o.kind === 'path') {
         ctx.strokeStyle = `rgba(255,236,160,${alpha})`;
         ctx.lineWidth = 2 / this.cam.z;
@@ -669,7 +745,22 @@ export class BattleScene implements Scene {
     }
     ctx.restore();
 
-    if (this.sketch && this.sketch.length > 1) {
+    if (this.sketch && this.sketch.length > 1 && this.sketchLine) {
+      const a = this.sketch[0];
+      const e = this.sketch[this.sketch.length - 1];
+      const slots = this.lineSlots(a, e);
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255,233,160,0.9)';
+      ctx.lineWidth = 2 / z;
+      ctx.setLineDash([8 / z, 5 / z]);
+      ctx.beginPath();
+      ctx.moveTo(a[0], a[1]);
+      ctx.lineTo(e[0], e[1]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      for (const s of slots) this.drawGhostSlot(ctx, s.x, s.y, slots.face ?? 0, s.u);
+      ctx.restore();
+    } else if (this.sketch && this.sketch.length > 1) {
       ctx.save();
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
@@ -698,6 +789,26 @@ export class BattleScene implements Scene {
     ctx.restore();
     this.drawBanner(ctx);
     this.drawTooltip(ctx);
+  }
+
+  /** An outline of where a regiment will stand and which way it will face. */
+  private drawGhostSlot(ctx: CanvasRenderingContext2D, x: number, y: number, face: number, u: BUnit) {
+    const S = this.tileSize(u);
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(face + Math.PI / 2);
+    ctx.fillStyle = 'rgba(255,236,170,0.18)';
+    ctx.strokeStyle = 'rgba(255,236,170,0.95)';
+    ctx.lineWidth = 1.6;
+    ctx.fillRect(-S / 2, -S / 2, S, S);
+    ctx.strokeRect(-S / 2, -S / 2, S, S);
+    // Facing arrow off the front edge.
+    ctx.beginPath();
+    ctx.moveTo(-6, -S / 2 - 2);
+    ctx.lineTo(0, -S / 2 - 10);
+    ctx.lineTo(6, -S / 2 - 2);
+    ctx.stroke();
+    ctx.restore();
   }
 
   /** Darkens the ground none of our regiments can see. */
@@ -1105,7 +1216,7 @@ export class BattleScene implements Scene {
 
   private drawBanner(ctx: CanvasRenderingContext2D) {
     let text: string;
-    if (this.phase === 'deploy') text = 'DEPLOYMENT · RIGHT-CLICK TO PLACE REGIMENTS · SPACE TO BEGIN';
+    if (this.phase === 'deploy') text = 'DEPLOYMENT · RIGHT-CLICK TO PLACE · RIGHT-DRAG FOR A LINE · SPACE TO BEGIN';
     else if (this.phase === 'done') text = 'THE BATTLE IS OVER';
     else if (this.paused) text = 'PAUSED · GIVE ORDERS · SPACE TO RESUME';
     else {
@@ -1191,7 +1302,7 @@ export class BattleScene implements Scene {
       h('div', { class: 'card' },
         h('h3', {}, deploying ? 'Deployment' : this.phase === 'done' ? 'Battle over' : this.paused ? 'Paused' : 'Battle in progress'),
         h('p', { class: 'muted' }, deploying
-          ? 'Select regiments and right-click inside the dashed zone to position them. The enemy cannot move until you begin.'
+          ? 'Select regiments and right-click inside the dashed zone to position them, or right-drag to lay them out along a line at any angle. The enemy cannot move until you begin.'
           : 'Real-time. Pause with Space at any moment to give orders.'),
         h('div', { class: 'btns' },
           deploying
@@ -1208,6 +1319,7 @@ export class BattleScene implements Scene {
         h('ul', { class: 'help' },
           h('li', {}, 'Left-click or drag to select. Shift adds. Right-click: move, or attack an enemy.'),
           h('li', {}, 'Right-drag to draw a curved path; the regiments follow it in formation (end it on an enemy to attack).'),
+          h('li', {}, 'Shift+right-drag (or Q for line mode) draws a battle line at any angle: the selected regiments spread along it, in ranks if needed (foot in front, then shooters, horse and guns), and wheel to face it. Drag left to right to face up the field, right to left to face down (the arrows show which way). During deployment, right-drag always draws a line.'),
           h('li', {}, 'A regiment locked in melee breaks off when you order it elsewhere: it falls back for a few seconds, taking blows from behind and a little morale.'),
           h('li', {}, 'Terrain matters: hold high ground, cross rivers only at the sandy fords, keep horse out of marshes, and use villages and woods as cover.'),
           siege && s.playerAttacks ? h('li', {}, 'Right-click the gate or a wall section with guns or elephants to batter it. Infantry can hack at the gate.') : null,
@@ -1255,7 +1367,7 @@ export class BattleScene implements Scene {
     if (!el) return;
     const sel = this.mySelected();
     const b = this.b;
-    const sig = [...sel.map((u) => `${u.id}${u.formation}${u.feignT > 0}`), this.phase, Math.ceil(b.rallyCd[0]), b.generalLost[0]].join(',');
+    const sig = [...sel.map((u) => `${u.id}${u.formation}${u.feignT > 0}`), this.phase, Math.ceil(b.rallyCd[0]), b.generalLost[0], this.lineMode].join(',');
     if (sig === this.ordersSig) return;
     this.ordersSig = sig;
     const forms = new Set<Formation>();
@@ -1271,6 +1383,11 @@ export class BattleScene implements Scene {
         title: FORMATION_HELP[f], onclick: () => this.formSelected(f),
       }, `${FORMATION_NAMES[f]} (${key[f]})`))) : null,
       h('div', { class: 'btns' },
+        h('button', {
+          class: `small ${this.lineMode ? 'primary' : ''}`,
+          title: 'When on, a right-drag draws a battle line: the selected regiments spread along it, facing the enemy. When off, it draws a march path. Shift+right-drag always draws a line.',
+          onclick: () => { this.lineMode = !this.lineMode; this.ordersSig = ''; this.refreshOrders(); },
+        }, this.lineMode ? '📏 Line mode (Q)' : '〰 Path mode (Q)'),
         horse ? h('button', { class: 'small', disabled: !live, title: 'Gallop away as if beaten, drawing pursuers out of their line, then wheel about.', onclick: () => this.feignSelected() }, '🐎 Feigned flight (F)') : null,
         h('button', {
           class: 'small', disabled: !live || b.generalLost[0] || b.rallyCd[0] > 0,

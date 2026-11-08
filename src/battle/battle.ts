@@ -47,8 +47,10 @@ export interface LeaderMods {
 export const NO_LEADER: LeaderMods = { morale: 1, melee: 1, charge: 1, horse: 1, defense: 1, fatigue: 1 };
 
 export type Order =
-  | { kind: 'hold' }
-  | { kind: 'move'; x: number; y: number }
+  /** Stand still; `face` is the bearing it was told to face (radians), if any. */
+  | { kind: 'hold'; face?: number }
+  /** March to a point, then face `face` if given (a line drawn with a right-drag). */
+  | { kind: 'move'; x: number; y: number; face?: number }
   | { kind: 'attack'; target: number }
   | { kind: 'breach'; seg: number }
   /** Follow a drawn (possibly curved) path, then attack `then` if given. */
@@ -1083,7 +1085,7 @@ export class Battle {
 
     if (o.kind === 'move') {
       moving = this.travel(u, o.x, o.y, speed, dt, 0);
-      if (!moving && Math.hypot(o.x - u.x, o.y - u.y) < 3) u.order = { kind: 'hold' };
+      if (!moving && Math.hypot(o.x - u.x, o.y - u.y) < 3) u.order = { kind: 'hold', face: o.face };
     } else if (o.kind === 'path') {
       const then = o.then !== undefined ? this.get(o.then) : undefined;
       if (then && then.state === 'ok' && dist(u, then) < 90) {
@@ -1140,8 +1142,14 @@ export class Battle {
 
     if (st.range > 0 && (!moving || st.shootMoving) && (u.ammo > 0 || breachSeg >= 0)) this.shoot(u, dt, breachSeg);
     if (!moving && u.aimId < 0 && u.order.kind === 'hold') {
-      const n = this.nearestEnemy(u, 300);
+      // Hold the facing it was given; only an enemy close at hand makes it turn.
+      const face = u.order.face;
+      const n = this.nearestEnemy(u, face === undefined ? 300 : 130);
       if (n) turnToward(u, Math.atan2(n.y - u.y, n.x - u.x), (cls(u) === 'cavalry' ? 1.2 : 0.6) * dt);
+      else if (face !== undefined) {
+        const formTurn = u.formation === 'tight' ? 0.7 : u.formation === 'brace' ? 0.3 : 1;
+        turnToward(u, face, TURN_RATE[cls(u)] * 0.8 * formTurn * dt);
+      }
     }
     u.moving = moving;
     u.movingT = moving ? u.movingT + dt : 0;
@@ -1561,7 +1569,7 @@ export class Battle {
   setFormation(u: BUnit, f: Formation): boolean {
     if (u.state !== 'ok' || !formationsFor(u.type).includes(f) || u.formation === f) return false;
     u.formation = f;
-    if (f === 'brace') u.order = { kind: 'hold' };
+    if (f === 'brace') u.order = { kind: 'hold', face: u.order.kind === 'hold' ? u.order.face : undefined };
     return true;
   }
 
