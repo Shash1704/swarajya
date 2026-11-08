@@ -5,6 +5,7 @@ import { newGame } from './campaign/state';
 import { h, hideModal, showModal } from './ui';
 
 const canvas = document.getElementById('view') as HTMLCanvasElement;
+const canvas3d = document.getElementById('view3d') as HTMLCanvasElement;
 const stage = document.getElementById('stage')!;
 const ctx = canvas.getContext('2d')!;
 
@@ -21,6 +22,12 @@ function fit() {
   canvas.style.height = `${cssH}px`;
   canvas.width = Math.round(cssW * dpr);
   canvas.height = Math.round(cssH * dpr);
+  // The 3D canvas lies exactly under the 2D one.
+  canvas3d.style.width = `${cssW}px`;
+  canvas3d.style.height = `${cssH}px`;
+  canvas3d.style.left = `${canvas.offsetLeft}px`;
+  canvas3d.style.top = `${canvas.offsetTop}px`;
+  app.scene?.resize?.();
 }
 new ResizeObserver(fit).observe(stage);
 fit();

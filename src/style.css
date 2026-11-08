@@ -38,7 +38,10 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 #topbar .push { margin-left: auto; }
 
 #main { flex: 1; display: flex; min-height: 0; }
-#stage { flex: 1; display: flex; align-items: center; justify-content: center; padding: 10px; min-width: 0; min-height: 0; }
+#stage { flex: 1; display: flex; align-items: center; justify-content: center; padding: 10px; min-width: 0; min-height: 0; position: relative; }
+#view { position: relative; z-index: 1; }
+/* The 3D battlefield (Babylon.js) sits under the 2D canvas, which carries labels and takes the input. */
+#view3d { position: absolute; display: none; z-index: 0; outline: none; touch-action: none; pointer-events: none; }
 #view {
   display: block;
   border: 1px solid var(--line);

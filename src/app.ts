@@ -4,6 +4,10 @@ export const VIEW_H = 720;
 
 export interface Scene {
   enter?(): void;
+  /** Called when another scene takes over. */
+  exit?(): void;
+  /** The view was resized. */
+  resize?(): void;
   update(dt: number): void;
   draw(ctx: CanvasRenderingContext2D): void;
   pointerDown?(x: number, y: number, button: number, e: PointerEvent): void;
@@ -18,6 +22,7 @@ class App {
   scene: Scene | null = null;
 
   setScene(s: Scene) {
+    if (this.scene !== s) this.scene?.exit?.();
     this.scene = s;
     s.enter?.();
   }

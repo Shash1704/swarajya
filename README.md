@@ -42,7 +42,7 @@ Open the URL Vite prints. Add `?seed=123` to fix the random seed (terrain detail
 
 ## Battles
 
-Battles are real-time with pause on a large field. Scroll (or pinch) to zoom; use WASD, the arrow keys or middle-drag to pan. First there is a deployment phase in which armies form up in ranks; press **Space** to begin, and Space again to pause at any time. Use **1/2/3** for speed. An army holds up to 20 regiments.
+Battles are real-time with pause on a large field, drawn in **3D** (Babylon.js): the painted battle map is draped over real hills, with woods of trees, village houses, towered siege walls that crumble as they're breached, and every regiment shown as a block of little soldiers (foot, horsemen, elephants with howdahs, guns with crews) in its colours, with its counter floating above. Sun, shadows, haze, morning mist and dusk light the field. **Z/C** (or the ⟲ ⟳ buttons) turn the camera and **Shift+middle-drag** turns and tilts it. The **3D/2D** button switches to the flat map view (remembered per browser; browsers without WebGL use 2D). Scroll (or pinch) to zoom; use WASD, the arrow keys or middle-drag to pan. First there is a deployment phase in which armies form up in ranks; press **Space** to begin, and Space again to pause at any time. Use **1/2/3** for speed. An army holds up to 20 regiments.
 
 - **Terrain decides battles:** hills give the high ground (stronger blows, longer range, downhill charges; uphill marches are slow); rivers can be crossed safely only at the sandy fords; marshes bog down horse and elephants; villages and woods give cover. **Right-drag** (or long-press and drag) to draw a curved path for the selected regiments; they wheel through turns rather than sliding.
 - **Battle lines at any angle:** **Shift+right-drag** (or press **Q** for line mode, also a button in the Orders panel) draws a straight battle line. The selected regiments spread along it, in ranks if there are more than fit (foot in front, then shooters, horse and guns), and wheel to face square to it: drag left to right to face up the field, right to left to face down. During deployment, right-drag always draws a line. Regiments keep the facing they were given until an enemy comes close.
@@ -86,6 +86,8 @@ Every unit is marked with a NATO-style map symbol: a cross for infantry, a singl
 | `src/campaign/scene.ts` | Camera, time controls, armies and routes, orders, prompts and side panels |
 | `src/battle/battle.ts` | Real-time combat: melee, missiles, morale, walls, ladders, towers |
 | `src/battle/ai.ts` | Battle AI for field battles and for attacking or defending sieges |
-| `src/battle/scene.ts` | Battle rendering, controls and results |
+| `src/battle/scene.ts` | Battle controls, 2D rendering, the overlay drawn over the 3D view, and results |
+| `src/battle/view3d.ts` | The 3D battlefield (Babylon.js): terrain, trees, houses, walls, soldiers, camera, picking and projection |
+| `src/campaign/paths.ts` | Free movement: A* over the land grid, straightened into direct marches |
 
-It's plain TypeScript drawing on a canvas, with no engine, built with Vite.
+It's TypeScript built with Vite. The campaign map and the battle overlay are drawn on a 2D canvas; the battlefield itself is 3D with Babylon.js, loaded only when a battle starts.
