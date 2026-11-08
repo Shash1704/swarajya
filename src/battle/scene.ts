@@ -50,7 +50,6 @@ export class BattleScene implements Scene {
   private drag: { x0: number; y0: number; x1: number; y1: number } | null = null;
   /** A path being drawn with the right mouse button (or a long press), in world coords. */
   private sketch: [number, number][] | null = null;
-  private generalIds: [number, number] = [-1, -1];
   private mouse = { x: -100, y: -100 };
   /** Mouse position on the battlefield (world coords). */
   private mouseW = { x: -100, y: -100 };
@@ -73,11 +72,7 @@ export class BattleScene implements Scene {
       rain: setup.rain, walls: setup.walls, ladders: setup.ladders, ram: setup.ram, river: setup.river, marsh: setup.marsh,
     });
     this.bg = renderBattlefield(this.b, setup);
-    // Each commander rides with the strongest regiment on his side, under his standard.
-    for (const side of [0, 1] as const) {
-      const best = this.b.units.filter((u) => u.side === side).sort((a, c) => c.men * UNIT_STATS[c.type].value - a.men * UNIT_STATS[a.type].value)[0];
-      if (best) this.generalIds[side] = best.id;
-    }
+
   }
 
   enter() {
@@ -748,6 +743,21 @@ export class BattleScene implements Scene {
       ctx.fillRect(dx - sz / 2, dy - sz / 2, sz, sz * (st.cls === 'cavalry' ? 1.6 : 1));
     }
 
+    // Speed lines behind a regiment running or galloping in.
+    if (u.rushing && u.moving) {
+      ctx.strokeStyle = 'rgba(250,240,205,0.65)';
+      ctx.lineWidth = 1.6;
+      ctx.lineCap = 'round';
+      for (let i = -1; i <= 1; i++) {
+        const off = i * S * 0.3;
+        const len = 14 + ((this.t * 90 + i * 7 + u.id) % 10);
+        ctx.beginPath();
+        ctx.moveTo(off, S / 2 + 4);
+        ctx.lineTo(off, S / 2 + 4 + len);
+        ctx.stroke();
+      }
+    }
+
     // Shadow, then the counter.
     ctx.fillStyle = 'rgba(20,14,8,0.35)';
     ctx.fillRect(-S / 2 + 2.5, -S / 2 + 3.5, S, S);
@@ -796,7 +806,7 @@ export class BattleScene implements Scene {
       }
       ctx.restore();
     }
-    if (this.generalIds[u.side] === u.id && u.state !== 'dead') this.drawStandard(ctx, u, f);
+    if (this.b.generalIds[u.side] === u.id && u.state === 'ok') this.drawStandard(ctx, u, f);
   }
 
   /** The commander's standard: pole, crossbar and swallow-tailed banner above his regiment. */
@@ -1005,7 +1015,10 @@ export class BattleScene implements Scene {
           siege && s.playerAttacks ? h('li', {}, 'Right-click the gate or a wall section with guns or elephants to batter it. Infantry can hack at the gate.') : null,
           siege && s.playerAttacks && s.ladders ? h('li', {}, 'You have ladders: send infantry at the walls and they will climb.') : null,
           siege ? h('li', {}, 'The attacker wins by holding the town square, or by breaking the defenders.') : null,
-          h('li', {}, 'Charge into flanks and rear. Spears stop horse and elephants. Guns and rockets panic elephants.'),
+          h('li', {}, 'Cavalry must charge flanks and rear: a head-on charge into formed infantry breaks, and the riders bleed for it (worst against spears). Archers cannot stand against horse at all.'),
+          h('li', {}, 'Pin an enemy regiment from the front, then hit its flank or rear: infantry on infantry flanks are devastating.'),
+          h('li', {}, 'Regiments sent at an enemy break into a run (horse into a gallop) for the last stretch and hit harder on impact.'),
+          h('li', {}, 'Guard your commander (his standard flies over his regiment). If his regiment breaks, the whole army loses heart.'),
           h('li', {}, 'Mavalas fight best in forest and on hills. Keys: 1/2/3 speed, H hold.'),
           h('li', {}, 'Scroll or pinch to zoom; WASD, arrow keys or middle-drag to pan.'),
         ),

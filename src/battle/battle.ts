@@ -63,6 +63,8 @@ export interface BUnit {
   climbing: boolean;
   climbT: number;
   blocked: boolean;
+  /** Running or galloping in to close with the enemy this step. */
+  rushing: boolean;
   rallied: boolean;
   dmgMelee: number;
   dmgMissile: number;
@@ -127,7 +129,7 @@ export const radiusOf = (t: UnitType) => {
 };
 const cls = (u: BUnit) => UNIT_STATS[u.type].cls;
 /** How fast each kind of unit can wheel, in radians per second. */
-const TURN_RATE: Record<string, number> = { infantry: 2.2, missile: 2.4, cavalry: 1.5, elephant: 1.1, artillery: 0.8 };
+const TURN_RATE: Record<string, number> = { infantry: 3.3, missile: 3.0, cavalry: 1.6, elephant: 1.1, artillery: 0.8 };
 const weapon = (u: BUnit) => UNIT_STATS[u.type].weapon;
 const canMountWalls = (t: UnitType) => {
   const c = UNIT_STATS[t].cls;
@@ -151,6 +153,9 @@ export class Battle {
   floaters: Floater[] = [];
   time = 0;
   winner: -1 | 0 | 1 = -1;
+  /** The regiment each side's commander rides with, and whether he has fallen. */
+  generalIds: [number, number] = [-1, -1];
+  generalLost: [boolean, boolean] = [false, false];
   readonly opts: BattleOptions;
   readonly attacker: 0 | 1;
   readonly timeLimit: number;
@@ -166,6 +171,12 @@ export class Battle {
     if (opts.mode === 'siege') this.makeWalls();
     this.deploy(player, 0);
     this.deploy(enemy, 1);
+    // Each commander rides with the strongest regiment on his side.
+    for (const side of [0, 1] as const) {
+      const best = this.units.filter((u) => u.side === side)
+        .sort((a, c) => c.men * UNIT_STATS[c.type].value - a.men * UNIT_STATS[a.type].value)[0];
+      if (best) this.generalIds[side] = best.id;
+    }
   }
 
   get defender(): 0 | 1 {
@@ -384,7 +395,7 @@ export class Battle {
       id: this.nextId++, side, type: ref.type, ref, men: ref.men, maxMen: st.maxMen, startMen: ref.men,
       x, y, facing, morale: st.morale, maxMorale: st.morale, order: { kind: 'hold' }, state: 'ok',
       contactTime: 0, chargeT: 0, movingT: 0, calm: 10, fighting: false, moving: false, aimId: -1,
-      reload: st.reload * this.rng.range(0.3, 0.8), climbing: false, climbT: 0, blocked: false, rallied: false,
+      reload: st.reload * this.rng.range(0.3, 0.8), climbing: false, climbT: 0, blocked: false, rushing: false, rallied: false,
       dmgMelee: 0, dmgMissile: 0, moraleHit: 0, px: x, py: y,
     });
   }
@@ -505,7 +516,8 @@ export class Battle {
     const straight = d < 22 || off < 0.06;
     const vx = straight ? dx / d : Math.cos(u.facing);
     const vy = straight ? dy / d : Math.sin(u.facing);
-    let k = off > 1.6 ? 0.2 : Math.max(0.35, Math.cos(off));
+    const nimble = UNIT_STATS[u.type].cls === 'infantry' || UNIT_STATS[u.type].cls === 'missile';
+    let k = off > 1.6 ? (nimble ? 0.4 : 0.2) : Math.max(nimble ? 0.6 : 0.35, Math.cos(off));
     // Climbing slows a march; going downhill does not speed it up much.
     const climb = this.height({ x: u.x + vx * 12, y: u.y + vy * 12 }) - this.height(u);
     if (climb > 0) k *= Math.max(0.55, 1 - climb * 6);
@@ -513,6 +525,22 @@ export class Battle {
     u.x += vx * s;
     u.y += vy * s;
     return true;
+  }
+
+  /**
+   * Speed-up for the final dash at an enemy: horse break into a gallop, foot
+   * into a run. Rough ground (river, marsh) kills the momentum.
+   */
+  private rush(u: BUnit, t: BUnit): number {
+    if (t.state === 'dead' || t.state === 'fled' || this.inRiver(u) || this.inMarsh(u)) return 1;
+    const st = UNIT_STATS[u.type];
+    const d = dist(u, t);
+    let k = 1;
+    if (st.cls === 'cavalry' && d < 220) k = 1.55;
+    else if (st.cls === 'elephant' && d < 150) k = 1.3;
+    else if (st.cls === 'infantry' && d < 120) k = st.wild ? 1.45 : 1.35;
+    if (k > 1) u.rushing = true;
+    return k;
   }
 
   private destOf(u: BUnit): { x: number; y: number } | null {
@@ -568,6 +596,7 @@ export class Battle {
       u.fighting = false;
       u.aimId = -1;
       u.blocked = false;
+      u.rushing = false;
       u.px = u.x;
       u.py = u.y;
     }
@@ -592,15 +621,33 @@ export class Battle {
       }
       if (contact) {
         const st = UNIT_STATS[u.type];
-        if (u.contactTime === 0 && u.movingT > 0.4 && st.charge > 1.1 && !u.climbing) {
-          u.chargeT = 2.5;
-          if (isLarge(u.type)) this.float(u.x, u.y, 'Charge!', '#ffe08a');
+        if (u.contactTime === 0 && u.movingT > 0.4 && (st.charge > 1.1 || st.cls === 'infantry') && !u.climbing) {
+          u.chargeT = st.cls === 'infantry' ? 1.6 : 2.5;
+          const zone = this.attackZone(u, contact);
+          const intoFoot = UNIT_STATS[contact.type].cls === 'infantry' && contact.state === 'ok';
+          const label = zone === 'front' ? 'Charge!' : zone === 'flank' ? 'Flank charge!' : 'Charge from behind!';
+          if (isLarge(u.type) && intoFoot && zone === 'front') {
+            this.float(u.x, u.y, 'Charge broken!', '#ff9a8a');
+          } else {
+            this.float(u.x, u.y, label, st.cls === 'infantry' ? '#ffd0a0' : '#ffe08a');
+            // The shock of impact: the regiment struck wavers at once, worst from the side or behind.
+            if (contact.state === 'ok') {
+              const base = st.cls === 'infantry' ? 5 : 9;
+              contact.morale -= base * (zone === 'front' ? 1 : zone === 'flank' ? 1.8 : 2.4);
+            }
+          }
         }
         u.fighting = true;
         if (this.inRiver(u)) u.moraleHit += 3 * dt; // fighting waist-deep in a river
         u.contactTime += dt;
         u.chargeT = Math.max(0, u.chargeT - dt);
-        if (!u.climbing) turnToward(u, Math.atan2(contact.y - u.y, contact.x - u.x), 4 * dt);
+        if (!u.climbing) {
+          // A regiment already fighting something to its front holds its facing; one struck only from
+          // the side or rear wheels round slowly, and is cut up while it does.
+          const c = contact;
+          const engagedFront = hittable.some((e) => e.side !== u.side && dist(u, e) < CONTACT && this.attackZone(e, u) === 'front');
+          if (!engagedFront) turnToward(u, Math.atan2(c.y - u.y, c.x - u.x), (cls(u) === 'cavalry' ? 1.2 : 0.55) * dt);
+        }
         this.melee(u, contact, dt);
       } else {
         u.contactTime = 0;
@@ -726,6 +773,7 @@ export class Battle {
         u.state = 'dead';
         u.men = 0;
         this.moraleShock(u, 9);
+        this.checkGeneral(u);
         continue;
       }
       if (u.state === 'ok') {
@@ -736,6 +784,7 @@ export class Battle {
           u.order = { kind: 'hold' };
           this.float(u.x, u.y, cls(u) === 'elephant' ? 'Amok!' : 'Routing!', '#ff8a7a');
           this.moraleShock(u, 7);
+          this.checkGeneral(u);
         } else if (!u.fighting && u.calm > 1) {
           u.morale = Math.min(u.maxMorale, u.morale + 3 * dt);
         }
@@ -802,7 +851,7 @@ export class Battle {
       } else if (st.skirmish && dist(u, t) <= st.range * 0.9) {
         // Horse archers circle at bow range.
       } else {
-        moving = this.travel(u, t.x, t.y, speed, dt, CONTACT - 6);
+        moving = this.travel(u, t.x, t.y, speed * this.rush(u, t), dt, CONTACT - 6);
       }
     } else if (o.kind === 'breach' && this.walls) {
       const seg = this.walls.segs[o.seg];
@@ -833,7 +882,7 @@ export class Battle {
     if (st.range > 0 && (!moving || st.shootMoving)) this.shoot(u, dt, breachSeg);
     if (!moving && u.aimId < 0 && u.order.kind === 'hold') {
       const n = this.nearestEnemy(u, 300);
-      if (n) turnToward(u, Math.atan2(n.y - u.y, n.x - u.x), 1.2 * dt);
+      if (n) turnToward(u, Math.atan2(n.y - u.y, n.x - u.x), (cls(u) === 'cavalry' ? 1.2 : 0.6) * dt);
     }
     u.moving = moving;
     u.movingT = moving ? u.movingT + dt : 0;
@@ -951,24 +1000,73 @@ export class Battle {
     this.shots.push({ kind: weapon(u) === 'cannon' ? 'cannon' : weapon(u) === 'rocket' ? 'rocket' : 'musket', x0: u.x, y0: u.y, x1: victim.x, y1: victim.y, t: 0 });
   }
 
+  /** Where a blow lands on the target: its front, a flank, or its rear. */
+  attackZone(a: BUnit, t: BUnit): 'front' | 'flank' | 'rear' {
+    if (t.state === 'routing') return 'rear';
+    if (t.climbing) return 'front';
+    const rel = Math.abs(angDiff(t.facing, Math.atan2(a.y - t.y, a.x - t.x)));
+    return rel > 2.1 ? 'rear' : rel > 1.05 ? 'flank' : 'front';
+  }
+
+  /** When the commander's regiment breaks or is destroyed, the whole army's nerve goes with it. */
+  private checkGeneral(u: BUnit) {
+    const side = u.side;
+    if (this.generalIds[side] !== u.id || this.generalLost[side]) return;
+    this.generalLost[side] = true;
+    this.float(u.x, u.y - 24, 'The general has fallen!', '#ff6b5b');
+    for (const v of this.units) {
+      if (v.side !== side || v.state !== 'ok') continue;
+      v.morale -= Math.max(25, v.maxMorale * 0.4);
+      v.calm = 0;
+    }
+  }
+
   private melee(a: BUnit, t: BUnit, dt: number) {
     const sa = UNIT_STATS[a.type];
     const st = UNIT_STATS[t.type];
     let mult = 1;
-    const rel = Math.abs(angDiff(t.facing, Math.atan2(a.y - t.y, a.x - t.x)));
+    const zone = this.attackZone(a, t);
+    const horse = sa.cls === 'cavalry';
+    const tFoot = st.cls === 'infantry';
+    const tShooters = st.cls === 'missile' || st.cls === 'artillery';
+
+    // Blows from the side or behind. Infantry are ruinous to each other's flanks.
     if (t.state === 'routing') mult *= 1.5;
-    else if (rel > 1.9 && !t.climbing) {
-      mult *= 1.5; // flank or rear
-      t.moraleHit += 4 * dt;
+    else if (zone !== 'front') {
+      const footOnFoot = sa.cls === 'infantry' && (tFoot || tShooters);
+      mult *= zone === 'rear' ? (footOnFoot ? 2.0 : 1.5) : (footOnFoot ? 1.6 : 1.3);
+      t.moraleHit += (zone === 'rear' ? 6 : 4) * dt;
     }
+
+    // The charge.
     if (a.chargeT > 0 && !this.inRiver(a) && !this.inMarsh(a)) {
-      const braced = st.antiLarge > 1 && isLarge(a.type) && t.state === 'ok' && rel < 1.2;
-      // A charge down a slope hits harder still.
-      if (!braced) mult *= sa.charge * (this.height(a) - this.height(t) > 0.2 ? 1.2 : 1);
+      const slope = this.height(a) - this.height(t) > 0.2 ? 1.2 : 1;
+      if (horse && tFoot && zone === 'front' && t.state === 'ok') {
+        // Head-on into a formed infantry line the charge breaks, and the riders pay for it:
+        // spears and pikes most of all.
+        const recoil = (MELEE_RATE * t.men * st.melee * (st.antiLarge > 1 ? 2.4 : 1.3) * dt) / sa.defense;
+        a.dmgMelee += recoil;
+        a.moraleHit += 3 * dt;
+      } else if (st.antiLarge > 1 && isLarge(a.type) && zone === 'front' && t.state === 'ok') {
+        // Elephants into braced spears: no impetus.
+      } else if (horse && tShooters && zone === 'front') {
+        mult *= 1 + (sa.charge - 1) * 0.7 * slope;
+      } else {
+        // Foot that run in hit harder too, though less than horse.
+        mult *= (sa.cls === 'infantry' ? Math.max(1.35, sa.charge * 1.1) : sa.charge) * slope;
+      }
     }
+    // Once the charge is spent, horse still fight poorly against an unbroken infantry front.
+    if (horse && tFoot && zone === 'front' && t.state === 'ok') mult *= 0.85;
+    // Archers and gunners cannot stand against horse, least of all from the side.
+    if (horse && tShooters) {
+      mult *= zone === 'front' ? 1.5 : 2.0;
+      t.moraleHit += (zone === 'front' ? 3 : 6) * dt;
+    }
+
     if (isLarge(t.type)) mult *= sa.antiLarge;
     if (sa.wild && (this.inForest(a) || this.height(a) > 0.35)) mult *= 1.25;
-    if (sa.cls === 'cavalry' && this.inForest(a)) mult *= 0.7;
+    if (horse && this.inForest(a)) mult *= 0.7;
     const dh = this.height(a) - this.height(t);
     if (dh > 0.15) mult *= 1 + Math.min(0.4, dh * 0.8); // fighting downhill
     else if (dh < -0.15) mult *= Math.max(0.7, 1 + dh * 0.6); // fighting uphill

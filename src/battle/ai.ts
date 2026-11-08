@@ -114,9 +114,17 @@ function planField(b: Battle, side: 0 | 1, mine: BUnit[], foes: BUnit[]) {
   const shaken = (u: BUnit) => !u.fighting && u.morale < u.maxMorale * 0.3;
   for (const u of mine) if (shaken(u)) march(b, u, { x: M.x - ax * 120, y: M.y - ay * 120 });
 
-  const line = mine.filter((u) => !shaken(u) && (cls(u) === 'infantry' || cls(u) === 'elephant'));
-  const shooters = mine.filter((u) => !shaken(u) && cls(u) === 'missile');
-  const horse = mine.filter((u) => !shaken(u) && cls(u) === 'cavalry');
+  // The commander's regiment stays behind the line: losing him would shake the whole army.
+  const general = mine.length > 3 ? mine.find((u) => u.id === b.generalIds[side]) : undefined;
+  if (general && !shaken(general)) {
+    const threat = closest(general, foes);
+    if (threat && dist(general, threat) < 140) engage(b, general, threat);
+    else march(b, general, { x: M.x - ax * 130, y: M.y - ay * 130 });
+  }
+  const free = (u: BUnit) => u !== general && !shaken(u);
+  const line = mine.filter((u) => free(u) && (cls(u) === 'infantry' || cls(u) === 'elephant'));
+  const shooters = mine.filter((u) => free(u) && cls(u) === 'missile');
+  const horse = mine.filter((u) => free(u) && cls(u) === 'cavalry');
   const guns = mine.filter((u) => cls(u) === 'artillery');
 
   // Endgame: with the main lines gone, or nothing happening, the survivors close in and finish it.
