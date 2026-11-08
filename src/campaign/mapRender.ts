@@ -314,7 +314,8 @@ export class MapRenderer {
     }
   }
 
-  draw(ctx: CanvasRenderingContext2D, state: GameState, v: View, selected: number, targets: Set<number>) {
+  /** `symbols`: draw the little mountain and forest marks (off when the map has real 3D relief). */
+  draw(ctx: CanvasRenderingContext2D, state: GameState, v: View, selected: number, targets: Set<number>, symbols = true) {
     const z = v.z;
     const px = (n: number) => n / z; // screen pixels -> world units
     ctx.save();
@@ -355,7 +356,7 @@ export class MapRenderer {
     ctx.globalCompositeOperation = 'source-over';
 
     // Mountains and forests as map symbols over the paint.
-    if (z >= 0.55) {
+    if (z >= 0.55 && symbols) {
       ctx.fillStyle = 'rgba(70,50,30,0.32)';
       ctx.fill(this.peakShadow);
       ctx.strokeStyle = 'rgba(62,42,24,0.7)';

@@ -9,23 +9,7 @@ import { Battle, type BUnit, FIELD_H, FIELD_W, type LeaderMods, radiusOf, type T
 import { planSide } from './ai';
 import type { View3D } from './view3d';
 
-/** Whether battles draw in 3D (remembered per browser). */
-const PREF_3D = 'swarajya-3d';
-function want3D(): boolean {
-  try {
-    return localStorage.getItem(PREF_3D) !== '0';
-  } catch {
-    return true;
-  }
-}
-function hasWebGL(): boolean {
-  try {
-    const c = document.createElement('canvas');
-    return !!(c.getContext('webgl2') || c.getContext('webgl'));
-  } catch {
-    return false;
-  }
-}
+import { canvas3d, hasWebGL, setWant3D, want3D } from '../pref3d';
 
 export interface BattleSetup {
   mode: 'field' | 'siege';
@@ -137,7 +121,7 @@ export class BattleScene implements Scene {
   private load3D() {
     if (this.v3 || this.loading3D) return;
     this.loading3D = true;
-    const canvas = document.getElementById('view3d') as HTMLCanvasElement;
+    const canvas = canvas3d();
     import('./view3d').then(({ View3D }) => {
       this.loading3D = false;
       if (this.gone || !this.use3D) return;
@@ -157,17 +141,13 @@ export class BattleScene implements Scene {
   private drop3D() {
     this.v3?.dispose();
     this.v3 = null;
-    const canvas = document.getElementById('view3d') as HTMLCanvasElement | null;
+    const canvas = canvas3d();
     if (canvas) canvas.style.display = 'none';
   }
 
   private toggle3D() {
     this.use3D = !this.use3D;
-    try {
-      localStorage.setItem(PREF_3D, this.use3D ? '1' : '0');
-    } catch {
-      // private browsing: the choice just isn't remembered
-    }
+    setWant3D(this.use3D);
     if (this.use3D) this.load3D();
     else this.drop3D();
     this.renderUI();

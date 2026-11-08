@@ -1,4 +1,6 @@
-import { Engine } from '@babylonjs/core/Engines/engine';
+import type { Engine } from '@babylonjs/core/Engines/engine';
+import { engineFor } from '../three/engine';
+import { groundGrain, plasterTexture, stoneTexture } from '../three/textures';
 import { Scene } from '@babylonjs/core/scene';
 import { ArcRotateCamera } from '@babylonjs/core/Cameras/arcRotateCamera';
 import { HemisphericLight } from '@babylonjs/core/Lights/hemisphericLight';
@@ -133,10 +135,7 @@ export class View3D {
     this.canvas = canvas;
     this.b = b;
     this.factions = factions;
-    if (!engine || engine.getRenderingCanvas() !== canvas) {
-      engine?.dispose();
-      engine = new Engine(canvas, true, { preserveDrawingBuffer: false, stencil: false, antialias: true }, true);
-    }
+    engine = engineFor(canvas);
     const scene = new Scene(engine);
     this.scene = scene;
     scene.clearColor = new Color4(0.74, 0.8, 0.84, 1);
@@ -244,6 +243,12 @@ export class View3D {
     tex.anisotropicFilteringLevel = 8;
     const mat = new StandardMaterial('groundMat', scene);
     mat.diffuseTexture = tex;
+    // Grain of earth and grass up close.
+    const grain = groundGrain(scene);
+    grain.uScale = 40;
+    grain.vScale = 27;
+    mat.bumpTexture = grain;
+    grain.level = 0.5;
     mat.specularColor = new Color3(0.05, 0.05, 0.04);
     ground.material = mat;
 
@@ -318,6 +323,7 @@ export class View3D {
     const scene = this.scene;
     const house = CreateBox('house', { size: 1 }, scene);
     house.material = this.mat('wall', [1, 1, 1]);
+    (house.material as StandardMaterial).diffuseTexture = plasterTexture(scene);
     const roof = CreateCylinder('roof', { height: 1, diameter: 1, tessellation: 3 }, scene);
     roof.material = this.mat('thatch', [0.55, 0.32, 0.17]);
     const houses = new Crowd(house, true);
@@ -347,7 +353,10 @@ export class View3D {
   private buildWalls(shadows: ShadowGenerator) {
     const W = this.b.walls!;
     const scene = this.scene;
-    const stone = this.mat('stone', [0.7, 0.64, 0.54]);
+    const stone = this.mat('stone', [1, 1, 1]);
+    const st = stoneTexture(scene);
+    st.uScale = 4;
+    stone.diffuseTexture = st;
     const wood = this.mat('gate', [0.42, 0.28, 0.16]);
     const height = [0, 22, 34, 44][W.level];
     W.segs.forEach((s, i) => {
@@ -659,7 +668,7 @@ export class View3D {
     const w = engine!.getRenderWidth();
     const h = engine!.getRenderHeight();
     const p = Vector3.Project(new Vector3(toX(x), this.groundY(x, y) + lift, toZ(y)), Matrix.Identity(),
-      this.scene.getTransformMatrix(), this.camera.viewport.toGlobal(w, h));
+      this.camera.getViewMatrix().multiply(this.camera.getProjectionMatrix()), this.camera.viewport.toGlobal(w, h));
     if (p.z < 0 || p.z > 1) return null;
     return [(p.x * VIEW_W) / w, (p.y * VIEW_H) / h];
   }
@@ -730,10 +739,10 @@ export class View3D {
     const fz = -Math.sin(a);
     const rx = fz;
     const rz = -fx;
+    // Move the target in place (assigning a new one would change the zoom).
     const t = c.target;
-    t.x = Math.max(-FIELD_W / 2, Math.min(FIELD_W / 2, t.x + rx * right + fx * fwd));
-    t.z = Math.max(-FIELD_H / 2, Math.min(FIELD_H / 2, t.z + rz * right + fz * fwd));
-    c.target = t;
+    t.set(Math.max(-FIELD_W / 2, Math.min(FIELD_W / 2, t.x + rx * right + fx * fwd)), t.y,
+      Math.max(-FIELD_H / 2, Math.min(FIELD_H / 2, t.z + rz * right + fz * fwd)));
   }
 
   rotate(da: number) {

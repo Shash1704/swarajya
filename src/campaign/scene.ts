@@ -22,6 +22,8 @@ import {
   unrestCauses, fleetTargets, cessionFor,
 } from './realm';
 import { BattleScene } from '../battle/scene';
+import { canvas3d, hasWebGL, setWant3D, want3D } from '../pref3d';
+import type { Map3D } from './map3d';
 import type { Terrain } from '../battle/battle';
 
 const MAX_ZOOM = 3;
@@ -59,6 +61,12 @@ export class CampaignScene implements Scene {
   private dateEl: HTMLElement | null = null;
   private overShown = false;
   private t = 0;
+  /** The 3D map, once Babylon.js has loaded (null in 2D or while loading). */
+  private v3: Map3D | null = null;
+  private use3D = want3D() && hasWebGL();
+  private loading3D = false;
+  private skinKey = '';
+  private orbit = false;
 
   constructor(state: GameState) {
     this.state = state;
@@ -68,10 +76,62 @@ export class CampaignScene implements Scene {
     this.cam.x = cap.x - VIEW_W / 2 / this.cam.z + 140;
     this.cam.y = cap.y - VIEW_H / 2 / this.cam.z - 30;
     this.clampCam();
+    if (this.use3D) this.load3D();
   }
 
   enter() {
     this.dirty = true;
+    this.skinKey = '';
+    if (this.v3) {
+      canvas3d().style.display = 'block';
+      this.v3.resize();
+    }
+    this.renderUI(true);
+  }
+
+  resize() {
+    this.v3?.resize();
+  }
+
+  /** Loads Babylon.js and builds the 3D map; the flat map shows until it's ready. */
+  private load3D() {
+    if (this.v3 || this.loading3D) return;
+    this.loading3D = true;
+    import('./map3d').then(({ Map3D }) => {
+      this.loading3D = false;
+      if (!this.use3D) return;
+      const canvas = canvas3d();
+      // Look over the Deccan from the south-west, centred where the 2D view was.
+      const cx = this.cam.x + VIEW_W / 2 / this.cam.z;
+      const cy = this.cam.y + VIEW_H / 2 / this.cam.z;
+      const v = new Map3D(canvas, this.state);
+      v.setTarget(cx, cy);
+      this.v3 = v;
+      this.skinKey = '';
+      if (app.scene === this) {
+        canvas.style.display = 'block';
+        v.resize();
+      }
+      this.renderUI(true);
+    }).catch((err) => {
+      console.warn('3D map unavailable, using 2D:', err);
+      this.loading3D = false;
+      this.use3D = false;
+      this.renderUI(true);
+    });
+  }
+
+  private toggle3D() {
+    this.use3D = !this.use3D;
+    setWant3D(this.use3D);
+    if (this.use3D) this.load3D();
+    else {
+      this.v3?.dispose();
+      this.v3 = null;
+      canvas3d().style.display = 'none';
+      this.cam.z = 2.2;
+      this.clampCam();
+    }
     this.renderUI(true);
   }
 
@@ -80,12 +140,21 @@ export class CampaignScene implements Scene {
   update(dt: number) {
     this.t += dt;
     const k = this.keys;
-    const pan = (600 / this.cam.z) * dt;
-    if (k.has('arrowleft') || k.has('a')) this.cam.x -= pan;
-    if (k.has('arrowright') || k.has('d')) this.cam.x += pan;
-    if (k.has('arrowup') || k.has('w')) this.cam.y -= pan;
-    if (k.has('arrowdown') || k.has('s')) this.cam.y += pan;
-    if (k.size) this.clampCam();
+    if (this.v3) {
+      const pan = this.v3.camera.radius * 0.9 * dt;
+      const right = (k.has('arrowright') || k.has('d') ? 1 : 0) - (k.has('arrowleft') || k.has('a') ? 1 : 0);
+      const fwd = (k.has('arrowup') || k.has('w') ? 1 : 0) - (k.has('arrowdown') || k.has('s') ? 1 : 0);
+      if (right || fwd) this.v3.panGround(right * pan, fwd * pan);
+      if (k.has('z')) this.v3.rotate(1.2 * dt);
+      if (k.has('c')) this.v3.rotate(-1.2 * dt);
+    } else {
+      const pan = (600 / this.cam.z) * dt;
+      if (k.has('arrowleft') || k.has('a')) this.cam.x -= pan;
+      if (k.has('arrowright') || k.has('d')) this.cam.x += pan;
+      if (k.has('arrowup') || k.has('w')) this.cam.y -= pan;
+      if (k.has('arrowdown') || k.has('s')) this.cam.y += pan;
+      if (k.size) this.clampCam();
+    }
 
     const s = this.state;
     if (!this.paused && !this.world.waiting && !modalOpen() && app.scene === this && !s.over) {
@@ -119,14 +188,20 @@ export class CampaignScene implements Scene {
   }
 
   private toScreen(wx: number, wy: number): [number, number] {
+    if (this.v3) return this.v3.project(wx, wy);
     return [(wx - this.cam.x) * this.cam.z, (wy - this.cam.y) * this.cam.z];
   }
 
   private toWorldPt(sx: number, sy: number): [number, number] {
+    if (this.v3) return this.v3.pick(sx, sy) ?? [-1, -1];
     return [this.cam.x + sx / this.cam.z, this.cam.y + sy / this.cam.z];
   }
 
   private zoomAt(sx: number, sy: number, factor: number) {
+    if (this.v3) {
+      this.v3.zoomBy(factor);
+      return;
+    }
     const [wx, wy] = this.toWorldPt(sx, sy);
     this.cam.z = Math.max(this.minZoom(), Math.min(MAX_ZOOM, this.cam.z * factor));
     this.cam.x = wx - sx / this.cam.z;
@@ -135,6 +210,10 @@ export class CampaignScene implements Scene {
   }
 
   private centerOn(p: { x: number; y: number }) {
+    if (this.v3) {
+      this.v3.setTarget(p.x, p.y);
+      return;
+    }
     this.cam.x = p.x - VIEW_W / 2 / this.cam.z;
     this.cam.y = p.y - VIEW_H / 2 / this.cam.z;
     this.clampCam();
@@ -205,8 +284,31 @@ export class CampaignScene implements Scene {
     ctx.drawImage(this.layer, 0, 0, VIEW_W, VIEW_H);
   }
 
+  /** The 3D map: repaint its skin when realms or the selection change, then render it. */
+  private draw3D(ctx: CanvasRenderingContext2D) {
+    const v = this.v3!;
+    const os = this.state.provinces.map((p) => `${p.owner}${p.siege ? 's' : ''}`).join(',');
+    if (this.dirty || os !== this.lastOwnerSig) {
+      this.lastOwnerSig = os;
+      this.recompute();
+      this.dirty = false;
+    }
+    const key = `${this.version}|${this.selProv}`;
+    if (key !== this.skinKey) {
+      this.skinKey = key;
+      v.paint((g, scale) => this.map.draw(g, this.state, { x: 0, y: 0, z: scale }, this.selProv, new Set(), false));
+    }
+    const s = this.state;
+    v.render(this.t, s.armies, (o) => [s.factions[o].rgb[0] / 255, s.factions[o].rgb[1] / 255, s.factions[o].rgb[2] / 255],
+      (a) => a.units.length > 0 && a.units.every((u) => UNIT_STATS[u.type].cls === 'cavalry'));
+    ctx.clearRect(0, 0, VIEW_W, VIEW_H);
+    // Sizes of names and banners follow the apparent zoom at the centre of the view.
+    this.cam.z = v.zoomScale();
+  }
+
   draw(ctx: CanvasRenderingContext2D) {
-    this.drawMapLayer(ctx);
+    if (this.v3) this.draw3D(ctx);
+    else this.drawMapLayer(ctx);
     const { z } = this.cam;
     const s = this.state;
     ctx.textAlign = 'center';
@@ -404,14 +506,17 @@ export class CampaignScene implements Scene {
     const r = Math.max(2, Math.min(4, s * 0.28));
     ctx.save();
     ctx.fillStyle = 'rgba(42,29,18,0.92)';
-    if (p.kind === 'fort') {
+    // In 3D the forts and towns stand on the map as models; the flat map marks them with a square or dot.
+    if (this.v3) {
+      // nothing
+    } else if (p.kind === 'fort') {
       ctx.fillRect(x - r, y - r, r * 2, r * 2); // forts as small squares
     } else {
       ctx.beginPath();
       ctx.arc(x, y, r, 0, Math.PI * 2);
       ctx.fill();
     }
-    if (p.capitalOf >= 0) {
+    if (p.capitalOf >= 0 && !this.v3) {
       ctx.strokeStyle = 'rgba(42,29,18,0.9)';
       ctx.lineWidth = 1.2;
       ctx.beginPath();
@@ -627,9 +732,10 @@ export class CampaignScene implements Scene {
     return this.map.provAt(wx, wy);
   }
 
-  pointerDown(x: number, y: number, button: number) {
+  pointerDown(x: number, y: number, button: number, e?: PointerEvent) {
     if (modalOpen()) return;
     this.ptr = { x, y, button, dragged: false };
+    this.orbit = !!this.v3 && !!e && (e.shiftKey || e.altKey);
     if (button === 2) void this.command(x, y);
   }
 
@@ -638,7 +744,14 @@ export class CampaignScene implements Scene {
     const p = this.ptr;
     if (p && (p.button === 0 || p.button === 1)) {
       if (!p.dragged && Math.hypot(x - p.x, y - p.y) > 5) p.dragged = true;
-      if (p.dragged) {
+      if (p.dragged && this.v3) {
+        if (this.orbit) {
+          this.v3.rotate(-(x - p.x) * 0.006);
+          this.v3.tilt(-(y - p.y) * 0.004);
+        } else this.v3.panScreen(x - p.x, y - p.y);
+        p.x = x;
+        p.y = y;
+      } else if (p.dragged) {
         this.cam.x -= (x - p.x) / this.cam.z;
         this.cam.y -= (y - p.y) / this.cam.z;
         p.x = x;
@@ -665,7 +778,7 @@ export class CampaignScene implements Scene {
   keyDown(e: KeyboardEvent) {
     if (modalOpen()) return;
     const k = e.key.toLowerCase();
-    if (['arrowleft', 'arrowright', 'arrowup', 'arrowdown', 'w', 'a', 's', 'd'].includes(k)) {
+    if (['arrowleft', 'arrowright', 'arrowup', 'arrowdown', 'w', 'a', 's', 'd'].includes(k) || (this.v3 && (k === 'z' || k === 'c'))) {
       e.preventDefault();
       this.keys.add(k);
     } else if (k === ' ') {
@@ -1206,6 +1319,14 @@ export class CampaignScene implements Scene {
       h('div', { class: 'stat', title: 'Fighting men left to recruit and replace losses (regrows each month from untouched provinces)' },
         `👥 ${fmt(s.manpower[PLAYER])}/${fmt(maxManpower(s, PLAYER))}`),
       h('div', { class: 'stat', title: `Victory: hold ${VICTORY_PROVINCES} provinces, or take Delhi` }, `🏰 ${provincesOf(s, PLAYER).length}/${VICTORY_PROVINCES}`),
+      h('div', { class: 'stat btns', style: 'margin:0' },
+        h('button', {
+          class: `small ${this.use3D ? 'primary' : ''}`, title: 'Switch between the 3D map and the flat painted map',
+          onclick: () => this.toggle3D(),
+        }, this.use3D ? (this.v3 ? '3D' : '3D…') : '2D'),
+        this.v3 ? h('button', { class: 'small', title: 'Turn the view left (Z)', onclick: () => this.v3?.rotate(0.35) }, '⟲') : null,
+        this.v3 ? h('button', { class: 'small', title: 'Turn the view right (C)', onclick: () => this.v3?.rotate(-0.35) }, '⟳') : null,
+      ),
       h('button', { class: 'push', onclick: () => this.openTroops() }, 'Troops'),
       h('button', { onclick: () => this.openCourt() }, 'Court'),
       h('button', { onclick: () => this.openNavy() }, 'Navy'),
