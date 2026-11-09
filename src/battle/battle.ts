@@ -838,7 +838,7 @@ export class Battle {
           const intoFoot = UNIT_STATS[contact.type].cls === 'infantry' && contact.state === 'ok';
           const label = zone === 'front' ? 'Charge!' : zone === 'flank' ? 'Flank charge!' : 'Charge from behind!';
           this.spring(u, contact);
-          if (isLarge(u.type) && intoFoot && zone === 'front' && contact.formation !== 'loose') {
+          if (isLarge(u.type) && intoFoot && zone === 'front' && contact.formation !== 'loose' && this.caught(contact, u) === 0) {
             this.float(u.x, u.y, contact.formation === 'brace' ? 'Broken on the spears!' : 'Charge broken!', '#ff9a8a');
           } else {
             this.float(u.x, u.y, label, st.cls === 'infantry' ? '#ffd0a0' : '#ffe08a');
@@ -1319,6 +1319,19 @@ export class Battle {
     return true;
   }
 
+  /**
+   * How badly a regiment is caught out when horsemen fall on it (0 = formed and ready): on the
+   * march or falling back (not standing to receive them), already locked in a fight with another
+   * enemy, or softened (shaken, spent, or cut down to half its men). Each counts.
+   */
+  caught(t: BUnit, by: BUnit): number {
+    let n = 0;
+    if (t.disengageT > 0 || t.feignT > 0 || (t.moving && !t.fighting)) n++;
+    if (this.units.some((e) => e !== by && e.side === by.side && e.state === 'ok' && dist(e, t) < CONTACT)) n++;
+    if (t.morale < t.maxMorale * 0.45 || t.fatigue > 0.6 || t.men < t.startMen * 0.5) n++;
+    return n;
+  }
+
   /** Where a blow lands on the target: its front, a flank, or its rear. */
   attackZone(a: BUnit, t: BUnit): 'front' | 'flank' | 'rear' {
     if (t.state === 'routing') return 'rear';
@@ -1348,6 +1361,12 @@ export class Battle {
     const horse = sa.cls === 'cavalry';
     const tFoot = st.cls === 'infantry';
     const tShooters = st.cls === 'missile' || st.cls === 'artillery';
+    // Caught on the march, falling back, tied up with another foe, or worn down: easy meat for horse.
+    const caught = horse && t.state === 'ok' ? this.caught(t, a) : 0;
+    if (caught) {
+      mult *= 1.5 + 0.3 * (caught - 1);
+      t.moraleHit += 4 * caught * dt;
+    }
 
     // Blows from the side or behind. Infantry are ruinous to each other's flanks.
     if (t.state === 'routing') mult *= 1.5;
@@ -1364,7 +1383,7 @@ export class Battle {
       const slope = (this.height(a) - this.height(t) > 0.2 ? 1.2 : 1)
         * (a.formation === 'wedge' ? 1.3 : 1) * this.leaders[a.side].charge
         * (this.opts.rain && horse ? 0.8 : 1) * (1 - 0.4 * a.fatigue);
-      if (horse && tFoot && zone === 'front' && t.state === 'ok' && t.formation === 'loose') {
+      if (horse && tFoot && zone === 'front' && t.state === 'ok' && (t.formation === 'loose' || caught)) {
         // Loose order cannot stop a charge: the riders ride straight through.
         mult *= 1 + (sa.charge - 1) * 0.6 * slope;
       } else if (horse && tFoot && zone === 'front' && t.state === 'ok') {
@@ -1385,7 +1404,7 @@ export class Battle {
     }
     // Once the charge is spent, horse still fight poorly against an unbroken infantry front.
     if (horse && tFoot && zone === 'front' && t.state === 'ok') {
-      mult *= t.formation === 'loose' ? 1.1 : 0.85;
+      mult *= t.formation === 'loose' || caught ? 1.1 : 0.85;
       // Pressing on into a levelled hedge keeps costing riders.
       if (t.formation === 'brace') a.dmgMelee += (MELEE_RATE * t.men * st.melee * 0.5 * dt) / sa.defense;
     }

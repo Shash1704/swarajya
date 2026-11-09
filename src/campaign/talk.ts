@@ -1,7 +1,7 @@
 import { bar, h, hideModal, showModal, swatch } from '../ui';
 import {
-  BROWSER_MODELS, browserModelReady, chat, type ChatMessage, hasWebGPU, llmSettings, loadBrowserModel, type LLMSettings,
-  saveSettings, testConnection,
+  autoSetup, BROWSER_MODELS, browserModelReady, chat, type ChatMessage, chromeAIStatus, hasWebGPU, llmSettings, loadBrowserModel,
+  type LLMSettings, saveSettings, testConnection,
 } from '../llm';
 import {
   actionsFor, applyDelta, attitude, attitudeWord, meName, parseReply, persona, personaWords, playerTitle, remember, resolveAction,
@@ -19,7 +19,7 @@ import { type Army, type GameState, type General, generalRank, PLAYER, provinceU
 export function openTalk(s: GameState, kind: TalkKind, gen: General, faction: number, army: Army | null, mine: Army | null, onChange: () => void): Promise<Talk> {
   const t: Talk = { kind, gen, faction, army, mine, history: [], gained: 0, outcomes: [], settled: false, fight: false };
   const f = s.factions[faction];
-  const ai = llmSettings().backend !== 'none';
+  let ai = llmSettings().backend !== 'none';
   return new Promise((resolve) => {
     const logEl = h('div', { class: 'talk-log' });
     const moodEl = h('div', {});
@@ -68,6 +68,9 @@ export function openTalk(s: GameState, kind: TalkKind, gen: General, faction: nu
         return said;
       }
       try {
+        if (llmSettings().backend === 'chrome' && (await chromeAIStatus()) !== 'available') {
+          statusEl.textContent = "Chrome is preparing its built-in AI (the first time it downloads the model itself)…";
+        }
         if (llmSettings().backend === 'browser' && !browserModelReady()) {
           statusEl.textContent = 'Loading the in-browser model (the first time it downloads; later it starts from the cache)…';
           await loadBrowserModel((p, note) => {
@@ -173,8 +176,47 @@ export function openTalk(s: GameState, kind: TalkKind, gen: General, faction: nu
       h('div', { class: 'muted', style: 'font-size:12.5px' }, `${TRAITS[g.trait].name} · ${personaWords(g)}`),
       moodEl,
     );
+    // Without an AI: offer to find one, right here.
+    const aiBar = h('div', { class: 'talk-aibar' });
+    const drawAiBar = () => {
+      if (ai) {
+        aiBar.replaceChildren();
+        aiBar.style.display = 'none';
+        return;
+      }
+      aiBar.style.display = '';
+      aiBar.replaceChildren(
+        h('span', {}, `${gen.name} can talk freely, in his own words, with an AI running on your own computer.`),
+        h('button', {
+          class: 'small primary', onclick: async () => {
+            statusEl.textContent = '';
+            try {
+              const st = await autoSetup((m) => { statusEl.textContent = m; }, (what) => Promise.resolve(window.confirm(what)));
+              ai = true;
+              input.placeholder = `Speak to ${gen.name}…`;
+              statusEl.textContent = st.backend === 'chrome' ? "Using Chrome's built-in AI." : st.backend === 'server' ? `Using ${st.model} on your model server.` : 'Using the in-browser model (it loads when he next speaks).';
+              line('note', 'The AI is on: speak freely.');
+              drawAiBar();
+            } catch (e) {
+              statusEl.textContent = (e as Error).message;
+            }
+          },
+        }, '🗣 Turn on AI'),
+      );
+    };
+    drawAiBar();
+    // Chrome's built-in AI may still need its one-time download: until it's ready, use written lines and offer it.
+    if (llmSettings().backend === 'chrome') {
+      void chromeAIStatus().then((st) => {
+        if (st === 'available') return;
+        ai = false;
+        input.placeholder = `Speak to ${gen.name}… (written lines until the AI is ready)`;
+        drawAiBar();
+        if (st === 'downloading') statusEl.textContent = 'Chrome is still downloading its built-in AI model; characters will speak freely once it is done.';
+      });
+    }
     const body = h('div', { class: 'talk' },
-      header, logEl,
+      header, aiBar, logEl,
       h('div', { class: 'talk-row' }, input, send),
       topicsEl,
       h('div', { class: 'muted', style: 'font-size:12.5px' }, 'Formal proposals (decided by the state of things and his opinion of you):'),
@@ -224,6 +266,7 @@ export function openAISettings(onDone?: () => void) {
   showModal('Characters: AI settings', h('div', { class: 'stack' },
     h('p', {}, 'Commanders and rulers can answer you in their own words, voiced by a language model running on your own computer. Nothing is sent anywhere else.'),
     radio('none', 'No AI', 'Characters answer with written lines. Proposals still work.'),
+    radio('chrome', "Chrome's built-in AI", 'Nothing to install: recent Chrome on a capable computer has a small model built in (Chrome may download it the first time).'),
     radio('server', 'Local model server (Ollama, LM Studio…)', 'Best quality. Runs a model on this computer.'),
     h('div', { style: 'margin-left:20px' },
       h('div', { class: 'muted' }, 'Server URL (OpenAI-style API):'), url,
@@ -234,6 +277,12 @@ export function openAISettings(onDone?: () => void) {
     h('div', { style: 'margin-left:20px' }, bm),
     result,
   ), [
+    { label: 'Find AI automatically', onClick: () => {
+      result.textContent = '';
+      autoSetup((m) => { result.textContent = m; }, (what) => Promise.resolve(window.confirm(what)))
+        .then(() => { hideModal(); onDone?.(); openAISettings(onDone); })
+        .catch((e) => { result.textContent = `✗ ${(e as Error).message}`; });
+    } },
     { label: 'Test', onClick: () => {
       saveSettings(cur);
       result.textContent = cur.backend === 'browser' ? 'Loading the model (this can take a while the first time)…' : 'Asking the model…';
@@ -244,4 +293,12 @@ export function openAISettings(onDone?: () => void) {
     } },
     { label: 'Save', primary: true, onClick: () => { saveSettings(cur); hideModal(); onDone?.(); } },
   ], { wide: true });
+  // Show whether Chrome's built-in AI is here.
+  void chromeAIStatus().then((st) => {
+    const r = document.querySelector('#modal input[value="chrome"]') as HTMLInputElement | null;
+    if (r && st === 'unavailable') {
+      r.disabled = true;
+      (r.parentElement?.querySelector('.muted') as HTMLElement | null)?.replaceChildren('Not available in this browser (it needs a recent Chrome with the built-in AI enabled).');
+    }
+  });
 }

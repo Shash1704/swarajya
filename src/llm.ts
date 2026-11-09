@@ -6,12 +6,13 @@
  *    (Ollama at http://localhost:11434/v1, LM Studio at http://localhost:1234/v1, llama.cpp...).
  *  - 'browser': WebLLM, running the model inside the browser on the GPU (WebGPU).
  *    The model is downloaded once and cached by the browser.
+ *  - 'chrome': the AI built into Chrome (Gemini Nano, the Prompt API): nothing to install.
  *  - 'none': no model; characters answer with written lines.
  *
  * Nothing is ever sent anywhere but the user's own machine.
  */
 
-export type Backend = 'none' | 'server' | 'browser';
+export type Backend = 'none' | 'server' | 'browser' | 'chrome';
 
 export interface LLMSettings {
   backend: Backend;
@@ -42,10 +43,13 @@ const DEFAULTS: LLMSettings = {
 
 export function loadSettings(): LLMSettings {
   try {
-    return { ...DEFAULTS, ...JSON.parse(localStorage.getItem(KEY) ?? '{}') };
+    const saved = localStorage.getItem(KEY);
+    if (saved) return { ...DEFAULTS, ...JSON.parse(saved) };
   } catch {
-    return { ...DEFAULTS };
+    // no storage: fall through
   }
+  // First time: if the browser has an AI built in, the characters use it from the start.
+  return { ...DEFAULTS, backend: chromeAI() ? 'chrome' : 'none' };
 }
 
 export function saveSettings(s: LLMSettings) {
@@ -66,6 +70,28 @@ let settings = loadSettings();
 export const llmSettings = () => settings;
 
 export const hasWebGPU = () => typeof navigator !== 'undefined' && 'gpu' in navigator;
+
+// ---------------------------------------------------------------- Chrome's built-in AI (Prompt API)
+
+interface ChromeLM {
+  availability(opts?: unknown): Promise<'unavailable' | 'downloadable' | 'downloading' | 'available'>;
+  create(opts: unknown): Promise<{ promptStreaming(input: string, opts?: unknown): AsyncIterable<string>; destroy(): void }>;
+}
+// A function declaration (hoisted), since the settings are loaded before this line runs.
+function chromeAI(): ChromeLM | null {
+  return (globalThis as unknown as { LanguageModel?: ChromeLM }).LanguageModel ?? null;
+}
+
+/** Is Chrome's built-in model usable here (or downloadable by Chrome itself)? */
+export async function chromeAIStatus(): Promise<string> {
+  const lm = chromeAI();
+  if (!lm) return 'unavailable';
+  try {
+    return await lm.availability({ expectedInputs: [{ type: 'text', languages: ['en'] }], expectedOutputs: [{ type: 'text', languages: ['en'] }] });
+  } catch {
+    return 'unavailable';
+  }
+}
 
 // ---------------------------------------------------------------- in-browser (WebLLM)
 
@@ -105,6 +131,29 @@ export const browserModelReady = () => !!webllm && loadedModel === settings.brow
  */
 export async function chat(messages: ChatMessage[], onToken?: (soFar: string) => void, signal?: AbortSignal): Promise<string> {
   const s = settings;
+  if (s.backend === 'chrome') {
+    const lm = chromeAI();
+    if (!lm) throw new Error("This browser has no built-in AI. Choose another kind in the AI settings.");
+    const system = messages.find((m) => m.role === 'system')?.content ?? '';
+    const rest = messages.filter((m) => m.role !== 'system');
+    const last = rest.pop();
+    const session = await lm.create({
+      initialPrompts: [{ role: 'system', content: system }, ...rest],
+      expectedInputs: [{ type: 'text', languages: ['en'] }], expectedOutputs: [{ type: 'text', languages: ['en'] }],
+      signal,
+    });
+    try {
+      let text = '';
+      for await (const chunk of session.promptStreaming(last?.content ?? '', { signal })) {
+        // Older Chrome streams the whole text so far; newer streams pieces.
+        text = chunk.startsWith(text) ? chunk : text + chunk;
+        onToken?.(text);
+      }
+      return text;
+    } finally {
+      session.destroy();
+    }
+  }
   if (s.backend === 'browser') {
     const engine = await loadBrowserModel(() => {});
     const stream = await engine.chat.completions.create({ messages, stream: true, temperature: 0.8, max_tokens: 220 });
@@ -170,4 +219,70 @@ export async function testConnection(): Promise<string> {
   ]);
   // Drop the opinion line the characters are asked for, if the model added one here too.
   return reply.replace(/\n?\s*OPINION\s*[:=].*$/is, '').trim() || '(an empty reply)';
+}
+
+// ---------------------------------------------------------------- one-click setup
+
+/**
+ * Finds a way to run a model on this computer, in order: Chrome's built-in AI; a model server
+ * already running (Ollama on 11434, LM Studio on 1234), choosing a model it has; else, with
+ * WebGPU, the in-browser model (after `confirmDownload` agrees). Saves and returns the choice,
+ * or throws an Error that explains what to install.
+ */
+export async function autoSetup(note: (msg: string) => void, confirmDownload: (what: string) => Promise<boolean>): Promise<LLMSettings> {
+  const cur = loadSettings();
+  note("Looking for Chrome's built-in AI…");
+  const c = await chromeAIStatus();
+  const useChrome = c === 'available' || c === 'downloading'
+    || (c === 'downloadable' && await confirmDownload("Chrome has an AI built in, but must download its model first (once, about 2 GB, done by Chrome itself). Download it now?"));
+  if (useChrome) {
+    if (c !== 'available') {
+      // Starting the download needs this click; Chrome then fetches the model in the background.
+      note("Chrome is downloading its built-in AI model…");
+      try {
+        const session = await chromeAI()!.create({
+          expectedInputs: [{ type: 'text', languages: ['en'] }], expectedOutputs: [{ type: 'text', languages: ['en'] }],
+          monitor(m: EventTarget) {
+            m.addEventListener('downloadprogress', (e) => note(`Chrome is downloading its built-in AI model: ${Math.round(((e as unknown as { loaded: number }).loaded ?? 0) * 100)}%`));
+          },
+        });
+        session.destroy();
+      } catch (e) {
+        note(`Chrome could not prepare its AI (${(e as Error).message}). Looking for other options…`);
+      }
+    }
+    if (await chromeAIStatus() !== 'unavailable') {
+      const s = { ...cur, backend: 'chrome' as Backend };
+      saveSettings(s);
+      return s;
+    }
+  }
+  note('Looking for a model server on this computer (Ollama, LM Studio)…');
+  for (const base of ['http://localhost:11434', 'http://127.0.0.1:11434', 'http://localhost:1234']) {
+    try {
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), 1500);
+      const res = await fetch(`${base}/v1/models`, { signal: ctl.signal });
+      clearTimeout(timer);
+      if (!res.ok) continue;
+      const ids: string[] = ((await res.json()).data ?? []).map((m: { id: string }) => m.id);
+      if (!ids.length) {
+        note(`Found a model server at ${base}, but it has no models. Run "ollama pull llama3.2" first.`);
+        continue;
+      }
+      const prefer = ['llama3.2', 'llama3.1', 'qwen2.5', 'gemma', 'mistral', 'phi'];
+      const model = prefer.map((p) => ids.find((i) => i.toLowerCase().includes(p))).find(Boolean) ?? ids[0];
+      const s = { ...cur, backend: 'server' as Backend, url: `${base}/v1`, model };
+      saveSettings(s);
+      return s;
+    } catch {
+      // nothing there (or the browser blocked it): try the next
+    }
+  }
+  if (hasWebGPU() && await confirmDownload('No AI was found on this computer, but this browser can run one itself. Download a small model now (about 1 GB, once; it is cached afterwards)?')) {
+    const s = { ...cur, backend: 'browser' as Backend };
+    saveSettings(s);
+    return s;
+  }
+  throw new Error('No AI found on this computer. The easiest way: install Ollama (ollama.com), run "ollama pull llama3.2", start it with OLLAMA_ORIGINS="*" ollama serve, then press Turn on AI again. Or use a recent Chrome or Edge, which can run a model inside the browser.');
 }

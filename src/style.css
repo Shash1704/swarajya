@@ -217,3 +217,4 @@ button.recruit .muted { margin-left: 6px; }
 .chron-conquest, .chron-rank { color: #f0d9a0; }
 .talk-topics { align-items: center; }
 .talk-chip { margin-top: 2px; }
+.talk-aibar { display: flex; gap: 10px; align-items: center; justify-content: space-between; background: #2f2418; border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; font-size: 13px; }

@@ -121,14 +121,18 @@ export function parse(s: GameState, t: Talk, text: string): Parsed {
   // People by name.
   // Titles ("Khan", "Shah", "Singh"...) don't name anyone in particular.
   const TITLES = new Set(['khan', 'shah', 'singh', 'raje', 'raja', 'siddi', 'sardar', 'prince', 'mirza', 'adil', 'qutb']);
-  const people = everyone(s).filter((g) => tokens(g.name).some((n) => n.length >= 4 && !TITLES.has(n) && hasWord(words, n)) && g !== t.gen);
+  // Leave out the words that address the man you're talking to ("Tanaji, …" must not read as "Anaji").
+  const self = tokens(t.gen.name);
+  const others = words.filter((w) => !self.some((n) => w === n || (n.length >= 5 && lev(w, n) <= 1)));
+  const people = everyone(s).filter((g) => g !== t.gen && tokens(g.name).some((n) => n.length >= 4 && !TITLES.has(n)
+    && (others.includes(n) || (n.length >= 6 && hasWord(others, n)))));
   // Realms.
   const realms = s.factions.filter((f) => f.alive && (REALM_WORDS[f.key] ?? []).some((w) => hasWord(words, w)));
   // Armies: named by their commander (when you speak of fighting or of his army, not of the man),
   // or "the army near <place>" (of the realm named, else any but ours).
   const armies = new Set<Army>();
   const armyTalk = hasAny(words, ['army', 'armies', 'host', 'force', 'forces', 'troops', 'horsemen', 'men']);
-  const fightTalk = hasAny(words, ['attack', 'beat', 'defeat', 'crush', 'strike', 'smash', 'rout', 'fight', 'battle']);
+  const fightTalk = hasAny(words, ['attack', 'beat', 'defeat', 'crush', 'strike', 'smash', 'rout', 'fight', 'battle', 'against', 'march on']);
   const aboutMan = hasAny(words, ['think of', 'think about', 'what of', 'opinion', 'know of', 'like him', 'trust']);
   if ((armyTalk || fightTalk) && !aboutMan) {
     for (const g of people) {

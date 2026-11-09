@@ -326,7 +326,8 @@ function planField(b: Battle, side: 0 | 1, mine: BUnit[], foes: BUnit[]) {
     }
     // Soft targets (archers, guns) or the backs of regiments already locked in combat.
     const soft = foes.filter((f) => cls(f) === 'missile' || cls(f) === 'artillery');
-    const backs = foes.filter((f) => f.fighting && cls(f) !== 'cavalry' && role(f) !== 'pike');
+    // The backs of regiments locked in combat, and anything caught on the march, falling back or worn down.
+    const backs = foes.filter((f) => (f.fighting && cls(f) !== 'cavalry' && role(f) !== 'pike') || (cls(f) !== 'cavalry' && b.caught(f, u) > 0));
     const ready = st.role === 'raider' ? soft.length > 0 || foesEngaged > 0 : foesEngaged > 0 || nearestGap < 160 || b.time > 120;
     const enemyHorse = foes.filter((f) => cls(f) === 'cavalry' && dist(f, M) < 260);
     if (enemyHorse.length && (st.role === 'shock' || patient)) {
@@ -341,7 +342,8 @@ function planField(b: Battle, side: 0 | 1, mine: BUnit[], foes: BUnit[]) {
       return;
     }
     const pool = st.role === 'raider' ? (soft.length ? soft : backs) : (backs.length ? backs : soft);
-    const t = closest(u, pool.length ? pool : foes, (e) => (role(e) === 'pike' ? 3 : 1) * (1 + Math.abs(lateral(e, E) - wing * enemyHalf) / 400));
+    const t = closest(u, pool.length ? pool : foes, (e) => (role(e) === 'pike' && b.caught(e, u) === 0 ? 3 : 1) * (b.caught(e, u) ? 0.5 : 1)
+      * (1 + Math.abs(lateral(e, E) - wing * enemyHalf) / 400));
     if (!t) return;
     // Ride wide round the enemy's flank, then in from the side or rear.
     const out = inField({ x: E.x + px * wing * (enemyHalf + 170), y: E.y + py * wing * (enemyHalf + 170) });
