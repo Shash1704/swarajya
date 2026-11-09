@@ -1,9 +1,10 @@
 import { UNIT_STATS } from '../data';
 import type { LeaderMods } from '../battle/battle';
+import { chronicle } from './chronicle';
 import {
   type Army, armyById, armyStrength, capture, courtFaith, declareWar, dist, faithGap, factionStrength, type Fleet,
   type GameState, type General, generalRank, hostile, IND, isCoastal, isMonsoon, keyFort, log, makePeace, manpowerRatio,
-  maxFood, newUnit, PLAYER, type Province, provinceIncome, provinceUnder, provincesOf, releaseGeneral, seaOf,
+  maxFood, newUnit, PLAYER, type Province, isYours, provinceIncome, provinceUnder, provincesOf, releaseGeneral, seaOf,
   siegeEquipment, townAt, unitsMen, unitsStrength, wallFactor, makeGeneral, maxManpower, monthOf, yearOf,
   spawnArmy, netIncome, setGoal, RANK_NAMES, TRAITS,
 } from './state';
@@ -159,6 +160,7 @@ export function demandChauth(s: GameState, a: Army, p: Province): [boolean, stri
   s.gold[a.owner] += now;
   if (a.siegeOf === p.id) setGoal(s, a, null);
   const t = `${p.name} agrees to pay chauth to the ${f[a.owner].short} for a year: ${now} gold now and a quarter of its revenue each month.`;
+  if (isYours(s, a)) chronicle(s, 'diplomacy', `Before ${p.town}, you made ${p.name} pay chauth to Swarajya: ${now} gold at once and a quarter of its revenue for a year.`);
   log(s, t, mine(s, a.owner, p.owner));
   return [true, t];
 }

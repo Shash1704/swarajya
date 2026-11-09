@@ -25,8 +25,9 @@ import { BattleScene } from '../battle/scene';
 import { canvas3d, hasWebGL, setWant3D, want3D } from '../pref3d';
 import type { Map3D } from './map3d';
 import { openAISettings, openTalk } from './talk';
-import { liegeTitle, meName, parleyPartner, renown, rulerOf } from './characters';
+import { hail, liegeTitle, meName, parleyPartner, renown, rulerOf } from './characters';
 import { llmSettings } from '../llm';
+import { byYear, CHRON_ICON, chronicle, deeds } from './chronicle';
 import type { Terrain } from '../battle/battle';
 
 const MAX_ZOOM = 3;
@@ -860,6 +861,7 @@ export class CampaignScene implements Scene {
       'Declare war');
     if (ok) {
       declareWar(s, PLAYER, other);
+      chronicle(s, 'diplomacy', `Swarajya declared war on the ${s.factions[other].name}.`);
       this.renderUI(true);
     }
     return ok;
@@ -1008,11 +1010,27 @@ export class CampaignScene implements Scene {
     const myLead = myArmy ?? null;
     const theirLead = (playerAttacks ? defArmy : att) ?? null;
     const note = (a: Army | null) => (a ? `${a.general.name}, ${generalLine(a.general).toLowerCase()} (${TRAITS[a.general.trait].help.toLowerCase()})` : 'the qiledar of the fort');
+    // The enemy commander calls across the field.
+    if (enemyArmy && !siege) body.insertBefore(h('p', { class: 'talk-line them', style: 'margin:4px 0 8px' }, hail(s, enemyArmy, playerAttacks)), body.children[1] ?? null);
     if (fog) body.append(h('p', { class: 'muted' }, '🌫 Morning mist lies over the field.'));
     if (dusk) body.append(h('p', { class: 'muted' }, '🌇 It is late in the day; night will fall before long.'));
     body.append(h('p', { class: 'muted' }, `Your commander: ${note(myLead)}. Theirs: ${note(theirLead)}.`));
     return new Promise((resolve) => {
+      // For the chronicle: the numbers on each side before the fighting.
+      const myBefore = Math.round(unitsMen(mine));
+      const theirBefore = Math.round(unitsMen(theirs));
+      const foeName = enemyArmy ? `${enemyArmy.general.name}'s ${enemy.short}` : `the ${enemy.short} garrison of ${p.town}`;
+      const record = (playerWon: boolean, draw: boolean) => {
+        const lostMine = myBefore - Math.round(unitsMen(mine));
+        const lostTheirs = theirBefore - Math.round(unitsMen(theirs));
+        const tally = `Your ${myBefore} men against their ${theirBefore}; you lost ${lostMine}, they lost ${lostTheirs}.`;
+        const what = siege ? (playerAttacks ? `storming ${p.town}` : `defending the walls of ${p.town}`) : garrison ? (playerAttacks ? `attacking ${p.town}` : `defending ${p.town}`) : `near ${where.name}`;
+        if (draw) chronicle(s, 'battle', `Battle ${what} against ${foeName}: night fell with neither side broken. ${tally}`);
+        else if (playerWon) chronicle(s, 'battle', `Victory ${siege || garrison ? 'when ' : ''}${what}: you routed ${foeName}. ${tally}`);
+        else chronicle(s, 'defeat', `Defeat ${siege || garrison ? 'when ' : ''}${what}: ${foeName} broke your army. ${tally}`);
+      };
       const done = (playerWon: boolean, draw = false) => {
+        record(playerWon, draw);
         if (draw) {
           log(s, `Night ends the fighting at ${place}. Neither side gives way.`, true);
           resolve(siege ? 'def' : 'draw');
@@ -1042,6 +1060,7 @@ export class CampaignScene implements Scene {
             hideModal();
             if (!playerAttacks && !faster) for (const u of mine) u.men = Math.floor(u.men * 0.85);
             log(s, playerAttacks ? 'Your army breaks off.' : 'Your army slips away.', true);
+            if (!playerAttacks) chronicle(s, 'escape', `Caught by ${foeName} near ${where.name}, you slipped away rather than fight${faster ? '' : ', leaving a rearguard behind'}.`);
             resolve('escaped');
           },
         });
@@ -1076,7 +1095,11 @@ export class CampaignScene implements Scene {
                 app.setScene(this);
                 // A commander whose regiment broke may be dead or in chains.
                 if (lost?.[0] && myLead && s.armies.includes(myLead)) generalFate(s, myLead, enemy.id, playerWon ? 0.4 : 0.8);
-                if (lost?.[1] && theirLead && s.armies.includes(theirLead)) generalFate(s, theirLead, PLAYER, playerWon ? 0.8 : 0.4);
+                if (lost?.[1] && theirLead && s.armies.includes(theirLead)) {
+                  const name = theirLead.general.name;
+                  const fate = generalFate(s, theirLead, PLAYER, playerWon ? 0.8 : 0.4);
+                  if (fate) chronicle(s, 'capture', fate.includes('prisoner') ? `You took ${name} of the ${enemy.short} prisoner on the field.` : `${name} of the ${enemy.short} fell in battle against you.`);
+                }
                 done(playerWon, draw);
               },
             }));
@@ -1137,6 +1160,28 @@ export class CampaignScene implements Scene {
     if (report) log(this.state, report, true);
     this.renderUI(true);
     reopen();
+  }
+
+  // ---------------------------------------------------------------- chronicle
+
+  /** The record of your life, kept as a bakhar: battles, sieges, conquests, bargains and rank. */
+  private openChronicle() {
+    const s = this.state;
+    const d = deeds(s);
+    const years = byYear(s);
+    showModal(`The Chronicle of ${meName(s)}`, h('div', { class: 'stack' },
+      h('p', { class: 'muted' }, `As set down by the court bakhar-writer at Raigad. ${ORIGINS[s.player.origin].blurb[0].toUpperCase()}${ORIGINS[s.player.origin].blurb.slice(1)}; now a ${generalLine(s.player.gen).toLowerCase()}, with an honour of ${Math.round(s.honour)}.`),
+      h('div', { class: 'row muted chron-tally' },
+        h('span', {}, `⚔ ${d.won} victories`), h('span', {}, `☠ ${d.lost} defeats`), h('span', {}, `🏰 ${d.sieges} sieges`),
+        h('span', {}, `🚩 ${d.taken} towns taken`), h('span', {}, `🔥 ${d.raids} raids`), h('span', {}, `⛓ ${d.prisoners} enemy commanders`)),
+      ...years.map(([y, list]) => h('div', { class: 'card' },
+        h('h3', {}, String(y)),
+        ...[...list].reverse().map((e) => h('div', { class: `chron-entry chron-${e.kind}` },
+          h('span', { class: 'chron-icon' }, CHRON_ICON[e.kind]),
+          h('span', { class: 'muted chron-date' }, dateLabel(e.day).replace(/ \d{4}$/, '')),
+          h('span', {}, e.text))))),
+      years.length ? null : h('p', {}, 'Nothing has been written yet. Go and make your name.'),
+    ), [{ label: 'Close', primary: true, onClick: hideModal }], { wide: true });
   }
 
   // ---------------------------------------------------------------- court
@@ -1276,6 +1321,7 @@ export class CampaignScene implements Scene {
     const s = this.state;
     const [made, text] = peaceTerms(s, f, demand, acceptsPeace(s, f, PLAYER));
     if (!made) this.peaceTried.set(f, s.day);
+    else chronicle(s, 'diplomacy', `You made peace with the ${s.factions[f].name}: ${text}`);
     log(s, text, true);
     this.renderUI(true);
     this.openDiplomacy();
@@ -1377,6 +1423,7 @@ export class CampaignScene implements Scene {
       h('button', { onclick: () => this.openCourt() }, 'Court'),
       h('button', { onclick: () => this.openNavy() }, 'Navy'),
       h('button', { onclick: () => this.openDiplomacy() }, 'Diplomacy'),
+      h('button', { title: 'The chronicle of your deeds', onclick: () => this.openChronicle() }, '📜 Chronicle'),
       h('button', { title: 'Set up the language model that voices the characters', onclick: () => openAISettings(() => this.renderUI(true)) },
         llmSettings().backend === 'none' ? '🗣 AI: off' : '🗣 AI: on'),
     );

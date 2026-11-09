@@ -4,6 +4,7 @@ import { generateMap, type MapData } from './mapgen';
 import { ELITE_CAP, FACTION_DEFS, GENERALS, START_YEAR, UNIT_STATS, type FactionDef, type UnitType, vetRank } from '../data';
 import { PROVINCES, type Kind } from '../india';
 import { findPath, type Pt } from './paths';
+import type { ChronEntry } from './chronicle';
 
 export const PLAYER = 0;
 export const IND = FACTION_DEFS.length - 1;
@@ -230,6 +231,8 @@ export interface GameState {
   honour: number;
   /** The player's own character and the army they lead (every other army, Maratha ones included, moves on its own). */
   player: { gen: General; origin: Origin; armyId: number; lastAsk: number; reportedXp: number };
+  /** The chronicle of the player's deeds (see chronicle.ts). */
+  chronicle: ChronEntry[];
 }
 
 /** Is this the army the player leads in person? */
@@ -333,6 +336,7 @@ export function newGame(seed: number): GameState {
     officers: factions.map((f) => (GENERALS[f.key] ?? []).map(([name, house], i) => makeGeneral(rng, name, house, i === 0 ? 3 : rng.range(0, 4)))),
     captives: [], fleets: [], nextFleetId: 1, eventsDone: [], rulers: [], honour: 60,
     player: { gen: { ...makeGeneral(rng, 'Rao', 'of no great house', 0), trait: 'raider', loyalty: 100, isPlayer: true }, origin: 'mavala', armyId: -1, lastAsk: -999, reportedXp: 0 },
+    chronicle: [],
   };
   // Shivaji is the sovereign you serve, at Raigad, not a commander in the field.
   state.officers[0] = state.officers[0].filter((g) => g.name !== 'Shivaji');

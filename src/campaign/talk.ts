@@ -5,9 +5,10 @@ import {
 } from '../llm';
 import {
   actionsFor, applyDelta, attitude, attitudeWord, meName, parseReply, persona, personaWords, playerTitle, remember, resolveAction,
-  scriptedDecision, scriptedReply, systemPrompt, type Talk, type TalkKind,
+  greeting, intentFromText, scriptedDecision, scriptedReply, systemPrompt, type Talk, type TalkKind, topicAnswer, topicsFor,
 } from './characters';
-import { type Army, type GameState, type General, generalRank, PLAYER, RANK_NAMES, TRAITS, unitsMen } from './state';
+import { chronicle, type ChronKind } from './chronicle';
+import { type Army, type GameState, type General, generalRank, PLAYER, provinceUnder, RANK_NAMES, TRAITS, unitsMen } from './state';
 
 /**
  * The conversation window: the character's portrait line and mood, the
@@ -25,6 +26,7 @@ export function openTalk(s: GameState, kind: TalkKind, gen: General, faction: nu
     const input = h('input', { type: 'text', class: 'talk-input', placeholder: ai ? `Speak to ${gen.name}…` : `Speak to ${gen.name}… (set lines: no AI set up)`, maxlength: '300' }) as HTMLInputElement;
     const send = h('button', { class: 'primary small' }, 'Say') as HTMLButtonElement;
     const actionsEl = h('div', { class: 'btns' });
+    const topicsEl = h('div', { class: 'btns talk-topics' });
     let busy = false;
     let closed = false;
     const ctrl = new AbortController();
@@ -61,6 +63,7 @@ export function openTalk(s: GameState, kind: TalkKind, gen: General, faction: nu
       if (!ai) {
         const said = scripted();
         span.textContent = said;
+        t.history.push({ role: 'user', content: userText }, { role: 'assistant', content: said });
         return said;
       }
       try {
@@ -108,9 +111,25 @@ export function openTalk(s: GameState, kind: TalkKind, gen: General, faction: nu
         const d = applyDelta(s, t, scored);
         if (d) line('note', d > 0 ? `${gen.name} thinks better of you.` : `${gen.name} thinks less of you.`);
       }
+      // Did you just make him an offer in plain words? Put it on the table.
+      const act = intentFromText(s, t, text);
+      if (act && !closed) {
+        const chip = h('button', { class: 'small primary talk-chip', title: act.help, onclick: () => { chip.remove(); void propose(act.id, act.label); } }, `→ Make it formal: ${act.label}`);
+        logEl.append(h('div', { class: 'talk-line note' }, chip));
+        logEl.scrollTop = logEl.scrollHeight;
+      }
       refreshMood();
       setBusy(false);
       input.focus();
+    };
+
+    const ask = async (topic: { id: string; ask: string }) => {
+      if (busy || closed) return;
+      line('me', topic.ask);
+      setBusy(true);
+      await speak(topic.ask, () => topicAnswer(s, t, topic.id), false);
+      refreshMood();
+      setBusy(false);
     };
 
     const propose = async (id: string, label: string) => {
@@ -119,6 +138,12 @@ export function openTalk(s: GameState, kind: TalkKind, gen: General, faction: nu
       setBusy(true);
       const r = resolveAction(s, t, id);
       if (r.text) line('note', r.text);
+      if (r.accepted && r.text && id !== 'gift' && id !== 'share' && id !== 'royal-gift' && id !== 'challenge') {
+        const where = t.army ? ` near ${s.provinces[provinceUnder(s, t.army, t.army.node)].name}` : '';
+        const ck: ChronKind = id === 'surrender' ? 'capture' : id === 'men' || id === 'report' ? 'court' : 'diplomacy';
+        const how = kind === 'parley' ? `At a parley${where}, ` : kind === 'audience' ? `As envoy to the ${f.short}, ` : kind === 'liege' ? 'Before the Raje at Raigad, ' : '';
+        chronicle(s, ck, `${how}${r.text.charAt(0).toLowerCase()}${r.text.slice(1)}`.replace(/^(.)/, (c) => c.toUpperCase()));
+      }
       else if (!r.accepted) line('note', `Refused: ${r.brief.split('Reason: ')[1] ?? ''}.`);
       await speak(`[${meName(s)} formally proposes: ${label}.] ${r.brief} Voice this decision in character, in one or two sentences.`, () => scriptedDecision(t, r), false);
       onChange();
@@ -147,6 +172,7 @@ export function openTalk(s: GameState, kind: TalkKind, gen: General, faction: nu
     const body = h('div', { class: 'talk' },
       header, logEl,
       h('div', { class: 'talk-row' }, input, send),
+      topicsEl,
       h('div', { class: 'muted', style: 'font-size:12.5px' }, 'Formal proposals (decided by the state of things and his opinion of you):'),
       actionsEl, statusEl,
     );
@@ -161,6 +187,8 @@ export function openTalk(s: GameState, kind: TalkKind, gen: General, faction: nu
       [{ label: 'End the talk', primary: true, onClick: finish }], { wide: true });
     refreshMood();
     renderActions();
+    topicsEl.replaceChildren(h('span', { class: 'muted', style: 'font-size:12.5px' }, 'Ask:'),
+      ...topicsFor(s, t).map((tp) => h('button', { class: 'small', onclick: () => void ask(tp) }, tp.label)));
     persona(g);
     // The opening: they greet you (or don't).
     setBusy(true);
@@ -170,7 +198,7 @@ export function openTalk(s: GameState, kind: TalkKind, gen: General, faction: nu
       : kind === 'parley' ? `[${me} rides out under a flag of truce to speak with you between the armies.] Greet him in character.`
         : kind === 'liege' ? `[${me}, one of your captains, comes before you at Raigad.] Greet him in character.`
           : `[${me}, a fellow captain of the Raje, rides into your camp.] Greet him in character.`;
-    void speak(opening, () => scriptedReply(s, t, '').say, false).then(() => {
+    void speak(opening, () => greeting(s, t), false).then(() => {
       setBusy(false);
       input.focus();
     });

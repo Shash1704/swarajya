@@ -207,3 +207,13 @@ button.recruit .muted { margin-left: 6px; }
 .talk-input { flex: 1; width: 100%; box-sizing: border-box; background: #1f1a14; color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font: inherit; }
 .talk-status { font-size: 12.5px; min-height: 1em; }
 .ai-opt { display: block; cursor: pointer; }
+
+/* The chronicle */
+.chron-tally { flex-wrap: wrap; gap: 6px 14px; justify-content: flex-start; }
+.chron-entry { display: grid; grid-template-columns: 22px 64px 1fr; gap: 6px; padding: 4px 0; border-bottom: 1px solid var(--line); font-family: "EB Garamond", Georgia, serif; font-size: 15px; line-height: 1.35; }
+.chron-entry:last-child { border-bottom: none; }
+.chron-date { font-size: 12.5px; font-family: inherit; padding-top: 2px; }
+.chron-defeat, .chron-escape { color: #e4b0a4; }
+.chron-conquest, .chron-rank { color: #f0d9a0; }
+.talk-topics { align-items: center; }
+.talk-chip { margin-top: 2px; }

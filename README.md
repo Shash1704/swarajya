@@ -45,8 +45,10 @@ Open the URL Vite prints. Add `?seed=123` to fix the random seed (terrain detail
   - **The Raje's commanders:** talk with them anywhere: share your spoils, ask their counsel, or ask one to join forces with you (his army marches to yours and merges, if he respects you and your name stands as high as his).
   - **Parley** with any army near one of yours, even when battle is about to be joined: demand they withdraw, demand surrender (the commander becomes your prisoner), agree to pass in peace, offer a gift, or invite the commander into your service with his army.
   - **Audiences** with rulers (Diplomacy): talk, then propose peace (white, for tribute, or for a province), alliance, marriage or hostages.
+  - **Natural talk:** characters greet you according to whether you have met, what they have heard of your deeds and their mood. Ask them who they are, how the war goes, what they think of their master (a resentful commander may let slip that he would serve a better one), what news there is, what men say of you, or about your last meeting. Insults, threats, flattery and talk of gold each get the answer that suits the man's temper. Say an offer in plain words ("withdraw or die", "join me") and it's put on the table to make formal. Enemy commanders call out to you before battle.
   - Type anything you like. Words shift the character's opinion a little (charm works only so far, and once a month); the formal proposals are decided by the game's rules, with that opinion counting, and the character then answers in his own words.
   - **Local AI (🗣 AI button):** characters can be voiced by a language model on your own computer: a local server with an OpenAI-style API (Ollama: `OLLAMA_ORIGINS="*" ollama serve`, then `http://localhost:11434/v1`; or LM Studio), or WebLLM running in the browser on the GPU (WebGPU; the model downloads once, about 1–2 GB). Nothing is sent anywhere else. With no AI set up, characters answer with written lines and everything still works.
+- **The Chronicle (📜):** the record of your life, kept like a Maratha bakhar: every battle you fight (where, against whom, the numbers on each side and the losses), sieges, towns taken and sacked, raids and chauth, enemy commanders captured or slain, bargains struck at parleys and audiences, wars declared and peace made, your promotions, your escapes, and the great events of the realm, with a tally of your deeds. Characters have heard of what's written there.
 - **Victory:** hold 35 provinces or take Delhi.
 
 ## Battles
@@ -101,6 +103,7 @@ Every unit is marked with a NATO-style map symbol: a cross for infantry, a singl
 | `src/campaign/map3d.ts` | The 3D campaign map (Babylon.js): relief, the painted map as its skin, sea, settlements, marching companies, camera and picking |
 | `src/three/engine.ts`, `src/three/textures.ts` | The shared WebGL engine, and procedural textures (ground grain, water ripples, stone, plaster) |
 | `src/campaign/characters.ts` | Characters: temperaments, opinions, memory, the prompt that puts the model in a character's shoes, and the proposals the game decides |
+| `src/campaign/chronicle.ts` | The chronicle of the player's deeds |
 | `src/campaign/talk.ts` | The conversation window and the AI settings |
 | `src/llm.ts` | Local language models: an OpenAI-style server (Ollama, LM Studio) or WebLLM in the browser, with streaming |
 | `src/pref3d.ts` | The 3D/2D preference and WebGL check (no Babylon, so it stays out of the main bundle) |

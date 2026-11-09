@@ -11,6 +11,8 @@ import {
   aiSpiesMonthly, battleRenown, captivesMonthly, cessionFor, demandChauth, diplomacyMonthly, fleetsMove, type GameEvent,
   generalFate, grantChauth, landEvent, loyaltyMonthly, navyMonthly, pickEvent, siegeRate, sortiesDaily, supplyDaily, unrestMonthly,
 } from './realm';
+import { chronicle } from './chronicle';
+import { RANK_NAMES, generalRank, unitsMen } from './state';
 
 /** 'parley': the player talked the encounter out (the deal struck already took effect). */
 export type BattleResult = 'att' | 'def' | 'escaped' | 'draw' | 'parley';
@@ -123,12 +125,17 @@ export class World {
     a.safeUntil = s.day + 5;
     s.player.armyId = a.id;
     log(s, `You escape the rout and gather a few men at ${town.town}. The road back begins again.`, true);
+    chronicle(s, 'escape', `Your army was destroyed. You escaped with your life and gathered a few men at ${town.town} to begin again.`);
     this.hooks.changed();
   }
 
   /** Puts an event in front of the player; the clock holds until they choose. */
   private ask(ev: GameEvent) {
-    this.run(async () => ev.apply(await this.hooks.event(ev)));
+    this.run(async () => {
+      const c = await this.hooks.event(ev);
+      ev.apply(c);
+      chronicle(this.state, 'event', `${ev.title}: ${ev.choices[c] ?? ''}.`);
+    });
   }
 
   private alive(a: Army) {
@@ -280,6 +287,7 @@ export class World {
       const before = s.gold[a.owner];
       raidSpoils(s, a, p);
       if (a.general.trait === 'raider') s.gold[a.owner] += Math.round((s.gold[a.owner] - before) * 0.5);
+      if (isYours(s, a)) chronicle(s, 'raid', `You plundered the villages of ${p.name}, a province of the ${s.factions[p.owner].short}, and carried off ${s.gold[a.owner] - before} gold.`);
       // Burning villages that pay you chauth ends the arrangement.
       if (p.tribute?.to === a.owner) {
         p.tribute = null;
@@ -297,6 +305,7 @@ export class World {
     if (p.siege && p.siege.army !== a.id) return; // someone else is already besieging it
     if (p.walls > 0 && p.garrison.length) {
       startSiege(s, a, p);
+      if (isYours(s, a)) chronicle(s, 'siege', `You laid siege to ${p.town} (${p.name}), held by the ${s.factions[p.owner].short} with ${Math.round(unitsMen(p.garrison))} men.`);
       this.hooks.changed();
       return;
     }
@@ -406,7 +415,9 @@ export class World {
     const s = this.state;
     const [winners, losers] = attWon ? [b.attArmies, b.defArmies] : [b.defArmies, b.attArmies];
     const threat = winners.find((x) => this.alive(x)) ?? (attWon ? b.att : b.p);
+    const rankBefore = generalRank(s.player.gen);
     battleRenown(s, winners.filter((x) => this.alive(x)), losers.filter((x) => this.alive(x)));
+    if (generalRank(s.player.gen) > rankBefore) chronicle(s, 'rank', `Your name grew with your victories: men now call you a ${RANK_NAMES[generalRank(s.player.gen)].toLowerCase()}.`);
     if (b.mode === 'field') this.abandonForts(b, attWon);
     const captor = attWon ? b.att.owner : b.defOwner;
     // Auto-resolved defeats: the commander may fall. (Fought battles decide that on the field.)
@@ -465,8 +476,10 @@ export class World {
     if (p.owner === owner) return;
     if (owner === PLAYER && you) {
       const sackIt = await this.hooks.chooseSack(p);
+      const from = s.factions[p.owner].short;
       capture(s, p, owner);
-      if (sackIt) sack(s, p, owner);
+      const loot = sackIt ? sack(s, p, owner) : 0;
+      chronicle(s, 'conquest', `You took ${p.town} (${p.name}) from the ${from} for Swarajya${sackIt ? `, and sacked it for ${loot} gold` : ''}.`);
     } else {
       const sackIt = owner !== IND && owner !== PLAYER && p.owner === PLAYER && s.rng.chance(0.3);
       capture(s, p, owner);

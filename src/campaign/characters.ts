@@ -1,5 +1,6 @@
 import type { ChatMessage } from '../llm';
 import { cessionFor, peaceTerms, propose, roughMen } from './realm';
+import { chronicle, deeds, reputationLines } from './chronicle';
 import {
   acceptsPeace, type Army, armyById, armyStrength, isYours, ORIGINS, type Origin, yourArmy, dateLabel, declareWar, dist, factionStrength, type GameState, type General,
   generalRank, IND, log, manpowerLabel, manpowerRatio, nearestOwned, PLAYER, provinceUnder, provincesOf, RANK_NAMES,
@@ -153,6 +154,8 @@ export function applyPlayerCharacter(s: GameState, name: string, origin: Origin)
   if (origin === 'deshmukh') s.gold[PLAYER] += 60;
   if (origin === 'carpenter' && a) a.units.push({ type: 'musket', men: 30 });
   log(s, `${g.name}, ${ORIGINS[origin].blurb}, takes service with ${liegeTitle(s)} with a handful of men.`, true);
+  s.chronicle.length = 0;
+  chronicle(s, 'court', `${g.name}, ${ORIGINS[origin].blurb}, took service with ${liegeTitle(s)} at Raigad with ${Math.round(a ? unitsMen(a.units) : 0)} men.`);
 }
 
 /** Recent happenings between the two realms, from the dispatches. */
@@ -191,11 +194,15 @@ export function systemPrompt(s: GameState, t: Talk): string {
     war, ties, strength, field, facing,
     `${me}'s reputation for keeping his word is ${s.honour > 70 ? 'excellent' : s.honour > 45 ? 'fair' : 'poor'}; his name as a soldier is ${renown(s) >= 2 ? 'well known' : renown(s) >= 1 ? 'growing' : 'unknown'}.`,
     `Your feeling towards ${me}: ${attitudeWord(att)}.`,
-    memory.length ? `What you remember of earlier dealings: ${memory.join(' ')}` : '',
+    memory.length ? `What you remember of earlier dealings with ${me}: ${memory.join(' ')}` : `You have never spoken with ${me} before.`,
+    reputationLines(s).length ? `What men say of ${me}'s deeds: ${reputationLines(s).join(' ')}` : `${me} has done nothing yet that men talk of.`,
+    ownDeeds(s, g).length ? `Your own recent doings: ${ownDeeds(s, g).join(' ')}` : '',
+    masterLine(s, t),
     news.length ? `Recent news: ${news.join(' ')}` : '',
     '',
     'Rules for your replies:',
-    '- Speak only as this character, in the first person, in one to three short sentences. Courtly, of the 1670s, no modern words.',
+    '- Speak only as this character, in the first person, in one to four sentences. Speak naturally, as a living man of the 1670s would: courtly or blunt as suits your temper, no modern words, never mention being an AI or a game.',
+    '- React to what was actually said. Use what you know (the war, your master, the news, his deeds, your past dealings) when it fits. Sometimes ask a question back. Do not repeat yourself.',
     `- Never agree to give up territory, money, troops or peace on your own. Such matters are settled only when ${me} makes a formal proposal; then you will be told the decision to voice.`,
     `- After your words, on its own last line, write OPINION: followed by a number from -5 to 5: how much this exchange improved (+) or worsened (-) your view of ${me}. Flattery that rings false, threats and insults lower it; respect, honesty and courtesy raise it.`,
   ].filter(Boolean).join('\n');
@@ -209,25 +216,213 @@ export function parseReply(text: string): { say: string; delta: number } {
   return { say: say || '…', delta };
 }
 
-/** Without a language model: a reply chosen from the character's mood and the tone of what was said. */
-export function scriptedReply(s: GameState, t: Talk, text: string): { say: string; delta: number } {
+/** Picks one of several lines, without repeating the last one used in this talk. */
+function pick(t: Talk, lines: string[]): string {
+  const used = new Set(t.history.filter((m) => m.role === 'assistant').map((m) => m.content));
+  const fresh = lines.filter((l) => !used.has(l));
+  const pool = fresh.length ? fresh : lines;
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
+/** His own recent doings, from the dispatches. */
+function ownDeeds(s: GameState, g: General): string[] {
+  return s.log.filter((l) => l.text.includes(g.name)).slice(-3).map((l) => `${dateLabel(l.day)}: ${l.text}`);
+}
+
+/** What he thinks of his own master (for commanders of other realms, and the Raje's). */
+function masterLine(s: GameState, t: Talk): string {
+  if (t.kind === 'audience' || t.kind === 'liege') return '';
+  const lord = s.rulers[t.faction];
+  if (!lord || lord === t.gen) return '';
+  const l = t.gen.loyalty;
+  return `Your feelings for your master ${lord.name}: ${l > 75 ? 'devoted' : l > 50 ? 'dutiful' : l > 30 ? 'resentful; you feel ill-rewarded' : 'bitter; you would leave his service for a better master'}.`;
+}
+
+/** The tone of what was said: how it moves his opinion, and what kind of remark it was. */
+function tone(t: Talk, text: string): { delta: number; kind: 'flatter' | 'insult' | 'threat' | 'gold' | 'plain' } {
   const w = text.toLowerCase();
   const p = persona(t.gen);
-  let delta = 0;
-  if (/(honou?r|respect|great|glory|wise|brave|valou?r|noble|friend)/.test(w)) delta += p.honour > 0.5 ? 2 : 1;
-  if (/(coward|dog|fool|traitor|worm|weak|slave)/.test(w)) delta -= 4;
-  if (/(destroy|burn|kill|crush|slaughter|die)/.test(w)) delta += p.temper > 0.6 ? -3 : -1;
-  if (/(gold|reward|wealth|jagir|pay)/.test(w)) delta += p.greed > 0.6 ? 2 : 0;
+  if (/(coward|dog|fool|traitor|worm|slave|rat|jackal)/.test(w)) return { delta: -4, kind: 'insult' };
+  if (/(destroy|burn|kill|crush|slaughter|you will die|your head|regret)/.test(w)) return { delta: p.temper > 0.6 ? -3 : -1, kind: 'threat' };
+  if (/(gold|reward|wealth|jagir|pay|rich)/.test(w)) return { delta: p.greed > 0.6 ? 2 : 0, kind: 'gold' };
+  if (/(honou?r|respect|great|glory|wise|brave|valou?r|noble|friend|famous|renowned)/.test(w)) return { delta: p.honour > 0.5 ? 2 : 1, kind: 'flatter' };
+  return { delta: 0, kind: 'plain' };
+}
+
+/** Without a language model: a reply shaped by his temper, his mood, and what kind of thing was said. */
+export function scriptedReply(s: GameState, t: Talk, text: string): { say: string; delta: number } {
+  const { delta, kind } = tone(t, text);
+  const p = persona(t.gen);
+  const me = meName(s);
   const att = attitude(s, t) + delta * 4;
-  const name = t.gen.name;
-  const lines = att > 40
-    ? ['Your words are welcome, Raje. Speak plainly and you will find me reasonable.', 'There is more that unites us than divides us. Say what you came to say.']
-    : att > 0
-      ? ['I hear you. Words cost nothing; let us see what you propose.', 'You speak boldly for a man of no great name. Go on.']
-      : att > -40
-        ? ['Mind your tongue. I have not forgotten what your raiders have done.', 'Say your piece quickly. My patience has limits.']
-        : ['Enough. There is nothing I wish to hear from a mountain rat.', 'Every word you speak hardens my heart. Leave, or fight.'];
-  return { say: `${lines[(text.length + name.length) % lines.length]}`, delta };
+  const hot = p.temper > 0.6;
+  const lines: Record<typeof kind, string[]> = {
+    insult: hot
+      ? [`Say that again, ${me}, and I will cut the words out of your mouth.`, 'You insult me under a flag of truce? Your mother should have taught you better.', 'Mind your tongue, nobody. Men have died for less.']
+      : ['Insults are the weapons of men who have no others.', 'I have been called worse by better men. Is that all you came to say?', 'Your words say more about you than about me.'],
+    threat: hot
+      ? ['Threats? Come and try, and we shall see whose men run.', `Many have promised to crush me, ${me}. I am still here; most of them are not.`]
+      : ['A threat made in words is only wind. Show me your army, not your temper.', 'You may find that harder than you think.'],
+    gold: p.greed > 0.6
+      ? ['Gold… now you speak a language I understand. Go on.', 'A man must think of his household. What exactly do you offer?']
+      : ['Keep your gold. I am not a merchant to be bought.', 'Do you take me for a Portuguese trader? Speak of honest things.'],
+    flatter: p.honour > 0.6
+      ? ['Fair words. I will remember that you spoke them.', 'You speak courteously; it is rarer than you think in these days.']
+      : ['Flattery costs nothing, and buys about as much.', 'Sweet words. What is it you really want?'],
+    plain: att > 40
+      ? ['Speak freely; you are among friends here.', `I am glad of your company, ${me}. What is on your mind?`, 'There is more that unites us than divides us. Go on.']
+      : att > 0
+        ? ['I hear you. Go on.', `You speak boldly for a man of no great name, ${me}.`, 'Words cost nothing. What do you propose?', 'Hm. And what would you have me do about it?']
+        : att > -40
+          ? ['Say your piece quickly. My patience has limits.', 'I have not forgotten what your people have done. Get to the point.', 'Why should I listen to a servant of Shivaji?']
+          : ['There is nothing I wish to hear from you.', 'Every word you speak hardens my heart. Leave, or fight.'],
+  };
+  return { say: pick(t, lines[kind]), delta };
+}
+
+/** His opening words, shaped by whether you have met, what he has heard of you, and his mood. */
+export function greeting(s: GameState, t: Talk): string {
+  const me = meName(s);
+  const att = attitude(s, t);
+  const met = (t.gen.memory ?? []).length > 0;
+  const fame = deeds(s);
+  const known = fame.won + fame.taken >= 3;
+  if (t.kind === 'liege') {
+    return pick(t, att > 30
+      ? [`${me}! Come, sit. Tell me how the war goes in the hills.`, `Ah, ${me}. Your name reaches Raigad before you do these days. What news?`]
+      : [`${me}. You stand before me again. Speak.`, `Well, ${me}? A captain earns his place with deeds. What have you brought me?`]);
+  }
+  if (t.kind === 'counsel') {
+    return pick(t, att > 30
+      ? [`${me}, brother! Sit by my fire. What brings you to my camp?`, `Ram Ram, ${me}. Good to see a friendly face out here.`]
+      : [`${me}. I did not expect you in my camp. What do you want?`, `You ride in as if you owned the place, ${me}. Well?`]);
+  }
+  if (met) {
+    return pick(t, att > 15
+      ? [`${me}. We meet again. I hope this time we part as well as the last.`, `So, ${me}, the roads bring us together once more.`]
+      : [`You again, ${me}. I remember our last meeting.`, `${me}. I had hoped not to see your face again so soon.`]);
+  }
+  if (known) {
+    return pick(t, [`So you are ${me}. Men talk of you, more than you might think.`, `${me}, is it? I have heard your name in the bazaars. Fewer men than you'd like say it kindly.`]);
+  }
+  return pick(t, att > 0
+    ? [`Peace be upon you, stranger. You are ${me}? I confess I have not heard of you.`, `You have the look of a soldier, ${me}. Say what you came to say.`]
+    : [`Who are you to ride out under a flag of truce? I do not know your name, ${me}.`, `A nobody of Shivaji's, come to talk. Very well; talk.`]);
+}
+
+/** What a commander calls out before battle (shown in the battle prompt). */
+export function hail(s: GameState, enemy: Army, attacking: boolean): string {
+  const g = enemy.general;
+  const p = persona(g);
+  const me = meName(s);
+  const met = (g.memory ?? []).length > 0;
+  const lines = p.temper > 0.6
+    ? [`"So, the hill rats come down to die. Come then, ${me}!"`, `"I have waited for this. Today Shivaji loses another captain."`, `"Turn back now, ${me}, or be carried back."`]
+    : p.honour > 0.6
+      ? [`"Let it be a fair fight, ${me}, and may the better man win."`, `"I bear you no hatred, ${me}. But I have my orders."`]
+      : [`"Your men look tired, ${me}. I would think twice."`, `"There is still time to talk, if you would rather live."`];
+  if (met) lines.push(`"We meet again, ${me}. This time there will be no talking."`);
+  void attacking;
+  return `${g.name} sends word: ${lines[Math.floor(Math.random() * lines.length)]}`;
+}
+
+// ---------------------------------------------------------------- topics and intents
+
+export interface Topic {
+  id: string;
+  label: string;
+  /** What you say (sent to the model, or shown before the written answer). */
+  ask: string;
+}
+
+export function topicsFor(s: GameState, t: Talk): Topic[] {
+  const lord = s.rulers[t.faction];
+  const out: Topic[] = [
+    { id: 'about', label: 'Who are you?', ask: 'Tell me of yourself. Who are you, and how did you come to this?' },
+    { id: 'war', label: 'How goes the war?', ask: 'How goes the war, from where you stand?' },
+  ];
+  if (lord && lord !== t.gen && t.kind !== 'liege') out.push({ id: 'lord', label: `About ${lord.name}`, ask: `And your master, ${lord.name}: how do you find serving him?` });
+  out.push({ id: 'news', label: 'Any news?', ask: 'What news have you heard on the roads?' });
+  out.push({ id: 'me', label: 'What is said of me?', ask: 'What do men say of me?' });
+  if ((t.gen.memory ?? []).length) out.push({ id: 'past', label: 'Our last meeting', ask: 'Do you remember when last we met?' });
+  return out;
+}
+
+/** Turns a note about a character ("An Afghan warrior…", "You are…", "…your fingers") into his own words. */
+function firstPerson(note: string): string {
+  let n = note.replace(/^You are /, 'I am ').replace(/^(A|An|The) /, (m) => `I am ${m.toLowerCase()}`);
+  n = n.replace(/\byour\b/g, 'my').replace(/\byou have\b/g, 'I have').replace(/\byou\b/g, 'I').replace(/\bI am\b/, 'I am');
+  return n;
+}
+
+/** The written answer to a topic, from what the character knows. */
+export function topicAnswer(s: GameState, t: Talk, id: string): string {
+  const g = t.gen;
+  const f = s.factions[t.faction];
+  const me = meName(s);
+  const k = KNOWN[g.name]?.note;
+  switch (id) {
+    case 'about':
+      return `I am ${g.name} of the house of ${g.house}, ${t.kind === 'audience' || t.kind === 'liege' ? `and I rule the ${f.name}` : `and I serve the ${f.name}`}. ${k ? firstPerson(k) : `Men call me ${TRAITS[g.trait].name.toLowerCase()}; I have been a soldier since I could lift a sword.`}`;
+    case 'war': {
+      if (t.faction === PLAYER) return `We hold ${provincesOf(s, PLAYER).length} provinces. ${counselFacts(s).split('. ').slice(1, 3).join('. ')}`;
+      const foes = s.factions.filter((o) => o.alive && o.id !== t.faction && o.id !== IND && s.war[t.faction][o.id]).map((o) => o.short);
+      const r = manpowerRatio(s, t.faction);
+      return foes.length
+        ? `We fight the ${foes.join(' and the ')}. ${r > 0.6 ? 'We have men enough for years of it.' : r > 0.3 ? 'The levies come in thinner each season.' : 'Between us, the villages have no more sons to give.'}`
+        : `For now we are at peace with all, and I would keep it so${s.war[PLAYER][t.faction] ? ', though your people make that hard' : ''}.`;
+    }
+    case 'lord': {
+      const lord = s.rulers[t.faction];
+      if (!lord) return 'I serve no man.';
+      const l = g.loyalty;
+      return l > 75 ? `${lord.name} is my lord, and I would die for him. Ask me nothing more on that.`
+        : l > 50 ? `${lord.name} is a hard master, but a just one. I do my duty.`
+          : l > 30 ? `${lord.name}… remembers my failures better than my victories. A man notices such things.`
+            : `Between us, ${me}: ${lord.name} has never valued me. A better master would find me grateful.`;
+    }
+    case 'news': {
+      const item = [...s.log].reverse().find((l) => !l.mine && s.day - l.day < 60);
+      return item ? `They say: ${item.text} You hear such things on the road.` : 'The roads are quiet. Too quiet, some say.';
+    }
+    case 'me': {
+      const d = deeds(s);
+      const last = s.chronicle.filter((e) => e.kind !== 'court' && e.kind !== 'event').slice(-1)[0];
+      if (!last) return `Of you? Nothing, ${me}. No one knows your name yet.`;
+      return `They say ${d.won} armies have broken before you${d.taken ? ` and ${d.taken} towns have fallen to you` : ''}. ${last.text.replace(/\bYou\b/g, 'You').replace(/^You /, 'Lately you ')} ${s.honour > 60 ? 'And that you keep your word.' : s.honour < 40 ? 'And that your word is worth little.' : ''}`;
+    }
+    case 'past': {
+      const m = (g.memory ?? []).slice(-1)[0] ?? '';
+      return m ? `I remember. ${m.replace(/^On ([^:]+) you spoke with [^(]+\(([^)]*)\): /, 'It was $1, $2. ')}` : 'I do not think we have met.';
+    }
+  }
+  return '…';
+}
+
+/** A formal proposal hidden in plain words ("withdraw or die", "join me"), if one is on offer. */
+export function intentFromText(s: GameState, t: Talk, text: string): TalkAction | null {
+  const w = text.toLowerCase();
+  const offered = actionsFor(s, t);
+  const has = (id: string) => offered.find((a) => a.id === id) ?? null;
+  const rules: [RegExp, string][] = [
+    [/\b(surrender|lay down (your )?arms|yield)\b/, 'surrender'],
+    [/\b(withdraw|retreat|go home|turn back|leave these lands|march away)\b/, 'withdraw'],
+    [/\b(let (us|me) pass|pass in peace|no bloodshed|avoid (a )?battle|part in peace)\b/, 'pass'],
+    [/\b(join (me|my|forces)|serve me|enter my service|change sides|switch sides|come over)\b/, t.kind === 'counsel' ? 'join' : 'defect'],
+    [/\b(fight|draw your sword|enough talk|to battle)\b/, 'challenge'],
+    [/\b(peace)\b.*\b(tribute|gold|pay)\b|\b(tribute)\b/, 'peace-tribute'],
+    [/\b(peace)\b.*\b(cede|give up|hand over|province)\b/, 'peace-province'],
+    [/\b(peace|end (this|the) war)\b/, 'peace'],
+    [/\b(alliance|ally|allies)\b/, 'alliance'],
+    [/\b(marr(y|iage)|wed|bride)\b/, 'marriage'],
+    [/\bhostage/, 'hostages'],
+    [/\b(men|troops|soldiers|reinforce|regiments)\b/, 'men'],
+    [/\b(report|my deeds|my victories|reward me)\b/, 'report'],
+    [/\b(advice|counsel|what should (i|we) do)\b/, 'counsel'],
+    [/\b(gift|present|share)\b/, t.kind === 'counsel' ? 'share' : t.kind === 'audience' ? 'royal-gift' : 'gift'],
+  ];
+  for (const [re, id] of rules) if (re.test(w) && has(id)) return has(id);
+  return null;
 }
 
 /** Applies the opinion change from a line of conversation, within limits. */
