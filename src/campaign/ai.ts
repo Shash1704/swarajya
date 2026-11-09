@@ -5,6 +5,37 @@ import {
   siegeEquipment, spawnArmy, townAt, unitsStrength, wallFactor, manpowerRatio, levyFraction,
 } from './state';
 import { supplied, warBlocked } from './realm';
+import { FRONT_RANGE, isYours, type Province } from './state';
+
+/** Is this point on the army's own front (armies without a front go anywhere)? */
+const onFront = (s: GameState, a: Army, p: { x: number; y: number }) => a.front === undefined || dist(s.provinces[a.front], p) < FRONT_RANGE;
+
+/** Is this army already busy against the player's realm? */
+function againstPlayer(s: GameState, o: Army): boolean {
+  const g = o.goal;
+  if (o.siegeOf >= 0 && s.provinces[o.siegeOf].owner === PLAYER) return true;
+  if (!g) return false;
+  if (g.kind === 'chase') return armyById(s, g.army)?.owner === PLAYER;
+  if (g.kind === 'siege' || g.kind === 'raid') return s.provinces[g.prov].owner === PLAYER;
+  return false;
+}
+
+/**
+ * May another of this realm's armies go after the player? A realm sends no more armies against
+ * the Marathas than about half as many as the Marathas field, so no one front is swamped.
+ */
+function pressureOk(s: GameState, a: Army): boolean {
+  if (a.owner === PLAYER) return true;
+  const theirs = s.armies.filter((o) => o.owner === PLAYER);
+  const already = s.armies.filter((o) => o !== a && o.owner === a.owner && againstPlayer(s, o));
+  // By number: about one army for every two the Marathas field (at least one).
+  if (already.length >= Math.max(1, Math.ceil(theirs.length / 2))) return false;
+  // By weight: no more than somewhat over the Marathas' own strength (field armies and garrisons),
+  // so a young Swarajya faces a fight it can win, and the full weight of the empire only as it grows.
+  const sent = already.reduce((n, o) => n + armyStrength(o), 0);
+  const garrisons = provincesOf(s, PLAYER).reduce((n, p) => n + unitsStrength(p.garrison), 0);
+  return sent + armyStrength(a) <= (theirs.reduce((n, o) => n + armyStrength(o), 0) + garrisons * 0.5) * 1.4 + 400;
+}
 
 export interface WorldLike {
   state: GameState;
@@ -78,8 +109,13 @@ export function thinkArmy(w: WorldLike, a: Army) {
 
   // Hunt weaker enemy armies nearby (minor realms only inside their own lands).
   const reach = fac.ai === 'major' ? 260 : 150;
+  const mayHitPlayer = pressureOk(s, a);
+  // The Raje's commanders fight the Maratha way: they pick their fights and raid rather than storm.
+  const maratha = a.owner === PLAYER;
+  const odds = maratha ? 1.8 : 1.4;
   const prey = enemies
-    .filter((e) => dist(a, e) < reach && str > armyStrength(e) * 1.4 && s.day >= e.safeUntil
+    .filter((e) => dist(a, e) < reach && str > armyStrength(e) * odds && s.day >= e.safeUntil && onFront(s, a, e)
+      && (e.owner !== PLAYER || mayHitPlayer)
       && (fac.ai === 'major' || s.provinces[provinceUnder(s, e, e.node)].owner === a.owner))
     .sort((x, y) => dist(a, x) - dist(a, y))[0];
   if (prey && !exhausted) {
@@ -95,6 +131,18 @@ export function thinkArmy(w: WorldLike, a: Army) {
     return;
   }
 
+  // Ganimi kava: Maratha armies raid enemy country more often than they lay sieges.
+  if (maratha && !isMonsoon(s.day) && s.rng.chance(0.55)) {
+    const loot = s.provinces
+      .filter((p) => p.owner !== IND && hostile(s, a.owner, p.owner) && p.devastated <= 0 && dist(a, p) < 220)
+      .filter((p) => !s.armies.some((e) => e.owner === p.owner && dist(e, p) < 60 && armyStrength(e) > str * 0.8))
+      .sort((x, y) => y.wealth - x.wealth)[0];
+    if (loot) {
+      setGoal(s, a, { kind: 'raid', prov: loot.id });
+      return;
+    }
+  }
+
   // Conquest: pick a town worth taking that we can actually take.
   if (fac.ai === 'major' && !isMonsoon(s.day) && !exhausted) {
     let best = -1;
@@ -102,10 +150,10 @@ export function thinkArmy(w: WorldLike, a: Army) {
     for (const p of s.provinces) {
       if (!hostile(s, a.owner, p.owner) || p.siege) continue;
       const d = dist(a, p);
-      if (d > 350) continue;
+      if (d > 350 || !onFront(s, a, p) || (p.owner === PLAYER && !mayHitPlayer)) continue;
       if (p.owner === IND && !s.rng.chance(0.25 + fac.aggression * 0.3)) continue;
       const G = (unitsStrength(p.garrison) + 10) * wallFactor(p, a.units, 0);
-      if (str < G * 1.3) continue;
+      if (str < G * (maratha ? 1.7 : 1.3)) continue;
       let score = 60 + p.wealth * 3 + (p.capitalOf >= 0 ? 30 : 0) + (p.owner === PLAYER ? 12 : 0) - p.walls * 4 - d / 12 + s.rng.next() * 10;
       if (s.armies.some((o) => o !== a && o.owner === a.owner && o.goal?.kind === 'siege' && o.goal.prov === p.id)) score -= 30;
       if (score > bestScore) {
@@ -122,10 +170,21 @@ export function thinkArmy(w: WorldLike, a: Army) {
   // No town worth a siege: plunder an enemy province nearby instead.
   if (fac.ai === 'major' && !isMonsoon(s.day) && !exhausted && s.rng.chance(0.5)) {
     const loot = s.provinces
-      .filter((p) => p.owner !== IND && hostile(s, a.owner, p.owner) && p.devastated <= 0 && dist(a, p) < 160)
+      .filter((p) => p.owner !== IND && hostile(s, a.owner, p.owner) && p.devastated <= 0 && dist(a, p) < 160
+        && onFront(s, a, p) && (p.owner !== PLAYER || mayHitPlayer))
       .sort((x, y) => y.wealth - x.wealth)[0];
     if (loot) {
       setGoal(s, a, { kind: 'raid', prov: loot.id });
+      return;
+    }
+  }
+
+  // Far from its own front: march back to it.
+  if (a.front !== undefined && !onFront(s, a, a)) {
+    const base = s.provinces.filter((p: Province) => p.owner === a.owner && !p.siege)
+      .sort((p, q) => dist(p, s.provinces[a.front!]) - dist(q, s.provinces[a.front!]))[0];
+    if (base && townAt(s, a) !== base.id) {
+      setGoal(s, a, { kind: 'go', prov: base.id });
       return;
     }
   }
@@ -165,6 +224,11 @@ function considerAssault(w: WorldLike, a: Army) {
 
 // ---------------------------------------------------------------- monthly: war and recruiting
 
+/** The Raje's own monthly recruiting for his commanders' armies (the player's realm runs no other AI). */
+export function realmRecruit(s: GameState) {
+  recruit(s, PLAYER);
+}
+
 export function aiMonthly(s: GameState, f: number) {
   const fac = s.factions[f];
   if (!fac.alive || fac.ai === 'none') return;
@@ -195,17 +259,19 @@ function pickType(s: GameState, f: number): UnitType {
 function recruit(s: GameState, f: number) {
   const fac = s.factions[f];
   const own = provincesOf(s, f).filter((p) => !p.siege);
+  // The Raje's treasury pays for his commanders' armies, but leaves a reserve for you.
+  const reserve = f === PLAYER ? 220 : 0;
   if (!own.length) return;
   const maxArmies = fac.ai === 'major' ? Math.min(7, 1 + Math.floor(own.length / 6)) : Math.min(2, 1 + Math.floor(own.length / 4));
   for (let guard = 0; guard < 30; guard++) {
     const type = pickType(s, f);
     const cost = UNIT_STATS[type].cost;
-    if (s.gold[f] < cost + 10) break;
+    if (s.gold[f] < cost + 10 + reserve) break;
     // Recruits join armies resting in friendly towns.
-    const resting = s.armies.filter((a) => a.owner === f && a.siegeOf < 0 && townAt(s, a) >= 0
+    const resting = s.armies.filter((a) => a.owner === f && !isYours(s, a) && a.siegeOf < 0 && townAt(s, a) >= 0
       && s.provinces[townAt(s, a)].owner === f && a.units.length < MAX_UNITS);
     let target = resting.sort((a, b) => a.units.length - b.units.length)[0];
-    const total = s.armies.filter((a) => a.owner === f).length;
+    const total = s.armies.filter((a) => a.owner === f && !isYours(s, a)).length;
     if ((!target || target.units.length >= 6) && total < maxArmies) {
       const spot = own.find((p) => p.capitalOf === f) ?? s.rng.pick(own);
       target = spawnArmy(s, f, spot.id, []);

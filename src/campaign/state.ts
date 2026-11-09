@@ -51,7 +51,24 @@ export interface General {
   loyalty: number;
   /** Granted a jagir (land) by the crown. */
   landed: boolean;
+  /** Character: temperament, what they think of the player (-100..100), and what they remember of past talks. */
+  persona?: { honour: number; greed: number; temper: number };
+  opinion?: number;
+  memory?: string[];
+  /** Day of the last conversation that warmed them (the charm can't be repeated every day). */
+  charmedDay?: number;
+  /** The player's own character. */
+  isPlayer?: boolean;
 }
+
+/** Where the player's character comes from (a nobody: no famous house). */
+export type Origin = 'mavala' | 'deshmukh' | 'silahdar' | 'carpenter';
+export const ORIGINS: Record<Origin, { label: string; blurb: string; trait: Trait }> = {
+  mavala: { label: 'Mavala hillman', blurb: "a hillman's son from the Maval valleys", trait: 'raider' },
+  deshmukh: { label: "Deshmukh's younger son", blurb: 'the younger son of a minor deshmukh with no land to inherit', trait: 'cautious' },
+  silahdar: { label: 'Silahdar horseman', blurb: 'a silahdar who sold his horse and sword to whoever paid', trait: 'horseman' },
+  carpenter: { label: "Fort carpenter's son", blurb: "a fort carpenter's son who knows walls from the inside", trait: 'sapper' },
+};
 export const generalRank = (g: General) => (g.xp >= 9 ? 3 : g.xp >= 5 ? 2 : g.xp >= 2 ? 1 : 0);
 export const RANK_NAMES = ['Captain', 'Commander', 'Veteran commander', 'Great captain'];
 
@@ -86,6 +103,8 @@ export interface Army {
   safeUntil: number;
   /** Next day the AI reconsiders this army's orders. */
   aiNext: number;
+  /** The front (a province) this army campaigns on; it doesn't wander off to other wars. */
+  front?: number;
 }
 
 export interface Siege {
@@ -205,7 +224,17 @@ export interface GameState {
   nextFleetId: number;
   /** Events that have already happened (one-off ones). */
   eventsDone: string[];
+  /** Each realm's sovereign (a character you can seek an audience with); null for the player's realm and the independents. */
+  rulers: (General | null)[];
+  /** The player's good name, 0..100: kept oaths raise it, broken ones and sacked towns lower it. */
+  honour: number;
+  /** The player's own character and the army they lead (every other army, Maratha ones included, moves on its own). */
+  player: { gen: General; origin: Origin; armyId: number; lastAsk: number; reportedXp: number };
 }
+
+/** Is this the army the player leads in person? */
+export const isYours = (s: GameState, a: Army | null | undefined) => !!a && a.id === s.player.armyId;
+export const yourArmy = (s: GameState) => s.armies.find((a) => a.id === s.player.armyId) ?? null;
 
 export const VICTORY_PROVINCES = 35;
 
@@ -302,8 +331,11 @@ export function newGame(seed: number): GameState {
     relations: grid(0), truceUntil: grid(0), marriage: grid(false),
     policy: factions.map((f) => ({ tax: 'normal', faith: f.key === 'mug' ? 'zealous' : 'tolerant' })),
     officers: factions.map((f) => (GENERALS[f.key] ?? []).map(([name, house], i) => makeGeneral(rng, name, house, i === 0 ? 3 : rng.range(0, 4)))),
-    captives: [], fleets: [], nextFleetId: 1, eventsDone: [],
+    captives: [], fleets: [], nextFleetId: 1, eventsDone: [], rulers: [], honour: 60,
+    player: { gen: { ...makeGeneral(rng, 'Rao', 'of no great house', 0), trait: 'raider', loyalty: 100, isPlayer: true }, origin: 'mavala', armyId: -1, lastAsk: -999, reportedXp: 0 },
   };
+  // Shivaji is the sovereign you serve, at Raigad, not a commander in the field.
+  state.officers[0] = state.officers[0].filter((g) => g.name !== 'Shivaji');
 
   const setWar = (a: string, b: string) => {
     state.war[fid(a)][fid(b)] = state.war[fid(b)][fid(a)] = true;
@@ -337,6 +369,10 @@ export function newGame(seed: number): GameState {
   };
   army('raigad', [['mavala', 5], ['huzurat', 1], ['shiledar', 1], ['lightcav', 2], ['archer', 2], ['musket', 2]]);
   army('javli', [['mavala', 3], ['shiledar', 1], ['lightcav', 2], ['archer', 1]]);
+  // You: a nobody with a few men, given leave by the Raje to raise a following.
+  const raigad = provinces.find((q) => q.key === 'raigad')!;
+  const yours = spawnArmy(state, 0, raigad.id, [newUnit('mavala', 0.85), newUnit('mavala', 0.7), newUnit('lightcav', 0.8), newUnit('archer', 0.75)], state.player.gen);
+  state.player.armyId = yours.id;
   army('aurangabad', [['heavycav', 2], ['spear', 3], ['musket', 2], ['archer', 2], ['elephant', 1], ['horsearcher', 1], ['cannon', 1]]);
   army('ahmednagar', [['spear', 2], ['musket', 1], ['heavycav', 1]]);
   army('delhi', [['ahadi', 2], ['heavycav', 4], ['spear', 5], ['musket', 3], ['elephant', 3], ['horsearcher', 2]]);
@@ -354,6 +390,19 @@ export function newGame(seed: number): GameState {
   army('kamrup', [['spear', 3], ['archer', 2], ['musket', 1]]);
 
   for (const f of factions) state.manpower[f.id] = Math.round(maxManpower(state, f.id) * 0.75);
+  // The sovereigns of 1670. Where one also leads an army, the ruler and the commander are the same person.
+  const RULERS: Record<string, [string, string]> = {
+    mar: ['Shivaji', 'Bhonsle'], mug: ['Aurangzeb', 'Timurid'], bij: ['Ali Adil Shah', 'Adil Shahi'], gol: ['Abul Hasan', 'Qutb Shahi'],
+    raj: ['Raj Singh', 'Sisodia'], sid: ['Siddi Qasim', 'Janjira'], por: ['Luís de Mendonça', 'Furtado'],
+    eng: ['Gerald Aungier', 'Company'], nay: ['Chokkanatha', 'Nayak'], mys: ['Chikka Devaraja', 'Wodeyar'], aho: ['Udayaditya', 'Singha'],
+  };
+  state.rulers = factions.map((f) => {
+    const r = RULERS[f.key];
+    if (!r) return null;
+    const leading = state.armies.find((a) => a.general.name === r[0]);
+    const atCourt = state.officers[f.id].find((g) => g.name === r[0]);
+    return leading?.general ?? atCourt ?? makeGeneral(rng, r[0], r[1], 6);
+  });
   // Armies start the year in winter quarters.
   for (const a of state.armies) a.aiNext = rng.range(15, 35);
   log(state, 'January 1670. Shivaji resolves to retake the forts surrendered at Purandar. Kondhana (Sinhagad) looms over Pune.', true);
@@ -385,7 +434,29 @@ function nextGeneral(state: GameState, owner: number): General {
 
 /** The army's commander goes back to court (when it disbands or merges). */
 export function releaseGeneral(state: GameState, a: Army) {
+  if (a.general.isPlayer) return;
   if (state.factions[a.owner]?.alive && !state.officers[a.owner].some((g) => g.name === a.general.name)) state.officers[a.owner].push(a.general);
+}
+
+/**
+ * The empire's fronts: the Mughals fight on many at once (the Deccan, Rajputana, Bengal and
+ * Assam, the north-west, Gujarat, Gondwana, Awadh), each army keeping to its own. Only the
+ * Deccan front (Aurangabad) faces the Marathas.
+ */
+export const FRONTS: Record<string, string[]> = {
+  mug: ['aurangabad', 'chanda', 'ajmer', 'dhaka', 'lahore', 'ahmedabad', 'allahabad'],
+};
+/** How far from its front's centre an army will go campaigning. */
+export const FRONT_RANGE = 260;
+
+/** Gives a new army a front: the one with the fewest armies, nearest first. */
+export function assignFront(state: GameState, a: Army) {
+  const keys = FRONTS[state.factions[a.owner].key];
+  if (!keys) return;
+  const fronts = keys.map((k) => state.provinces.find((p) => p.key === k)!).filter(Boolean);
+  const load = (p: Province) => state.armies.filter((o) => o !== a && o.owner === a.owner && o.front === p.id).length;
+  fronts.sort((p, q) => load(p) - load(q) || dist(a, p) - dist(a, q));
+  a.front = fronts[0]?.id;
 }
 
 export const maxFood = (a: Army) => (a.general.trait === 'quartermaster' ? 45 : 30);
@@ -399,6 +470,7 @@ export function spawnArmy(state: GameState, owner: number, province: number, uni
   };
   a.food = maxFood(a);
   state.armies.push(a);
+  assignFront(state, a);
   return a;
 }
 
@@ -621,7 +693,10 @@ export function declareWar(state: GameState, a: number, b: number) {
   if (state.truceUntil[a][b] > state.day) {
     log(state, `The ${f[a].short} break their oath to the ${f[b].short}; the hostages are put to death.`, a === PLAYER || b === PLAYER);
     for (let c = 0; c < f.length; c++) if (c !== a) state.relations[c][a] -= 15;
-    if (a === PLAYER) for (const x of state.armies) if (x.owner === PLAYER) x.general.loyalty -= 10;
+    if (a === PLAYER) {
+      for (const x of state.armies) if (x.owner === PLAYER) x.general.loyalty -= 10;
+      state.honour = Math.max(0, state.honour - 20);
+    }
     state.truceUntil[a][b] = state.truceUntil[b][a] = 0;
   }
   state.relations[a][b] -= 40;
@@ -758,6 +833,7 @@ export function sack(state: GameState, p: Province, by: number): number {
   state.gold[by] += gold;
   p.wealth = Math.max(1, Math.round(p.wealth * 0.6));
   p.devastated = 180;
+  if (by === PLAYER) state.honour = Math.max(0, state.honour - 4);
   log(state, `${p.town} is sacked! ${gold} gold in plunder.`, by === PLAYER || p.owner === PLAYER);
   return gold;
 }
@@ -869,7 +945,8 @@ export function recruit(state: GameState, p: Province, type: UnitType, f = PLAYE
   if (state.gold[f] < cost) return 'Not enough gold.';
   const eliteErr = eliteBlock(state, p, type, f);
   if (eliteErr) return eliteErr;
-  let a = armyAtTown(state, p, f);
+  // Your own army, if it stands here, gets the recruits first.
+  let a = (f === PLAYER ? state.armies.find((x) => isYours(state, x) && townAt(state, x) === p.id) : undefined) ?? armyAtTown(state, p, f);
   if (a && a.units.length >= MAX_UNITS) return `An army holds at most ${MAX_UNITS} regiments.`;
   const levy = levyFraction(state, f, type);
   if (levy <= 0) return 'Not enough men of fighting age left to raise this regiment.';

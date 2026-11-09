@@ -194,3 +194,16 @@ button.recruit .muted { margin-left: 6px; }
 }
 #topbar .brand { font-size: 17px; }
 #modal h2 { font-size: 22px; }
+
+/* Conversations with characters */
+.talk { display: flex; flex-direction: column; gap: 8px; }
+.talk-head { display: flex; flex-direction: column; gap: 2px; }
+.talk-log { height: 240px; overflow-y: auto; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 14px; line-height: 1.4; }
+.talk-line { margin: 4px 0; }
+.talk-line.me { color: #f0d9a0; }
+.talk-line.them { color: var(--ink); font-family: "EB Garamond", Georgia, serif; font-size: 15.5px; }
+.talk-line.note { color: #9fb98a; font-style: italic; font-size: 13px; }
+.talk-row { display: flex; gap: 6px; }
+.talk-input { flex: 1; width: 100%; box-sizing: border-box; background: #1f1a14; color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font: inherit; }
+.talk-status { font-size: 12.5px; min-height: 1em; }
+.ai-opt { display: block; cursor: pointer; }

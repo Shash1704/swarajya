@@ -4,7 +4,7 @@ import { defineConfig } from 'vite';
 export default defineConfig({
   base: './',
   build: {
-    // The 3D battlefield (Babylon.js) is one large chunk, loaded only when a battle starts.
-    chunkSizeWarningLimit: 1200,
+    // Babylon.js and WebLLM are large chunks, loaded only when needed (3D view; in-browser AI).
+    chunkSizeWarningLimit: 7000,
   },
 });

@@ -258,7 +258,7 @@ const F = (
 export const FACTION_DEFS: FactionDef[] = [
   F('mar', 'Maratha Swarajya', 'Marathas', '#e8821e', 'major', 0, 1, 'raigad',
     ['mavala', 'spear', 'archer', 'musket', 'rocket', 'lightcav', 'shiledar', 'huzurat'], ['mavala', 'musket', 'archer']),
-  F('mug', 'Mughal Empire', 'Mughals', '#2e8b57', 'major', 0.8, 0.3, 'delhi',
+  F('mug', 'Mughal Empire', 'Mughals', '#2e8b57', 'major', 0.8, 0.45, 'delhi',
     ['paik', 'spear', 'archer', 'musket', 'rocket', 'horsearcher', 'heavycav', 'rajput', 'ahadi', 'elephant', 'cannon'],
     ['spear', 'musket', 'archer']),
   F('bij', 'Adil Shahi Sultanate', 'Bijapur', '#8a55b5', 'major', 0.5, 0.8, 'bijapur',

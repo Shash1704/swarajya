@@ -1,7 +1,8 @@
 import './style.css';
 import { app, VIEW_H, VIEW_W } from './app';
 import { CampaignScene } from './campaign/scene';
-import { newGame } from './campaign/state';
+import { newGame, ORIGINS, type Origin } from './campaign/state';
+import { applyPlayerCharacter } from './campaign/characters';
 import { h, hideModal, showModal } from './ui';
 
 const canvas = document.getElementById('view') as HTMLCanvasElement;
@@ -136,23 +137,43 @@ function frame(t: number) {
 
 const params = new URLSearchParams(location.search);
 const seed = Number(params.get('seed')) || Math.floor(Math.random() * 1e9);
-app.setScene(new CampaignScene(newGame(seed)));
+const game = newGame(seed);
+app.setScene(new CampaignScene(game));
 // ?debug exposes the app on window for poking at state from the devtools console.
 if (params.has('debug')) Object.assign(window, { banners: app });
 requestAnimationFrame(frame);
 
+// Who you are: a nobody, with a name and a past of your choosing.
+const nameInput = h('input', { type: 'text', class: 'talk-input', value: 'Rao', maxlength: '28', 'aria-label': 'Your name' }) as HTMLInputElement;
+let origin: Origin = 'mavala';
+const originBtns = h('div', { class: 'btns' });
+const drawOrigins = () => originBtns.replaceChildren(...(Object.keys(ORIGINS) as Origin[]).map((o) => h('button', {
+  class: `small ${o === origin ? 'primary' : ''}`, title: ORIGINS[o].blurb,
+  onclick: () => { origin = o; drawOrigins(); },
+}, ORIGINS[o].label)));
+drawOrigins();
+const begin = () => {
+  applyPlayerCharacter(game, nameInput.value, origin);
+  hideModal();
+  (app.scene as { renderUI?: (f?: boolean) => void } | null)?.renderUI?.(true);
+};
 showModal(
   'Swarajya: January 1670',
   h('div', {},
     h('p', {}, 'Five years ago, at Purandar, Shivaji surrendered twenty-three forts to the Mughal general Jai Singh. Now Aurangzeb is distracted, and the Marathas are ready to take them back.'),
+    h('p', {}, 'You are nobody: no famous house, no land, a handful of men. The Raje has given you leave to raise a following. What you become is up to you.'),
+    h('div', { class: 'card', style: 'margin:8px 0' },
+      h('div', { class: 'muted' }, 'Your name:'), nameInput,
+      h('div', { class: 'muted', style: 'margin-top:6px' }, 'Where you come from (it shapes how you fight):'), originBtns,
+    ),
     h('ul', { class: 'help' },
       h('li', {}, 'Time flows in real time. Press Space to pause or resume, and 1/2/3 to change speed. Every realm marches, fights and besieges at the same moment.'),
-      h('li', {}, 'Select your saffron army, then right-click a town to march on it, or an enemy army to hunt it down.'),
+      h('li', {}, 'You lead your own small army. Right-click a town to march on it, or an enemy army to hunt it down. The Raje\'s other armies campaign on their own.'),
       h('li', {}, 'Before an enemy town, choose: besiege it, storm it, or raid its villages. Starving garrisons surrender; captured towns can be sacked or occupied.'),
       h('li', {}, 'When armies meet, battle is joined: command it yourself (real-time with pause), auto-resolve it, or try to escape.'),
       h('li', {}, 'On a phone or tablet: tap to select, drag to pan, pinch to zoom, and long-press where you would right-click.'),
     ),
     h('p', { class: 'muted' }, `Map seed ${seed}. Drag to pan, scroll to zoom. The world is paused until you press Space.`),
   ),
-  [{ label: 'Har Har Mahadev!', primary: true, onClick: hideModal }],
+  [{ label: 'Har Har Mahadev!', primary: true, onClick: begin }],
 );

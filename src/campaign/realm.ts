@@ -206,6 +206,11 @@ export function unrestMonthly(s: GameState) {
 export function generalFate(s: GameState, a: Army, captor: number, chance = 1): string | null {
   if (!s.rng.chance(chance)) return null;
   const g = a.general;
+  // You always live to fight another day (your army may not).
+  if (g.isPlayer) {
+    log(s, 'You are wounded in the rout, but your men carry you clear.', true);
+    return null;
+  }
   const r = s.rng.next();
   const f = s.factions;
   let text: string;
@@ -263,6 +268,7 @@ export function loyaltyMonthly(s: GameState): Request[] {
   const unpaid = s.gold[PLAYER] <= 0 && netIncome(s, PLAYER) < 0;
   const asks: Request[] = [];
   for (const { g, army } of playerGenerals(s)) {
+    if (g.isPlayer) continue;
     g.loyalty += g.loyalty < 60 ? 2 : -1;
     if (unpaid) g.loyalty -= 8;
     if (g.landed) g.loyalty += 1;

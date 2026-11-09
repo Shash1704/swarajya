@@ -1,18 +1,19 @@
 import { UNIT_STATS } from '../data';
-import { aiMonthly, thinkArmy } from './ai';
+import { aiMonthly, realmRecruit, thinkArmy } from './ai';
 import {
   type Army, armyById, armySpeed, AT_TOWN, autoResolve, autoResolveSiege, capture, cleanupArmies, CONTACT_RANGE,
   type CUnit, dist, findRoute, type GameState, garrisonCap, hostile, IND, isMonsoon, liftSiege, log, makePeace,
   maxSupplies, MAX_UNITS, monthOf, netIncome, newUnit, PLAYER, type Province, provinceUnder, RAID_DAYS, raidSpoils,
   retreat, sack, setGoal, startSiege, townAt, unitsStrength, manpowerRatio, maxManpower, manpowerRegen, drawMen,
-  generalK, releaseGeneral, blockaded, capture as captureProv,
+  generalK, releaseGeneral, blockaded, capture as captureProv, isYours, yourArmy, spawnArmy,
 } from './state';
 import {
   aiSpiesMonthly, battleRenown, captivesMonthly, cessionFor, demandChauth, diplomacyMonthly, fleetsMove, type GameEvent,
   generalFate, grantChauth, landEvent, loyaltyMonthly, navyMonthly, pickEvent, siegeRate, sortiesDaily, supplyDaily, unrestMonthly,
 } from './realm';
 
-export type BattleResult = 'att' | 'def' | 'escaped' | 'draw';
+/** 'parley': the player talked the encounter out (the deal struck already took effect). */
+export type BattleResult = 'att' | 'def' | 'escaped' | 'draw' | 'parley';
 
 /** Everyone fighting in one battle: the lead armies, any reinforcements nearby, and a garrison. */
 export interface BattleInfo {
@@ -108,6 +109,23 @@ export class World {
       });
   }
 
+  /**
+   * If your army is destroyed you live on: you slip away and gather a handful of men at the
+   * nearest town of the realm, as a nobody does.
+   */
+  private ensureYourArmy() {
+    const s = this.state;
+    if (yourArmy(s) || !s.factions[PLAYER].alive) return;
+    // The capital if it stands, else any town of the realm not under siege.
+    const town = s.provinces.filter((p) => p.owner === PLAYER && !p.siege).sort((p, q) => (q.capitalOf === PLAYER ? 1 : 0) - (p.capitalOf === PLAYER ? 1 : 0))[0];
+    if (!town) return;
+    const a = spawnArmy(s, PLAYER, town.id, [newUnit('mavala', 0.5), newUnit('mavala', 0.4)], s.player.gen);
+    a.safeUntil = s.day + 5;
+    s.player.armyId = a.id;
+    log(s, `You escape the rout and gather a few men at ${town.town}. The road back begins again.`, true);
+    this.hooks.changed();
+  }
+
   /** Puts an event in front of the player; the clock holds until they choose. */
   private ask(ev: GameEvent) {
     this.run(async () => ev.apply(await this.hooks.event(ev)));
@@ -135,9 +153,10 @@ export class World {
     this.resolveClashes();
     for (const a of [...s.armies]) {
       if (this.waiting) return;
-      if (!this.alive(a) || a.owner === PLAYER || s.day < a.aiNext || s.day < a.busyUntil) continue;
+      if (!this.alive(a) || isYours(s, a) || s.day < a.aiNext || s.day < a.busyUntil) continue;
       thinkArmy(this, a);
     }
+    this.ensureYourArmy();
     this.move(dt);
     fleetsMove(s, dt);
     if (!this.waiting) this.detect();
@@ -214,7 +233,7 @@ export class World {
     const p = s.provinces[g.prov];
     if (!hostile(s, a.owner, p.owner)) return;
     if (g.kind === 'go') {
-      if (a.owner !== PLAYER) return;
+      if (!isYours(s, a)) return;
       this.run(async () => {
         const choice = await this.hooks.arrival(a, p);
         if (!this.alive(a) || !hostile(s, a.owner, p.owner) || townAt(s, a) !== p.id) return;
@@ -233,9 +252,9 @@ export class World {
         });
         return;
       }
-      if (a.owner !== PLAYER && p.owner !== IND && s.rng.chance(0.3) && demandChauth(s, a, p)[0]) return;
+      if (!isYours(s, a) && p.owner !== IND && s.rng.chance(0.3) && demandChauth(s, a, p)[0]) return;
       this.startRaid(a, p);
-    } else if (a.owner === PLAYER || p.owner === PLAYER) this.run(() => this.attackTown(a, p));
+    } else if (isYours(s, a) || p.owner === PLAYER) this.run(() => this.attackTown(a, p));
     else void this.attackTown(a, p);
   }
 
@@ -284,7 +303,7 @@ export class World {
     const b = this.townBattle('field', a, p);
     if (b.defUnits.length) {
       const r = this.involvesPlayer(b) ? await this.hooks.battle(b) : null;
-      if (r === 'draw' || r === 'escaped') {
+      if (r === 'draw' || r === 'escaped' || r === 'parley') {
         cleanupArmies(s);
         if (this.alive(a)) a.safeUntil = s.day + 1;
         this.hooks.changed();
@@ -298,7 +317,7 @@ export class World {
         return;
       }
     }
-    await this.take(a.owner, p);
+    await this.take(a.owner, p, isYours(s, a));
   }
 
   /** Storm the walls of the settlement this army is besieging. */
@@ -320,7 +339,7 @@ export class World {
         return Promise.resolve();
       }
       this.hooks.changed();
-      return won ? this.take(a.owner, p) : Promise.resolve();
+      return won ? this.take(a.owner, p, isYours(s, a)) : Promise.resolve();
     };
     if (this.involvesPlayer(b)) this.run(async () => after((await this.hooks.battle(b)) === 'att'));
     else void after(autoResolveSiege(s, b.attUnits, p, b.defUnits, generalK(a, true)));
@@ -334,7 +353,8 @@ export class World {
     return s.armies.filter((x) => !taken.has(x)
       && (x.owner === lead.owner || s.ally[x.owner][lead.owner])
       // The player's armies only join battles the player is already in.
-      && (x.owner !== PLAYER || lead.owner === PLAYER)
+      // Your own army joins only battles you are already in.
+      && (!isYours(s, x) || isYours(s, lead))
       && hostile(s, x.owner, foe)
       && dist(x, at) < REINFORCE_RANGE
       && s.day >= x.busyUntil && x.raidUntil <= s.day
@@ -377,7 +397,8 @@ export class World {
   }
 
   private involvesPlayer(b: BattleInfo): boolean {
-    return [...b.attArmies, ...b.defArmies].some((x) => x.owner === PLAYER) || (b.garrison && b.p.owner === PLAYER);
+    // Only battles your own army fights in stop the clock; the Raje's other commanders fight their own.
+    return [...b.attArmies, ...b.defArmies].some((x) => isYours(this.state, x));
   }
 
   /** After the fighting: the beaten side falls back, the victors stop chasing. */
@@ -418,6 +439,8 @@ export class World {
       .filter((q) => q.walls > 0 && !q.siege && q.garrison.length && q.capitalOf < 0 && dist(lead, q) <= ABANDON_RANGE
         && (q.owner === loser || s.ally[q.owner][loser]) && hostile(s, winner, q.owner))
       .sort((x, y) => dist(lead, x) - dist(lead, y))[0];
+    // Great forts (hill forts, sea forts) hold even so; lesser walls are often given up.
+    if (p && !s.rng.chance([1, 1, 0.6, 0][p.walls] ?? 0)) return;
     if (p) {
       // The garrison marches out with the beaten army (as many as it can take); the rest scatter.
       if (flee) {
@@ -428,7 +451,7 @@ export class World {
       log(s, `Seeing the battle lost, the garrison of ${p.town} abandons the fort. ${p.town} stands empty!`,
         p.owner === PLAYER || winner === PLAYER);
       // AI victors make straight for the empty fort.
-      const taker = (attWon ? b.attArmies : b.defArmies).find((x) => this.alive(x) && x.owner !== PLAYER && x.owner === winner);
+      const taker = (attWon ? b.attArmies : b.defArmies).find((x) => this.alive(x) && !isYours(s, x) && x.owner === winner);
       if (taker && taker.siegeOf < 0) {
         setGoal(s, taker, { kind: 'siege', prov: p.id });
         taker.aiNext = s.day + 3;
@@ -436,15 +459,16 @@ export class World {
     }
   }
 
-  async take(owner: number, p: Province): Promise<void> {
+  /** `you`: your own army took it (you choose whether to sack). */
+  async take(owner: number, p: Province, you = false): Promise<void> {
     const s = this.state;
     if (p.owner === owner) return;
-    if (owner === PLAYER) {
+    if (owner === PLAYER && you) {
       const sackIt = await this.hooks.chooseSack(p);
       capture(s, p, owner);
       if (sackIt) sack(s, p, owner);
     } else {
-      const sackIt = owner !== IND && p.owner === PLAYER && s.rng.chance(0.3);
+      const sackIt = owner !== IND && owner !== PLAYER && p.owner === PLAYER && s.rng.chance(0.3);
       capture(s, p, owner);
       if (sackIt) sack(s, p, owner);
       // The victors garrison the place and rest before the next campaign.
@@ -498,7 +522,7 @@ export class World {
    */
   private wantsFight(x: Army, y: Army): boolean {
     if (x.goal?.kind === 'chase' && x.goal.army === y.id) return true;
-    if (x.owner === PLAYER || x.siegeOf >= 0 || x.raidUntil > this.state.day) return false;
+    if (isYours(this.state, x) || x.siegeOf >= 0 || x.raidUntil > this.state.day) return false;
     return unitsStrength(x.units) >= unitsStrength(y.units) * 0.8;
   }
 
@@ -528,6 +552,10 @@ export class World {
     this.run(async () => {
       const r = await this.hooks.battle(b);
       cleanupArmies(s);
+      if (r === 'parley') {
+        for (const x of [...b.attArmies, ...b.defArmies]) if (this.alive(x)) x.busyUntil = 0;
+        return;
+      }
       if (r === 'draw') {
         for (const x of [...b.attArmies, ...b.defArmies]) {
           if (!this.alive(x)) continue;
@@ -538,8 +566,8 @@ export class World {
         return;
       }
       if (r === 'escaped') {
-        const playerAttacked = b.attArmies.some((x) => x.owner === PLAYER);
-        const mine = [...b.attArmies, ...b.defArmies].filter((x) => x.owner === PLAYER && this.alive(x));
+        const playerAttacked = b.attArmies.some((x) => isYours(s, x));
+        const mine = [...b.attArmies, ...b.defArmies].filter((x) => isYours(s, x) && this.alive(x));
         const foe = playerAttacked ? (b.def ?? b.p) : b.att;
         for (const x of mine) {
           if (playerAttacked) {
@@ -606,7 +634,7 @@ export class World {
       if (p.owner !== IND && s.rng.chance(despair)) {
         log(s, `Seeing no relief coming, the garrison of ${p.town} opens its gates to the ${s.factions[besieger.owner].short}.`,
           besieger.owner === PLAYER || p.owner === PLAYER);
-        if (besieger.owner === PLAYER) this.run(() => this.take(PLAYER, p));
+        if (isYours(s, besieger)) this.run(() => this.take(PLAYER, p, true));
         else void this.take(besieger.owner, p);
         continue;
       }
@@ -616,7 +644,7 @@ export class World {
         if (p.garrison.length === 0) {
           log(s, `Starving, ${p.town} surrenders to the ${s.factions[besieger.owner].short}.`,
             besieger.owner === PLAYER || p.owner === PLAYER);
-          if (besieger.owner === PLAYER) this.run(() => this.take(PLAYER, p));
+          if (isYours(s, besieger)) this.run(() => this.take(PLAYER, p, true));
           else void this.take(besieger.owner, p);
         } else if (Math.floor(s.day) % 5 === 0) {
           log(s, `The garrison of ${p.town} is starving.`, besieger.owner === PLAYER || p.owner === PLAYER);
@@ -668,6 +696,7 @@ export class World {
       }
     }
     for (const f of s.factions) if (f.alive && f.id !== PLAYER) aiMonthly(s, f.id);
+    if (s.factions[PLAYER].alive) realmRecruit(s);
     unrestMonthly(s);
     captivesMonthly(s);
     diplomacyMonthly(s);

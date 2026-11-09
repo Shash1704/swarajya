@@ -13,7 +13,7 @@ import {
   newGame, PLAYER, type Province, provinceIncome, provincesOf, provinceUnder, RAID_DAYS, recruit, regionOwners,
   seasonOf, setGoal, siegeEquipment, townAt, unitsMen, unitsStrength, upkeep, VICTORY_PROVINCES, wallFactor,
   wallsCost, manpowerLabel, manpowerRatio, manpowerRegen, maxManpower, levyFraction,
-  generalK, generalRank, TRAITS, isCoastal, seaOf, keyFort, maxFood, recruitCost, tributeShare, type General,
+  generalK, generalRank, TRAITS, isCoastal, seaOf, isYours, yourArmy, ORIGINS, keyFort, maxFood, recruitCost, tributeShare, type General,
 } from './state';
 import {
   bribe, bribeCost, build, BUILDINGS, type Building, buildShip, demandChauth, type GameEvent, generalFate, generalLine,
@@ -24,6 +24,9 @@ import {
 import { BattleScene } from '../battle/scene';
 import { canvas3d, hasWebGL, setWant3D, want3D } from '../pref3d';
 import type { Map3D } from './map3d';
+import { openAISettings, openTalk } from './talk';
+import { liegeTitle, meName, parleyPartner, renown, rulerOf } from './characters';
+import { llmSettings } from '../llm';
 import type { Terrain } from '../battle/battle';
 
 const MAX_ZOOM = 3;
@@ -76,6 +79,7 @@ export class CampaignScene implements Scene {
     this.cam.x = cap.x - VIEW_W / 2 / this.cam.z + 140;
     this.cam.y = cap.y - VIEW_H / 2 / this.cam.z - 30;
     this.clampCam();
+    this.selArmy = yourArmy(state);
     if (this.use3D) this.load3D();
   }
 
@@ -806,10 +810,11 @@ export class CampaignScene implements Scene {
   private async command(x: number, y: number) {
     const s = this.state;
     const a = this.selArmy;
-    if (!a || a.owner !== PLAYER) return;
+    if (!a || !isYours(s, a)) return;
     const target = this.armyHit(x, y);
     if (target && target !== a) {
-      if (target.owner === PLAYER) setGoal(s, a, { kind: 'join', army: target.id });
+      // A fellow Maratha army: ride over to it (you can't order the Raje's commanders; talk to them instead).
+      if (target.owner === PLAYER) setGoal(s, a, { kind: 'point', x: target.x, y: target.y });
       else {
         if (!(await this.ensureWar(target.owner, `attack the ${s.factions[target.owner].short} army`))) return;
         setGoal(s, a, { kind: 'chase', army: target.id });
@@ -935,7 +940,7 @@ export class CampaignScene implements Scene {
     const { mode, att, p, defOwner } = b;
     const defArmy = b.def;
     if (b.defUnits.length === 0) return Promise.resolve('att');
-    const playerAttacks = b.attArmies.some((x) => x.owner === PLAYER);
+    const playerAttacks = b.attArmies.some((x) => isYours(s, x));
     const mine = playerAttacks ? b.attUnits : b.defUnits;
     const theirs = playerAttacks ? b.defUnits : b.attUnits;
     const enemy = s.factions[playerAttacks ? defOwner : att.owner];
@@ -966,7 +971,7 @@ export class CampaignScene implements Scene {
       : `The ${enemy.short} assault ${p.town}! Its garrison must hold the walls.`;
     else if (garrison) intro = playerAttacks ? `Your army attacks the garrison of ${p.town}.` : `The ${enemy.short} attack ${p.town}!`;
     else intro = playerAttacks ? `Your army catches the ${enemy.short} near ${where.name}.` : `The ${enemy.short} fall upon your army near ${where.name}!`;
-    const myArmy = (playerAttacks ? b.attArmies : b.defArmies).find((x) => x.owner === PLAYER) ?? null;
+    const myArmy = (playerAttacks ? b.attArmies : b.defArmies).find((x) => isYours(s, x)) ?? null;
     const enemyArmy = playerAttacks ? defArmy : att;
     const canEscape = !siege && !!myArmy;
     const faster = !!myArmy && (!enemyArmy || armySpeed(s, myArmy) >= armySpeed(s, enemyArmy));
@@ -1001,6 +1006,19 @@ export class CampaignScene implements Scene {
         resolve(playerAttacks === playerWon ? 'att' : 'def');
       };
       const buttons: { label: string; onClick: () => void; primary?: boolean }[] = [];
+      // Talk before fighting: they may withdraw, surrender, let you pass, or even change sides.
+      if (!siege && myArmy && enemyArmy && defArmy) {
+        buttons.push({
+          label: '🗣 Parley',
+          onClick: () => {
+            hideModal();
+            void openTalk(s, 'parley', enemyArmy.general, enemyArmy.owner, enemyArmy, myArmy, () => this.renderUI(true)).then((t) => {
+              if (t.settled || !s.armies.includes(enemyArmy)) resolve('parley');
+              else this.battlePrompt(b).then(resolve);
+            });
+          },
+        });
+      }
       if (canEscape) {
         buttons.push({
           label: playerAttacks ? 'Leave them be' : faster ? 'Escape' : 'Escape (lose a rearguard)',
@@ -1117,14 +1135,22 @@ export class CampaignScene implements Scene {
       bar(g.loyalty / 100, g.loyalty < 30 ? 'var(--neg)' : 'var(--gold)'),
       extra,
     );
-    const gift = (g: General) => h('div', { class: 'btns' }, h('button', {
+    const gift = (g: General, army: Army | null) => h('div', { class: 'btns' }, h('button', {
       class: 'small', disabled: s.gold[PLAYER] < 50 + generalRank(g) * 25,
       onclick: () => this.act(giftGeneral(s, g), () => this.openCourt()),
-    }, `🎁 Gift ${50 + generalRank(g) * 25} gold (+15 loyalty)`));
+    }, `🎁 Gift ${50 + generalRank(g) * 25} gold (+15 loyalty)`),
+    g.isPlayer ? null : h('button', {
+      class: 'small', onclick: () => { hideModal(); void openTalk(s, 'counsel', g, PLAYER, army, null, () => this.renderUI(true)); },
+    }, '🗣 Talk'));
     const held = s.captives.map((c, i) => ({ c, i }));
+    const raje = rulerOf(s, PLAYER);
     showModal('The court', h('div', { class: 'stack' },
-      h('p', { class: 'muted' }, 'Your commanders win renown in battle and each has a gift. Loyalty falls if the treasury runs dry or they are refused land; a commander below 15 may defect with his army.'),
-      ...gens.map(({ g, army }) => row(g, army ? `leads ${fmt(unitsMen(army.units))} men` : 'at court', gift(g))),
+      raje ? h('div', { class: 'btns' }, h('button', {
+        class: 'primary', title: 'Go before the Raje: report your deeds, ask for men, or hear his counsel.',
+        onclick: () => { hideModal(); void openTalk(s, 'liege', raje, PLAYER, null, null, () => this.renderUI(true)); },
+      }, `🗣 Go before ${liegeTitle(s)}`)) : null,
+      h('p', { class: 'muted' }, 'The Raje\'s commanders (and you) win renown in battle, and each has a gift. Their loyalty to the Raje falls if the treasury runs dry or they are refused land; one below 15 may defect with his army. Talk to them to win them over, or to ask them to join forces with you.'),
+      ...gens.map(({ g, army }) => row(g, g.isPlayer ? 'you' : army ? `leads ${fmt(unitsMen(army.units))} men` : 'at court', g.isPlayer ? null : gift(g, army))),
       held.length ? h('h3', {}, 'Prisoners') : null,
       ...held.map(({ c, i }) => {
         const ours = c.owner === PLAYER;
@@ -1214,6 +1240,10 @@ export class CampaignScene implements Scene {
             h('button', { class: 'small', onclick: () => say(propose(s, f.id, 'marriage')), disabled: s.marriage[PLAYER][f.id] }, 'Marriage alliance'),
             h('button', { class: 'small', onclick: () => say(propose(s, f.id, 'hostages')), disabled: s.truceUntil[PLAYER][f.id] > s.day }, 'Exchange hostages'),
             h('button', { class: 'small', onclick: () => { void this.ensureWar(f.id, 'make war').then(() => this.openDiplomacy()); } }, 'Declare war')),
+        rulerOf(s, f.id) ? h('div', { class: 'btns' }, h('button', {
+          class: 'small primary', title: 'Send envoys to speak with the sovereign in person: talk, then make proposals.',
+          onclick: () => { hideModal(); void openTalk(s, 'audience', rulerOf(s, f.id)!, f.id, null, null, () => this.renderUI(true)); },
+        }, `🗣 Audience with ${rulerOf(s, f.id)!.name}`)) : null,
         h('div', { class: 'btns' },
           h('button', { class: 'small', disabled: s.gold[PLAYER] < 80, onclick: () => say(propose(s, f.id, 'gift')) }, 'Send gifts (80)'),
           targets.length ? sel : null,
@@ -1331,6 +1361,8 @@ export class CampaignScene implements Scene {
       h('button', { onclick: () => this.openCourt() }, 'Court'),
       h('button', { onclick: () => this.openNavy() }, 'Navy'),
       h('button', { onclick: () => this.openDiplomacy() }, 'Diplomacy'),
+      h('button', { title: 'Set up the language model that voices the characters', onclick: () => openAISettings(() => this.renderUI(true)) },
+        llmSettings().backend === 'none' ? '🗣 AI: off' : '🗣 AI: on'),
     );
     clear(ui.side).append(this.selectionCard(), this.dispatchCard(), this.realmCard());
   }
@@ -1354,7 +1386,7 @@ export class CampaignScene implements Scene {
       h('p', {}, 'At Purandar in 1665 Shivaji surrendered 23 forts to the Mughals. Now he means to take them back.'),
       h('ul', { class: 'help' },
         h('li', {}, 'Time flows: Space pauses, 1/2/3 set the speed. Every realm marches, fights and besieges at once.'),
-        h('li', {}, 'Click your saffron banner to select an army, then right-click a town to march there, anywhere else to march straight across country to that spot, or an enemy army to attack it. Armies go round the sea and over the passes; hills slow them.'),
+        h('li', {}, 'You lead one army: your own. Click its banner to select it, then right-click a town to march there, anywhere else to march straight across country, or an enemy army to attack it. Every other army, the Raje\'s included, moves on its own.'),
         h('li', {}, 'Beat an army near one of its own forts and the garrison flees with it: the fort stands empty for a while, yours to walk into.'),
         h('li', {}, 'At an enemy town you choose: besiege, storm, or raid its villages. Mavalas bring ladders from day one.'),
         h('li', {}, 'Sack captured towns for a fortune, or occupy them for steady income. In the monsoon, everyone slows down.'),
@@ -1363,6 +1395,7 @@ export class CampaignScene implements Scene {
         h('li', {}, 'At an enemy town, demand chauth: a quarter of its revenue each year, in return for sparing it. Spies can scout armies, burn siege works, bribe garrisons and stir revolt.'),
         h('li', {}, 'Watch unrest (!): foreign rule, another faith, heavy taxes and plunder breed revolt. Temples, garrisons and tolerance calm it. Hold a region\'s key fort for more revenue there.'),
         h('li', {}, 'Court: your commanders gain rank and have gifts; keep them loyal. Navy: raid, blockade and patrol the coast. Diplomacy: alliances, marriages, hostages and bought wars.'),
+        h('li', {}, `You are ${meName(this.state)}, a nobody in the service of Shivaji. Win battles to make your name. Every commander and ruler is a character with a temper, an opinion of you and a memory: parley with armies near yours (even before a battle), seek audiences with rulers, go before the Raje at Court, and talk to his commanders. Set up a local AI (🗣 AI) and they answer in their own words.`),
         h('li', {}, `Win by holding ${VICTORY_PROVINCES} provinces or taking Delhi.`),
       ),
     );
@@ -1414,14 +1447,17 @@ export class CampaignScene implements Scene {
   private armyCard(a: Army): HTMLElement {
     const s = this.state;
     const f = s.factions[a.owner];
-    const mine = a.owner === PLAYER;
+    const mine = isYours(s, a);
+    // One of the Raje's other armies: it campaigns on its own; you can talk to its commander.
+    const ours = !mine && a.owner === PLAYER;
     const town = townAt(s, a);
     const known = intelOn(s, a);
     const g = a.general;
     const sup = supplied(s, a);
     const parts: (HTMLElement | null)[] = [
-      h('h3', {}, swatch(f.color), mine ? 'Your army' : `${f.short} army`),
-      h('div', { title: TRAITS[g.trait].help }, h('b', {}, g.name), ` · ${generalLine(g)}`, mine ? h('span', { class: g.loyalty < 30 ? 'neg' : 'muted' }, ` · loyalty ${Math.round(g.loyalty)}`) : null),
+      h('h3', {}, swatch(f.color), mine ? 'Your army' : ours ? 'The Raje\'s army' : `${f.short} army`),
+      h('div', { title: TRAITS[g.trait].help }, h('b', {}, mine ? `${g.name} (you)` : g.name), ` · ${generalLine(g)}`, ours ? h('span', { class: g.loyalty < 30 ? 'neg' : 'muted' }, ` · loyalty to the Raje ${Math.round(g.loyalty)}`) : null),
+      ours ? h('div', { class: 'muted', style: 'font-size:12.5px' }, 'Led by one of Shivaji\'s commanders: it campaigns on its own. Talk to him to share spoils or ask him to join forces with you.') : null,
       h('div', { class: 'muted', style: 'font-size:12.5px' }, TRAITS[g.trait].help),
       known
         ? h('div', { class: 'muted' }, `${fmt(unitsMen(a.units))} men · ${a.units.length}/${MAX_UNITS} regiments · marches ${Math.round(armySpeed(s, a) * 2)} km a day`)
@@ -1430,7 +1466,21 @@ export class CampaignScene implements Scene {
       mine || known ? h('div', { class: 'muted' }, this.liveText(() => `Food: ${Math.ceil(a.food)}/${maxFood(a)} days · ${sup === 'fort' ? 'supplied by a fort' : sup === 'home' ? 'in friendly country' : a.food <= 0 ? 'STARVING' : 'living off the land'}${s.day < a.quarantineUntil ? ` · quarantined ${Math.ceil(a.quarantineUntil - s.day)} days` : ''}`)) : null,
       known ? this.unitList(a.units, f.color) : null,
     ];
-    if (!mine && a.owner !== IND) {
+    // Characters: talk with a fellow commander, or parley with an army near yours.
+    const partner = parleyPartner(s, a);
+    if (ours) {
+      parts.push(h('div', { class: 'btns' }, h('button', {
+        class: 'small primary', onclick: () => { this.setPaused(true); void openTalk(s, 'counsel', a.general, PLAYER, a, null, () => this.renderUI(true)); },
+      }, `🗣 Talk with ${a.general.name}`)));
+    } else if (partner) {
+      parts.push(h('div', { class: 'btns' }, h('button', {
+        class: 'small primary', title: `Ride out under a flag of truce to speak with ${a.general.name}.`,
+        onclick: () => { this.setPaused(true); void openTalk(s, 'parley', a.general, a.owner, a, partner, () => this.renderUI(true)); },
+      }, `🗣 Parley with ${a.general.name}`)));
+    } else if (!mine) {
+      parts.push(h('div', { class: 'muted', style: 'font-size:12.5px' }, 'Bring your army close to parley with its commander.'));
+    }
+    if (!mine && !ours && a.owner !== IND) {
       const say = (t: string) => { log(s, t, true); this.renderUI(true); };
       parts.push(h('div', { class: 'btns' },
         h('button', { class: 'small', disabled: s.gold[PLAYER] < SPY_COST.scout, onclick: () => say(scout(s, a)) }, `🕵 Send scouts (${SPY_COST.scout})`),
@@ -1448,7 +1498,7 @@ export class CampaignScene implements Scene {
             title: 'Gold for the qiledar to open the gates. Likelier when the garrison is hungry, the province restless, or their realm exhausted.',
             onclick: () => {
               const r = bribe(s, p);
-              if (r === 'taken') void this.world.take(PLAYER, p).then(() => this.renderUI(true));
+              if (r === 'taken') void this.world.take(PLAYER, p, true).then(() => this.renderUI(true));
               else log(s, r, true);
               this.renderUI(true);
             },
@@ -1469,7 +1519,7 @@ export class CampaignScene implements Scene {
         }
         if (btns.length) parts.push(h('div', { class: 'btns' }, ...btns));
         parts.push(h('p', { class: 'muted', style: 'font-size:12.5px' },
-          'Right-click a town to march there, an enemy army to attack it, or one of your own armies to join it.'));
+          'Right-click a town to march there, anywhere else to march across country, an enemy army to attack it, or one of the Raje\'s armies to ride over to it.'));
         if (here && here.owner === PLAYER && !here.siege) parts.push(this.recruitButtons(here));
       }
     }
@@ -1623,8 +1673,17 @@ export class CampaignScene implements Scene {
     const s = this.state;
     const regions = [...regionOwners(s)].filter(([, o]) => o === PLAYER).map(([r]) => r);
     const armies = s.armies.filter((a) => a.owner === PLAYER);
+    const me = s.player.gen;
+    const yours = yourArmy(s);
     return h('div', { class: 'card' },
-      h('h3', {}, 'Swarajya'),
+      h('h3', {}, 'You'),
+      h('div', { title: 'You. Go before the Raje (Court), talk with his commanders, seek audiences with rulers (Diplomacy), and parley with armies near yours.' },
+        h('b', {}, meName(s)), h('span', { class: 'muted' }, ` · ${ORIGINS[s.player.origin].label} · ${generalLine(me)}`)),
+      h('div', { class: 'muted', style: 'font-size:12.5px' }, `In the service of ${liegeTitle(s)}. Renown grows with every battle won.`),
+      yours ? h('div', { class: 'btns' }, h('button', { class: 'small primary', onclick: () => { this.select(yours, -1); this.centerOn(yours); } }, `Your army · ${fmt(unitsMen(yours.units))} men`)) : null,
+      h('h3', { style: 'margin-top:10px' }, 'Swarajya'),
+      h('div', { class: 'row muted' }, h('span', {}, 'Honour (keeping your word)'), h('span', {}, `${Math.round(s.honour)}`)),
+      bar(s.honour / 100, s.honour > 45 ? 'var(--gold)' : 'var(--neg)'),
       h('div', { class: 'row muted' }, h('span', {}, 'Revenue'), h('span', {}, `+${grossIncome(s, PLAYER)}/month`)),
       h('div', { class: 'row muted' }, h('span', {}, 'Army upkeep'), h('span', {}, `-${upkeep(s, PLAYER)}/month`)),
       h('div', { class: 'row muted' }, h('span', {}, 'Provinces'), h('span', {}, `${provincesOf(s, PLAYER).length} of ${VICTORY_PROVINCES} for victory`)),
@@ -1641,9 +1700,10 @@ export class CampaignScene implements Scene {
       h('div', { class: 'btns' }, ...(['tolerant', 'zealous'] as const).map((t) => h('button', {
         class: `small ${s.policy[PLAYER].faith === t ? 'primary' : ''}`, onclick: () => { s.policy[PLAYER].faith = t; this.renderUI(true); },
       }, t[0].toUpperCase() + t.slice(1)))),
-      armies.length ? h('div', { class: 'btns' }, ...armies.map((a) =>
+      armies.filter((a) => !isYours(s, a)).length ? h('div', { class: 'muted' }, 'The Raje\'s other armies:') : null,
+      h('div', { class: 'btns' }, ...armies.filter((a) => !isYours(s, a)).map((a) =>
         h('button', { class: 'small', onclick: () => { this.select(a, -1); this.centerOn(a); } },
-          `Army ${fmt(unitsMen(a.units))} · ${s.provinces[provinceUnder(s, a, a.node)].name}`))) : null,
+          `${a.general.name} · ${fmt(unitsMen(a.units))} · ${s.provinces[provinceUnder(s, a, a.node)].name}`))),
     );
   }
 }
