@@ -106,6 +106,29 @@ export interface Army {
   aiNext: number;
   /** The front (a province) this army campaigns on; it doesn't wander off to other wars. */
   front?: number;
+  /** Marching under another army's banner (a host): the leader's id, and the day it goes its own way again. */
+  follows?: number;
+  followUntil?: number;
+}
+
+/** Armies marching under this one's banner. */
+export const followersOf = (s: GameState, a: Army) => s.armies.filter((x) => x.follows === a.id);
+
+/** Puts an army under another's banner for a while (they march and fight as one host). */
+export function joinBanner(s: GameState, follower: Army, leader: Army, days = 60) {
+  if (follower.siegeOf >= 0) liftSiege(s, s.provinces[follower.siegeOf]);
+  follower.follows = leader.id;
+  follower.followUntil = s.day + days;
+  follower.goal = null;
+  follower.route = [];
+  follower.raidUntil = 0;
+}
+
+/** Sends a follower back to its own war. */
+export function leaveBanner(s: GameState, follower: Army) {
+  follower.follows = undefined;
+  follower.followUntil = undefined;
+  follower.aiNext = s.day;
 }
 
 export interface Siege {
@@ -541,6 +564,13 @@ export function hostile(state: GameState, a: number, b: number): boolean {
 
 /** March speed in world pixels per day. */
 export function armySpeed(state: GameState, a: Army): number {
+  // A host marches at the pace of its slowest army.
+  const host = followersOf(state, a);
+  const own = baseSpeed(state, a);
+  return host.length ? Math.min(own, ...host.map((f) => baseSpeed(state, f))) : own;
+}
+
+function baseSpeed(state: GameState, a: Army): number {
   const cls = a.units.map((u) => UNIT_STATS[u.type].cls);
   let v = 13;
   if (cls.length && cls.every((c) => c === 'cavalry')) v = 22 * (a.general.trait === 'horseman' ? 1.1 : 1);

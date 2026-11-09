@@ -13,7 +13,7 @@ import {
   newGame, PLAYER, type Province, provinceIncome, provincesOf, provinceUnder, RAID_DAYS, recruit, regionOwners,
   seasonOf, setGoal, siegeEquipment, townAt, unitsMen, unitsStrength, upkeep, VICTORY_PROVINCES, wallFactor,
   wallsCost, manpowerLabel, manpowerRatio, manpowerRegen, maxManpower, levyFraction,
-  generalK, generalRank, TRAITS, isCoastal, seaOf, isYours, yourArmy, ORIGINS, keyFort, maxFood, recruitCost, tributeShare, type General,
+  generalK, generalRank, TRAITS, isCoastal, seaOf, isYours, yourArmy, ORIGINS, followersOf, leaveBanner, keyFort, maxFood, recruitCost, tributeShare, type General,
 } from './state';
 import {
   bribe, bribeCost, build, BUILDINGS, type Building, buildShip, demandChauth, type GameEvent, generalFate, generalLine,
@@ -375,7 +375,8 @@ export class CampaignScene implements Scene {
     for (const c of this.world.clashes) this.drawClash(ctx, c.x, c.y);
     for (const fl of s.fleets) this.drawFleet(ctx, fl);
     const order = [...s.armies].sort((a, b) => (a === this.selArmy ? 1 : 0) - (b === this.selArmy ? 1 : 0));
-    for (const a of order) this.drawArmy(ctx, a, icon);
+    // Armies marching under another's banner show no banner of their own.
+    for (const a of order) if (a.follows === undefined) this.drawArmy(ctx, a, icon);
     this.drawTooltip(ctx);
 
     if (this.paused && !modalOpen()) {
@@ -672,7 +673,10 @@ export class CampaignScene implements Scene {
       ctx.font = nameFont;
       const nw = ctx.measureText(a.general.name.toUpperCase()).width;
       ctx.font = houseFont;
-      const hw = ctx.measureText(a.general.house.toUpperCase()).width;
+      // A host: the leader's house line names who marches with him.
+      const host = followersOf(s, a);
+      const houseLine = host.length ? `WITH ${host.map((x) => x.general.name.toUpperCase()).join(' & ')}` : a.general.house.toUpperCase();
+      const hw = ctx.measureText(houseLine).width;
       const w = Math.max(nw, hw) + 14 * k;
       const ph = 25 * k;
       const py = top - 6 * k - ph;
@@ -693,7 +697,7 @@ export class CampaignScene implements Scene {
       ctx.font = nameFont;
       ctx.fillText(a.general.name.toUpperCase(), px, py + ph * 0.32);
       ctx.font = houseFont;
-      ctx.fillText(a.general.house.toUpperCase(), px, py + ph * 0.78);
+      ctx.fillText(houseLine, px, py + ph * 0.78);
     }
     if (a.raidUntil > s.day) {
       ctx.font = `${Math.round(14 * k)}px sans-serif`;
@@ -742,6 +746,7 @@ export class CampaignScene implements Scene {
   private armyHit(sx: number, sy: number): Army | null {
     const icon = Math.max(6, Math.min(14, 5 + 4 * this.cam.z));
     for (const a of [...this.state.armies].reverse()) {
+      if (a.follows !== undefined) continue;
       const r = this.armyRect(a, icon);
       if (sx >= r.x && sx <= r.x + r.w && sy >= r.y && sy <= r.y + r.h + 4) return a;
     }
@@ -1520,7 +1525,11 @@ export class CampaignScene implements Scene {
     const parts: (HTMLElement | null)[] = [
       h('h3', {}, swatch(f.color), mine ? 'Your army' : ours ? 'The Raje\'s army' : `${f.short} army`),
       h('div', { title: TRAITS[g.trait].help }, h('b', {}, mine ? `${g.name} (you)` : g.name), ` · ${generalLine(g)}`, ours ? h('span', { class: g.loyalty < 30 ? 'neg' : 'muted' }, ` · loyalty to the Raje ${Math.round(g.loyalty)}`) : null),
-      ours ? h('div', { class: 'muted', style: 'font-size:12.5px' }, 'Led by one of Shivaji\'s commanders: it campaigns on its own. Talk to him to share spoils or ask him to join forces with you.') : null,
+      ours && a.follows === undefined ? h('div', { class: 'muted', style: 'font-size:12.5px' }, 'Led by one of Shivaji\'s commanders: it campaigns on its own. Talk to him to share spoils or ask him to join forces with you.') : null,
+      a.follows !== undefined ? h('div', { class: 'pos', style: 'font-size:12.5px' }, `Marching under ${armyById(s, a.follows)?.general.name ?? 'another'}'s banner for ${Math.max(0, Math.ceil((a.followUntil ?? s.day) - s.day))} more days.`) : null,
+      ...followersOf(s, a).map((x) => h('div', { class: 'row', style: 'font-size:12.5px;margin-top:4px' },
+        h('span', { class: 'pos' }, `Under your banner: ${x.general.name} with ${fmt(unitsMen(x.units))} men (${Math.max(0, Math.ceil((x.followUntil ?? s.day) - s.day))} days)`),
+        mine ? h('button', { class: 'small', onclick: () => { leaveBanner(s, x); log(s, `You release ${x.general.name} to his own war.`, true); this.renderUI(true); } }, 'Release') : null)),
       h('div', { class: 'muted', style: 'font-size:12.5px' }, TRAITS[g.trait].help),
       known
         ? h('div', { class: 'muted' }, `${fmt(unitsMen(a.units))} men · ${a.units.length}/${MAX_UNITS} regiments · marches ${Math.round(armySpeed(s, a) * 2)} km a day`)

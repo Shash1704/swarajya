@@ -5,7 +5,7 @@ import {
   type CUnit, dist, findRoute, type GameState, garrisonCap, hostile, IND, isMonsoon, liftSiege, log, makePeace,
   maxSupplies, MAX_UNITS, monthOf, netIncome, newUnit, PLAYER, type Province, provinceUnder, RAID_DAYS, raidSpoils,
   retreat, sack, setGoal, startSiege, townAt, unitsStrength, manpowerRatio, maxManpower, manpowerRegen, drawMen,
-  generalK, releaseGeneral, blockaded, capture as captureProv, isYours, yourArmy, spawnArmy,
+  generalK, releaseGeneral, blockaded, capture as captureProv, isYours, yourArmy, spawnArmy, leaveBanner, armySpeed as baseSpeedOf,
 } from './state';
 import {
   aiSpiesMonthly, battleRenown, captivesMonthly, cessionFor, demandChauth, diplomacyMonthly, fleetsMove, type GameEvent,
@@ -160,7 +160,7 @@ export class World {
     this.resolveClashes();
     for (const a of [...s.armies]) {
       if (this.waiting) return;
-      if (!this.alive(a) || isYours(s, a) || s.day < a.aiNext || s.day < a.busyUntil) continue;
+      if (!this.alive(a) || isYours(s, a) || a.follows !== undefined || s.day < a.aiNext || s.day < a.busyUntil) continue;
       thinkArmy(this, a);
     }
     this.ensureYourArmy();
@@ -175,6 +175,27 @@ export class World {
     const s = this.state;
     for (const a of [...s.armies]) {
       if (!this.alive(a)) continue;
+      // Under another's banner: march with the leader (catching up first), until the time is up.
+      if (a.follows !== undefined) {
+        const lead = armyById(s, a.follows);
+        if (!lead || lead.owner !== a.owner || s.day >= (a.followUntil ?? 0)) {
+          if (lead && isYours(s, lead)) log(s, `${a.general.name} takes his men back to their own war.`, true);
+          leaveBanner(s, a);
+        } else {
+          const d = dist(a, lead);
+          const step = baseSpeedOf(s, a) * dt * 1.5;
+          if (d <= Math.max(step, 1)) {
+            a.x = lead.x;
+            a.y = lead.y;
+            a.node = lead.node;
+          } else {
+            a.x += ((lead.x - a.x) / d) * step;
+            a.y += ((lead.y - a.y) / d) * step;
+            a.node = provinceUnder(s, a, a.node);
+          }
+          continue;
+        }
+      }
       if (a.raidUntil > 0) {
         if (s.day >= a.raidUntil) this.finishRaid(a);
         continue;
@@ -362,8 +383,8 @@ export class World {
     return s.armies.filter((x) => !taken.has(x)
       && (x.owner === lead.owner || s.ally[x.owner][lead.owner])
       // The player's armies only join battles the player is already in.
-      // Your own army joins only battles you are already in.
-      && (!isYours(s, x) || isYours(s, lead))
+      // Your own army joins only battles you are already in (or one your host is in).
+      && (!isYours(s, x) || isYours(s, lead) || lead.follows === x.id)
       && hostile(s, x.owner, foe)
       && dist(x, at) < REINFORCE_RANGE
       && s.day >= x.busyUntil && x.raidUntil <= s.day
@@ -535,7 +556,7 @@ export class World {
    */
   private wantsFight(x: Army, y: Army): boolean {
     if (x.goal?.kind === 'chase' && x.goal.army === y.id) return true;
-    if (isYours(this.state, x) || x.siegeOf >= 0 || x.raidUntil > this.state.day) return false;
+    if (isYours(this.state, x) || x.follows !== undefined || x.siegeOf >= 0 || x.raidUntil > this.state.day) return false;
     return unitsStrength(x.units) >= unitsStrength(y.units) * 0.8;
   }
 

@@ -3,7 +3,7 @@ import { cessionFor, peaceTerms, propose, roughMen } from './realm';
 import { chronicle, deeds, reputationLines } from './chronicle';
 import { agenda } from './dialogue';
 import {
-  acceptsPeace, type Army, armyById, armyStrength, hostile, isYours, ORIGINS, type Origin, yourArmy, dateLabel, declareWar, dist, factionStrength, type GameState, type General,
+  acceptsPeace, type Army, armyById, armyStrength, hostile, isYours, joinBanner, ORIGINS, type Origin, yourArmy, dateLabel, declareWar, dist, factionStrength, type GameState, type General,
   generalRank, IND, log, manpowerLabel, manpowerRatio, nearestOwned, PLAYER, provinceUnder, provincesOf, RANK_NAMES,
   removeArmy, setGoal, TRAITS, unitsMen, yearOf,
 } from './state';
@@ -520,19 +520,25 @@ export function resolveAction(s: GameState, t: Talk, id: string): Resolution {
       if (!target || !hostile(s, PLAYER, target.owner)) return say(false, '', 'that army is gone or no longer an enemy');
       const theirStr = armyStrength(target) * 1.3;
       if (ourStr < theirStr * (bold ? 0.6 : 0.85)) return say(false, `${t.gen.name} thinks it too great a risk.`, 'the enemy is too strong for the two of you');
-      setGoal(s, his, { kind: 'chase', army: target.id });
-      his.aiNext = s.day + 20;
-      chronicle(s, 'diplomacy', `You persuaded ${t.gen.name} to strike at ${target.general.name}'s ${s.factions[target.owner].short} army together with you.`);
-      return say(true, `${t.gen.name} marches against ${target.general.name}. Bring your army to join the attack.`, 'it is a good plan and you are eager to strike', true);
+      // He falls in under your banner, and the host sets out after the enemy.
+      if (yours) {
+        joinBanner(s, his, yours, 45);
+        setGoal(s, yours, { kind: 'chase', army: target.id });
+      } else setGoal(s, his, { kind: 'chase', army: target.id });
+      chronicle(s, 'diplomacy', `${t.gen.name} joined your banner to strike at ${target.general.name}'s ${s.factions[target.owner].short} army.`);
+      return say(true, `${t.gen.name} falls in under your banner; the host marches against ${target.general.name}.`, 'it is a good plan and you are eager to strike', true);
     }
     const target = s.provinces[Number(id.slice(6))];
     if (!target || !hostile(s, PLAYER, target.owner)) return say(false, '', 'that town is no longer an enemy\'s');
     const def = (unitsMen(target.garrison) + 10) * (1 + target.walls * 0.45);
     if (ourStr < def * (bold ? 0.5 : 0.8)) return say(false, `${t.gen.name} thinks ${target.town} too strong to take.`, 'the walls and the garrison are too much for you');
-    setGoal(s, his, { kind: 'siege', prov: target.id });
-    his.aiNext = s.day + 40;
-    chronicle(s, 'diplomacy', `You and ${t.gen.name} agreed to take ${target.town} together; he marched to lay siege to it.`);
-    return say(true, `${t.gen.name} marches on ${target.town}. Join him there.`, 'you have wanted this, and now you have a comrade for it', true);
+    // He falls in under your banner, and the host marches on the town (you choose what to do there).
+    if (yours) {
+      joinBanner(s, his, yours, 60);
+      setGoal(s, yours, { kind: 'go', prov: target.id });
+    } else setGoal(s, his, { kind: 'siege', prov: target.id });
+    chronicle(s, 'diplomacy', `You and ${t.gen.name} agreed to take ${target.town} together; he joined your banner and the host marched on it.`);
+    return say(true, `${t.gen.name} falls in under your banner; the host marches on ${target.town}.`, 'you have wanted this, and now you have a comrade for it', true);
   }
   switch (id) {
     case 'withdraw': {
@@ -620,15 +626,13 @@ export function resolveAction(s: GameState, t: Talk, id: string): Resolution {
     }
     case 'join': {
       const mine = yourArmy(s);
-      const ok = !!mine && !!t.army && att > 25 && (renown(s) >= generalRank(t.gen) || att > 55)
-        && t.army.units.length + mine.units.length <= 20;
+      const ok = !!mine && !!t.army && att > 25 && (renown(s) >= generalRank(t.gen) || att > 55);
       if (!ok) {
-        return say(false, `${t.gen.name} keeps his own command.`, !mine || !t.army ? 'there is no army to join'
-          : t.army.units.length + mine.units.length > 20 ? 'your two armies together would be too many to feed' : `${meName(s)} has not yet earned the right to lead you`);
+        return say(false, `${t.gen.name} keeps his own command.`, !mine || !t.army ? 'there is no army to join' : `${meName(s)} has not yet earned the right to lead you`);
       }
-      setGoal(s, t.army!, { kind: 'join', army: mine!.id });
-      t.army!.aiNext = s.day + 30;
-      return say(true, `${t.gen.name} marches to join your army.`, `you respect ${meName(s)} and will serve under him`, true);
+      joinBanner(s, t.army!, mine!, 60);
+      chronicle(s, 'diplomacy', `${t.gen.name} brought his ${Math.round(unitsMen(t.army!.units))} men under your banner.`);
+      return say(true, `${t.gen.name} brings his army under your banner. You march and fight as one host for the next two months.`, `you respect ${meName(s)} and will serve under him`, true);
     }
     case 'report': {
       const won = s.player.gen.xp - s.player.reportedXp;

@@ -33,12 +33,14 @@ export function intelOn(s: GameState, a: Army): boolean {
  * would march in to join a battle.
  */
 export function fightingMen(s: GameState, a: Army, reach = 60): { army: number; garrison: number; town: string; nearby: number } {
-  const army = Math.round(unitsMen(a.units));
+  // A host counts as one: the leader's men and those marching under his banner.
+  const host = s.armies.filter((o) => o.follows === a.id);
+  const army = Math.round(unitsMen(a.units) + host.reduce((n, o) => n + unitsMen(o.units), 0));
   const t = townAt(s, a);
   const p = t >= 0 ? s.provinces[t] : null;
   const ownTown = !!p && !p.siege && (p.owner === a.owner || s.ally[p.owner]?.[a.owner]);
   const garrison = ownTown ? Math.round(unitsMen(p!.garrison)) : 0;
-  const nearby = Math.round(s.armies.filter((o) => o !== a && (o.owner === a.owner || s.ally[o.owner]?.[a.owner])
+  const nearby = Math.round(s.armies.filter((o) => o !== a && o.follows !== a.id && (o.owner === a.owner || s.ally[o.owner]?.[a.owner])
     && dist(o, a) < reach && s.day >= o.busyUntil && o.raidUntil <= s.day).reduce((n, o) => n + unitsMen(o.units), 0));
   return { army, garrison, town: ownTown ? p!.town : '', nearby };
 }

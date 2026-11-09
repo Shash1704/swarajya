@@ -171,6 +171,12 @@ function turnToward(u: BUnit, ang: number, maxStep: number) {
   u.facing += Math.max(-maxStep, Math.min(maxStep, d));
 }
 
+/**
+ * The high-ground edge: attacks from clearly higher ground hit harder, rising to double strength
+ * when the attacker stands well above the target (a third of a hill's height or more).
+ */
+export const heightEdge = (dh: number) => 1 + Math.max(0, Math.min(1, (dh - 0.1) / 0.2));
+
 export const radiusOf = (t: UnitType) => {
   const c = UNIT_STATS[t].cls;
   return c === 'elephant' ? 26 : c === 'artillery' ? 18 : 22;
@@ -1197,7 +1203,10 @@ export class Battle {
     if (weapon(u) !== 'cannon' && this.inForest(t)) m *= 0.55;
     if (this.inVillage(t)) m *= 0.6;
     if (this.inRiver(t)) m *= 1.25;
-    if (this.height(u) - this.height(t) > 0.3) m *= 1.15;
+    // Shooting down from high ground: up to twice as deadly.
+    m *= heightEdge(this.height(u) - this.height(t));
+    // A regiment standing still is an easy mark; one on the move is harder to hit.
+    if (!t.moving && !t.climbing) m *= 1.3;
     if (this.walls && this.region(u.y) === 'out') {
       const rt = this.region(t.y);
       if (rt === 'band' && !t.climbing) m *= 0.5;
@@ -1401,7 +1410,7 @@ export class Battle {
     if (sa.wild && (this.inForest(a) || this.height(a) > 0.35)) mult *= 1.25;
     if (horse && this.inForest(a)) mult *= 0.7;
     const dh = this.height(a) - this.height(t);
-    if (dh > 0.15) mult *= 1 + Math.min(0.4, dh * 0.8); // fighting downhill
+    if (dh > 0) mult *= heightEdge(dh); // striking down from the high ground: up to double
     else if (dh < -0.15) mult *= Math.max(0.7, 1 + dh * 0.6); // fighting uphill
     if (this.inRiver(a)) mult *= 0.6;
     if (isLarge(a.type) && this.inMarsh(a)) mult *= 0.7;
