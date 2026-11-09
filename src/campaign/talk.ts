@@ -8,6 +8,7 @@ import {
   greeting, intentFromText, scriptedDecision, scriptedReply, systemPrompt, type Talk, type TalkKind, topicAnswer, topicsFor,
 } from './characters';
 import { chronicle, type ChronKind } from './chronicle';
+import { understand } from './dialogue';
 import { type Army, type GameState, type General, generalRank, PLAYER, provinceUnder, RANK_NAMES, TRAITS, unitsMen } from './state';
 
 /**
@@ -102,19 +103,21 @@ export function openTalk(s: GameState, kind: TalkKind, gen: General, faction: nu
       line('me', text);
       setBusy(true);
       let scored = 0;
+      // Without a model, the written-dialogue engine reads what you said; with one, it still spots offers.
+      const heard = understand(s, t, text);
+      if (ai) t.pending = null;
       await speak(text, () => {
-        const r = scriptedReply(s, t, text);
-        scored = r.delta;
-        return r.say;
+        scored = heard.delta;
+        return heard.say;
       }, true);
       if (!ai && scored) {
         const d = applyDelta(s, t, scored);
         if (d) line('note', d > 0 ? `${gen.name} thinks better of you.` : `${gen.name} thinks less of you.`);
       }
       // Did you just make him an offer in plain words? Put it on the table.
-      const act = intentFromText(s, t, text);
+      const act = heard.offer ?? intentFromText(s, t, text);
       if (act && !closed) {
-        const chip = h('button', { class: 'small primary talk-chip', title: act.help, onclick: () => { chip.remove(); void propose(act.id, act.label); } }, `→ Make it formal: ${act.label}`);
+        const chip = h('button', { class: 'small primary talk-chip', onclick: () => { chip.remove(); void propose(act.id, act.label); } }, `→ ${act.label}`);
         logEl.append(h('div', { class: 'talk-line note' }, chip));
         logEl.scrollTop = logEl.scrollHeight;
       }
@@ -153,7 +156,8 @@ export function openTalk(s: GameState, kind: TalkKind, gen: General, faction: nu
       if (r.ends) {
         closed = true;
         setBusy(true);
-        line('note', t.settled ? 'The matter is settled.' : t.fight ? 'The talks are over.' : 'The audience is at an end.');
+        line('note', t.settled ? 'The matter is settled.' : t.fight ? 'The talks are over.'
+          : kind === 'counsel' ? `${gen.name} rides off to his army.` : kind === 'liege' ? 'The Raje dismisses you.' : 'The audience is at an end.');
       }
     };
 

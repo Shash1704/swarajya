@@ -1,8 +1,9 @@
 import type { ChatMessage } from '../llm';
 import { cessionFor, peaceTerms, propose, roughMen } from './realm';
 import { chronicle, deeds, reputationLines } from './chronicle';
+import { agenda } from './dialogue';
 import {
-  acceptsPeace, type Army, armyById, armyStrength, isYours, ORIGINS, type Origin, yourArmy, dateLabel, declareWar, dist, factionStrength, type GameState, type General,
+  acceptsPeace, type Army, armyById, armyStrength, hostile, isYours, ORIGINS, type Origin, yourArmy, dateLabel, declareWar, dist, factionStrength, type GameState, type General,
   generalRank, IND, log, manpowerLabel, manpowerRatio, nearestOwned, PLAYER, provinceUnder, provincesOf, RANK_NAMES,
   removeArmy, setGoal, TRAITS, unitsMen, yearOf,
 } from './state';
@@ -38,6 +39,8 @@ export interface Talk {
   settled: boolean;
   /** Talks broke down: fight. */
   fight: boolean;
+  /** He asked whether you'll ride with him against this province; awaiting your yes or no. */
+  pending?: number | null;
 }
 
 export interface TalkAction {
@@ -198,6 +201,7 @@ export function systemPrompt(s: GameState, t: Talk): string {
     reputationLines(s).length ? `What men say of ${me}'s deeds: ${reputationLines(s).join(' ')}` : `${me} has done nothing yet that men talk of.`,
     ownDeeds(s, g).length ? `Your own recent doings: ${ownDeeds(s, g).join(' ')}` : '',
     masterLine(s, t),
+    t.kind !== 'audience' ? `What is on your mind now: ${agenda(s, g, t.faction, t.army).line}` : '',
     news.length ? `Recent news: ${news.join(' ')}` : '',
     '',
     'Rules for your replies:',
@@ -483,10 +487,12 @@ export function actionsFor(s: GameState, t: Talk): TalkAction[] {
     ];
   }
   const theirs = t.army && !isYours(s, t.army);
+  const aim = theirs ? agenda(s, t.gen, t.faction, t.army) : null;
   return [
     { id: 'counsel', label: 'Ask his counsel on the war', help: 'He gives his view of the situation.' },
     { id: 'share', label: 'Share your spoils (60 gold)', help: 'He thinks better of you.' },
     ...(theirs ? [{ id: 'join', label: 'Ask him to join forces with you', help: 'His army marches to yours and merges with it. Only if he respects you, and your name stands as high as his.' }] : []),
+    ...(aim?.prov ? [{ id: `march:${aim.prov.id}`, label: `Ask him to march on ${aim.prov.town}`, help: 'His army marches on the town and lays siege to it; join him there and take it together.' }] : []),
   ];
 }
 
@@ -501,6 +507,33 @@ export function resolveAction(s: GameState, t: Talk, id: string): Resolution {
   };
   const them = t.army ? armyStrength(t.army) : 0;
   const us = t.mine ? armyStrength(t.mine) : 0;
+  // Joint operations with the Raje's commanders: attack an army, or march on a town.
+  if (id.startsWith('strike:') || id.startsWith('march:')) {
+    const his = t.army;
+    if (!his || isYours(s, his) || t.faction !== PLAYER) return say(false, '', 'you have no army to lead');
+    if (att < 0) return say(false, `${t.gen.name} will not take orders from you.`, `you do not trust ${meName(s)} enough to follow his plans`);
+    const yours = yourArmy(s);
+    const ourStr = armyStrength(his) + (yours ? armyStrength(yours) : 0);
+    const bold = (p.temper > 0.55 || t.gen.trait === 'bold');
+    if (id.startsWith('strike:')) {
+      const target = s.armies.find((a) => a.id === Number(id.slice(7)));
+      if (!target || !hostile(s, PLAYER, target.owner)) return say(false, '', 'that army is gone or no longer an enemy');
+      const theirStr = armyStrength(target) * 1.3;
+      if (ourStr < theirStr * (bold ? 0.6 : 0.85)) return say(false, `${t.gen.name} thinks it too great a risk.`, 'the enemy is too strong for the two of you');
+      setGoal(s, his, { kind: 'chase', army: target.id });
+      his.aiNext = s.day + 20;
+      chronicle(s, 'diplomacy', `You persuaded ${t.gen.name} to strike at ${target.general.name}'s ${s.factions[target.owner].short} army together with you.`);
+      return say(true, `${t.gen.name} marches against ${target.general.name}. Bring your army to join the attack.`, 'it is a good plan and you are eager to strike', true);
+    }
+    const target = s.provinces[Number(id.slice(6))];
+    if (!target || !hostile(s, PLAYER, target.owner)) return say(false, '', 'that town is no longer an enemy\'s');
+    const def = (unitsMen(target.garrison) + 10) * (1 + target.walls * 0.45);
+    if (ourStr < def * (bold ? 0.5 : 0.8)) return say(false, `${t.gen.name} thinks ${target.town} too strong to take.`, 'the walls and the garrison are too much for you');
+    setGoal(s, his, { kind: 'siege', prov: target.id });
+    his.aiNext = s.day + 40;
+    chronicle(s, 'diplomacy', `You and ${t.gen.name} agreed to take ${target.town} together; he marched to lay siege to it.`);
+    return say(true, `${t.gen.name} marches on ${target.town}. Join him there.`, 'you have wanted this, and now you have a comrade for it', true);
+  }
   switch (id) {
     case 'withdraw': {
       const ok = them < us * (0.8 + Math.max(0, att) / 150) || (att > 50 && them < us * 1.3);
