@@ -26,6 +26,28 @@ export function intelOn(s: GameState, a: Army): boolean {
   return s.provinces.some((p) => p.owner === PLAYER && dist(p, a) < 60);
 }
 
+/**
+ * The men who would fight where this army stands: its own regiments, plus the garrison if it is
+ * encamped at one of its own (or an ally's) towns, and the men of nearby friendly armies that
+ * would march in to join a battle.
+ */
+export function fightingMen(s: GameState, a: Army, reach = 60): { army: number; garrison: number; town: string; nearby: number } {
+  const army = Math.round(unitsMen(a.units));
+  const t = townAt(s, a);
+  const p = t >= 0 ? s.provinces[t] : null;
+  const ownTown = !!p && !p.siege && (p.owner === a.owner || s.ally[p.owner]?.[a.owner]);
+  const garrison = ownTown ? Math.round(unitsMen(p!.garrison)) : 0;
+  const nearby = Math.round(s.armies.filter((o) => o !== a && (o.owner === a.owner || s.ally[o.owner]?.[a.owner])
+    && dist(o, a) < reach && s.day >= o.busyUntil && o.raidUntil <= s.day).reduce((n, o) => n + unitsMen(o.units), 0));
+  return { army, garrison, town: ownTown ? p!.town : '', nearby };
+}
+
+/** A number as the spies would report it: rounded, with a tilde. */
+export function roughNumber(n: number): string {
+  const r = n < 1000 ? Math.round(n / 100) * 100 : Math.round(n / 500) * 500;
+  return `~${r >= 1000 ? `${(r / 1000).toFixed(1)}k` : Math.max(100, r)}`;
+}
+
 /** What the player's spies report of an army they haven't seen up close. */
 export function roughMen(a: Army): string {
   const n = unitsMen(a.units);

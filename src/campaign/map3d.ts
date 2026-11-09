@@ -347,14 +347,14 @@ export class Map3D {
       for (let k = 0; k < n; k++) {
         const row = Math.floor(k / 3);
         const col = (k % 3) - 1;
-        const lx = col * 4;
-        const lz = -row * 4.6 - 3;
+        const lx = col * 2.6;
+        const lz = -row * 3 - 2.5;
         const x = toX(a.x) + Math.cos(yaw) * lx + Math.sin(yaw) * lz;
         const z = toZ(a.y) - Math.sin(yaw) * lx + Math.cos(yaw) * lz;
         const bx = x + WW / 2;
         const by = WH / 2 - z;
         const y = this.surfaceY(bx, by) + (moving ? Math.abs(Math.sin(t * 8 + k)) * 0.3 : 0);
-        const S = 1.9;
+        const S = 1.1;
         if (mounted) {
           horse.add(x, y, z, yaw, [S, S, S], [0.45, 0.32, 0.22]);
           body.add(x, y + 1.6 * S, z, yaw, [0.9 * S, 0.9 * S, 0.9 * S], c);

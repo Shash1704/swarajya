@@ -19,7 +19,7 @@ import {
   bribe, bribeCost, build, BUILDINGS, type Building, buildShip, demandChauth, type GameEvent, generalFate, generalLine,
   giftGeneral, incite, intelOn, leaderMods, MAX_SHIPS, orderFleet, payRansom, peaceTerms, playerGenerals, propose,
   ransomPrice, roughMen, sabotage, scout, sellCaptive, SHIP_COST, sortie, SPY_COST, subsidise, SUBSIDY, supplied,
-  unrestCauses, fleetTargets, cessionFor,
+  unrestCauses, fleetTargets, cessionFor, fightingMen, roughNumber,
 } from './realm';
 import { BattleScene } from '../battle/scene';
 import { canvas3d, hasWebGL, setWant3D, want3D } from '../pref3d';
@@ -647,7 +647,23 @@ export class CampaignScene implements Scene {
     ctx.font = `700 ${Math.round(10 * k + 1)}px Cinzel, Georgia, serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(intelOn(s, a) ? fmt(unitsMen(a.units)) : roughMen(a), px, by + bh * 0.6);
+    // Everyone who would fight right here: the army, and the garrison if it stands at its own town.
+    const fm = fightingMen(s, a);
+    const total = fm.army + fm.garrison;
+    ctx.fillText(intelOn(s, a) ? fmt(total) : roughNumber(total), px, by + bh * 0.6);
+    // Under the banner: whether the garrison is counted, and armies close enough to join a battle here.
+    const known = intelOn(s, a);
+    const note = [fm.garrison > 0 ? 'with garrison' : '', fm.nearby > 0 ? `+${known ? fmt(fm.nearby) : roughNumber(fm.nearby)} near` : ''].filter(Boolean).join(' · ');
+    if (note) {
+      ctx.save();
+      ctx.font = `600 ${(8.5 * k).toFixed(1)}px Cinzel, Georgia, serif`;
+      ctx.lineWidth = 3 * k;
+      ctx.strokeStyle = 'rgba(244,236,214,0.9)';
+      ctx.strokeText(note, px, by + bh + 8 * k);
+      ctx.fillStyle = '#2a1d12';
+      ctx.fillText(note, px, by + bh + 8 * k);
+      ctx.restore();
+    }
     // Nameplate: the commander and his house.
     if (r.plate) {
       const nameFont = `700 ${(11 * k).toFixed(1)}px Cinzel, Georgia, serif`;
@@ -1462,6 +1478,15 @@ export class CampaignScene implements Scene {
       known
         ? h('div', { class: 'muted' }, `${fmt(unitsMen(a.units))} men · ${a.units.length}/${MAX_UNITS} regiments · marches ${Math.round(armySpeed(s, a) * 2)} km a day`)
         : h('div', { class: 'muted' }, `About ${roughMen(a)} men, by your spies' reckoning. Send scouts or come closer to count them.`),
+      (() => {
+        // What you would actually face (or have beside you) in a battle here.
+        const fm = fightingMen(s, a);
+        if (!fm.garrison && !fm.nearby) return null;
+        const num = (n: number) => (known ? fmt(n) : roughNumber(n));
+        return h('div', { class: 'muted', style: 'font-size:12.5px' },
+          `In a battle here: ${num(fm.army + fm.garrison + fm.nearby)} men`,
+          ` (${[`${num(fm.army)} in this army`, fm.garrison ? `${num(fm.garrison)} in the garrison of ${fm.town}` : '', fm.nearby ? `${num(fm.nearby)} in armies close by` : ''].filter(Boolean).join(', ')}).`);
+      })(),
       h('div', { style: 'margin:6px 0' }, this.liveText(() => this.statusOf(a))),
       mine || known ? h('div', { class: 'muted' }, this.liveText(() => `Food: ${Math.ceil(a.food)}/${maxFood(a)} days · ${sup === 'fort' ? 'supplied by a fort' : sup === 'home' ? 'in friendly country' : a.food <= 0 ? 'STARVING' : 'living off the land'}${s.day < a.quarantineUntil ? ` · quarantined ${Math.ceil(a.quarantineUntil - s.day)} days` : ''}`)) : null,
       known ? this.unitList(a.units, f.color) : null,
