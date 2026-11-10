@@ -42,6 +42,12 @@ export interface BattleOptions {
   generals?: [number, number];
   /** Each side's starting heart (e.g. 0.75: hungry and dispirited men start at three quarters of their usual morale, and cannot recover more). */
   morale?: [number, number];
+  /**
+   * An army ringed in and starving (Palkhed): its hearts sink over `starveSeconds` until it breaks;
+   * the `relief` regiments (indices in its list) march to it, and their arrival lifts it; it wins
+   * if its commander's regiment reaches the edge of the field (it has broken out of the ring).
+   */
+  encircled?: { side: 0 | 1; starveSeconds: number; relief?: number[] };
   /** Thirst or hunger: each side's regiments never rest below this fatigue. */
   thirst?: [number, number];
 }
@@ -137,7 +143,8 @@ export interface BUnit {
 }
 
 export interface Forest { x: number; y: number; r: number }
-export interface River { pts: [number, number][]; w: number; fords: Forest[] }
+/** shallow: low in the dry season, so it can be forded anywhere (still bad footing to fight in). */
+export interface River { pts: [number, number][]; w: number; fords: Forest[]; shallow?: boolean }
 export interface Hill { x: number; y: number; r: number; h: number }
 
 /** The ground of a real battlefield: its features, and names written on the map. */
@@ -251,6 +258,11 @@ export class Battle {
   private pursuitEnd = 0;
   /** The player accepted the enemy's surrender. */
   surrenderAccepted = false;
+  /** Encirclement: how far the ringed army has starved (0..1), whether relief has come, whether it broke out. */
+  hunger = 0;
+  private starveFrom = 0;
+  reliefCame = false;
+  brokeOut = false;
   /** Fog of war: the enemy regiments each side can see, and where it last saw the rest. */
   readonly fogOn: boolean;
   seen: [Set<number>, Set<number>] = [new Set(), new Set()];
@@ -469,7 +481,22 @@ export class Battle {
   }
 
   onFord(p: { x: number; y: number }): boolean {
-    return this.rivers.some((r) => r.fords.some((f) => dist(p, f) < f.r));
+    return this.rivers.some((r) => r.fords.some((f) => dist(p, f) < f.r)
+      || (r.shallow && this.distTo(r, p) < r.w / 2 + 4));
+  }
+
+  /** Distance from a point to one river's centre line. */
+  private distTo(r: River, p: { x: number; y: number }): number {
+    let best = Infinity;
+    for (let i = 1; i < r.pts.length; i++) {
+      const [ax, ay] = r.pts[i - 1];
+      const [bx, by] = r.pts[i];
+      const vx = bx - ax;
+      const vy = by - ay;
+      const k = Math.max(0, Math.min(1, ((p.x - ax) * vx + (p.y - ay) * vy) / (vx * vx + vy * vy)));
+      best = Math.min(best, Math.hypot(p.x - ax - vx * k, p.y - ay - vy * k));
+    }
+    return best;
   }
 
   /** Wading the river away from a ford: slow, and badly placed to fight. */
@@ -1142,6 +1169,8 @@ export class Battle {
     this.floaters = this.floaters.filter((f) => f.t < 1.6);
 
     if (this.winner < 0) {
+      this.updateRing();
+      if (this.winner >= 0) return;
       this.updateBalance(dt);
       this.checkEnd();
     }
@@ -1615,7 +1644,9 @@ export class Battle {
     for (const u of this.units) {
       if (u.side !== side) continue;
       const v = u.men * UNIT_STATS[u.type].value;
-      if (u.state === 'ok') s += v * (0.5 + 0.5 * Math.max(0, u.morale) / Math.max(1, u.maxMorale)) * (1 - 0.3 * u.fatigue);
+      // A starving army has no strength in it.
+      const starving = this.opts.encircled?.side === side ? 1 - 0.55 * this.hunger : 1;
+      if (u.state === 'ok') s += v * (0.5 + 0.5 * Math.max(0, u.morale) / Math.max(1, u.maxMorale)) * (1 - 0.3 * u.fatigue) * starving;
       else if (u.state === 'routing') s += v * 0.12;
     }
     return s;
@@ -1629,13 +1660,47 @@ export class Battle {
   /** Below this share of the field's strength, the enemy army breaks and its commander asks for terms. */
   static readonly SURRENDER = 0.2;
 
+  /** The ring: hunger saps the ringed army, its relief marches to it, and its commander may break out. */
+  private updateRing() {
+    const r = this.opts.encircled;
+    if (!r) return;
+    const side = r.side;
+    this.hunger = Math.max(0, Math.min(1, (this.time - this.starveFrom) / r.starveSeconds));
+    for (const u of this.units) {
+      if (u.side !== side || u.state !== 'ok') continue;
+      u.morale = Math.min(u.morale, u.maxMorale * (1 - 0.7 * this.hunger));
+    }
+    const g = this.get(this.generalIds[side]);
+    if (!g || g.state !== 'ok') return;
+    // The relief column marches on the commander's standard, whatever else is happening.
+    const mine = this.units.filter((u) => u.side === side);
+    const relief = (r.relief ?? []).map((i) => mine[i]).filter((u): u is BUnit => !!u && u.state === 'ok');
+    if (!this.reliefCame) {
+      for (const u of relief) if (!u.fighting) u.order = { kind: 'move', x: g.x, y: g.y };
+      if (relief.some((u) => dist(u, g) < 230)) {
+        this.reliefCame = true;
+        // Food, powder and the great guns: the camp takes heart and the hunger is set back.
+        this.starveFrom = Math.min(this.time, this.starveFrom + r.starveSeconds * 0.4);
+        for (const u of this.units) if (u.side === side && u.state === 'ok') u.morale = Math.min(u.maxMorale, u.morale + 20);
+        this.float(g.x, g.y - 30, 'The great guns have come up!', '#ffe08a');
+      }
+    }
+    // Out of the ring: the commander's regiment reaches the edge of the field.
+    if (this.time > 5 && (g.x < 30 || g.x > FIELD_W - 30 || g.y < 30 || g.y > FIELD_H - 30)) {
+      this.brokeOut = true;
+      this.winner = side;
+      this.float(g.x, g.y - 30, 'He has broken out of the ring!', '#ff8a7a');
+    }
+  }
+
   private updateBalance(dt: number) {
     const a = this.sideStrength(0);
     const b = this.sideStrength(1);
     const raw = a + b > 0 ? a / (a + b) : 0.5;
     this.balance += (raw - this.balance) * Math.min(1, dt * 1.5);
     if (this.surrenderOffered || this.pursuit || this.time < 15 || this.walls) return;
-    if (1 - this.balance < Battle.SURRENDER) {
+    const starved = this.opts.encircled?.side === 1 && this.hunger >= 1;
+    if (1 - this.balance < Battle.SURRENDER || starved) {
       // The enemy's nerve is gone: every regiment breaks, and the commander sends to ask for terms.
       this.surrenderOffered = true;
       for (const u of this.units) {

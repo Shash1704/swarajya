@@ -37,6 +37,8 @@ export interface Scenario {
   theirs: Reg[];
   zone0?: [number, number];
   thirst?: [number, number];
+  /** A ringed, starving army (see BattleOptions.encircled). */
+  encircled?: { side: 0 | 1; starveSeconds: number; relief?: number[] };
   /** Each side's starting heart (1 = as usual). */
   morale?: [number, number];
   /** The regiments (index in `mine`, `theirs`) the two commanders ride with. */
@@ -59,26 +61,26 @@ export const SCENARIOS: Scenario[] = [
     brief: [
       'The Nizam-ul-Mulk, Asaf Jah, has refused the Marathas their chauth and sardeshmukhi in the Deccan, and taken up the cause of Sambhaji of Kolhapur against Chhatrapati Shahu. While he plundered the country round Pune with his guns, Peshwa Bajirao rode the other way: through Jalna, Berar, Khandesh and into Gujarat, burning the Nizam\'s lands and drawing him out after him.',
       'Now the Nizam has crossed the Godavari to bring Bajirao to battle on an open plain where his artillery would tell, but in his haste he has left his great guns behind at Puntamba, on the far bank. At Palkhed, under the long ridge to the north, the Maratha horse has closed round him: Pilaji Jadhav to the north-east, the Peshwa himself to the east across the Shiv nadi, the Nizam\'s water, Davalji Somvanshi to the south-east, and Malharrao Holkar riding in from the west. His army is parched and penned in.',
-      'Your army is horse only, as it was: no infantry and no guns. Your horse archers outrange his matchlocks: let them gall his packed ranks and wheel away before the spears and sowars can reach them. Hold the ring, keep clear of the matchlocks and the few light pieces that kept up, keep the great guns at Puntamba from crossing the ford to him, and break the Nizam\'s army before it breaks out.',
+      'This was not won by a great charge but by the ring. You need not destroy the Nizam\'s army: hold the ring and let hunger do the work. Every minute his camp starves and his men lose heart, until his army breaks and he asks for terms. He wins if he breaks out: if his own regiment reaches the edge of the field, the trap has failed. His great guns are marching up from Puntamba with food and powder; if they reach him, his camp takes heart again, so cut them off. It is the dry season: the rivers are low and can be forded anywhere, but men in the water are easy prey for a charge. Your army is horse only, as it was: no infantry and no guns.',
     ],
-    marathas: 'Pilaji Jadhav\'s horse to the north-east (8 regiments); Peshwa Bajirao with his household horse beyond the Shiv nadi to the east (6); Davalji Somvanshi\'s horse to the south-east (6); Malharrao Holkar\'s horse to the west (5). Every division has horse archers (10 regiments in all) to gall the Nizam\'s ranks from beyond the reach of his matchlocks. 26 regiments, all cavalry.',
-    enemy: 'Nizam-ul-Mulk on his elephant at Palkhed, his army bent in a crescent round the village: sowars and matchlocks facing Pilaji to the north-east, spearmen and Iwaz Khan\'s sowars facing Holkar to the west, matchlocks and two light pieces facing the Peshwa to the east, sowars facing Davalji to the south; Rao Chandrasen Jadhav\'s and Sambhaji of Kolhapur\'s Maratha horse fighting for the Nizam. 21 regiments, and his great guns with their guard far off at Puntamba. Hungry and parched after weeks of Bajirao cutting his convoys and burning his forage: his men start the day low in heart and never shake off their fatigue.',
+    marathas: 'Pilaji Jadhav\'s horse to the north-east (8 regiments); Peshwa Bajirao with his household horse beyond the Shiv nadi to the east (6); Davalji Somvanshi\'s horse to the south-east (6); Malharrao Holkar\'s horse to the west (5). Each division has a squadron of horse archers to gall the Nizam\'s ranks. 25 regiments, all cavalry, most of them light horse with spear and sword.',
+    enemy: 'Nizam-ul-Mulk on his elephant at Palkhed, his army bent in a crescent round the village: sowars and matchlocks facing Pilaji to the north-east, spearmen and Iwaz Khan\'s sowars facing Holkar to the west, matchlocks and two light pieces facing the Peshwa to the east, sowars facing Davalji to the south; the Maratha horse of Rao Chandrasen Jadhav, Rao Rambha Nimbalkar and Sambhaji of Kolhapur fighting for the Nizam. 28 regiments, far more foot than the Maratha horse can ride down, and his great guns with their guard far off at Puntamba. Hungry and parched after weeks of Bajirao cutting his convoys and burning his forage, and starving further every minute the ring holds.',
     enemyName: 'Army of the Nizam-ul-Mulk', enemyShort: 'Nizam', enemyColor: '#c9a227', enemyRgb: [201, 162, 39],
     playerGeneral: 'Peshwa Bajirao', enemyGeneral: 'Nizam-ul-Mulk',
-    leaders: [BAJIRAO, { morale: 1.1, melee: 1, charge: 1, horse: 1, defense: 1.15, fatigue: 1 }],
+    leaders: [BAJIRAO, { morale: 1.2, melee: 1.1, charge: 1, horse: 1, defense: 1.35, fatigue: 1 }],
     leaderNotes: [BAJIRAO_NOTE, 'Nizam-ul-Mulk Asaf Jah: a veteran of Aurangzeb\'s wars; his lines hold hard'],
     playerAttacks: true,
     mine: [
-      ['horsearcher', 'Pilaji Jadhav\'s horse archers', 870, 250, 2.4],
+      ['lightcav', 'Pilaji Jadhav\'s horse', 870, 250, 2.4],
       ['shiledar', 'Pilaji Jadhav\'s horse', 952, 254, 2.4],
       ['lightcav', 'Pilaji Jadhav\'s horse', 962, 314, 2.4],
       ['horsearcher', 'Pilaji Jadhav\'s horse archers', 1034, 314, 2.4],
       ['lightcav', 'Pilaji Jadhav\'s horse', 1034, 371, 2.4],
       ['shiledar', 'Pilaji Jadhav\'s horse', 1146, 357, 2.4],
       ['lightcav', 'Pilaji Jadhav\'s horse', 1194, 385, 2.4],
-      ['horsearcher', 'Pilaji Jadhav\'s horse archers', 1253, 428, 2.4],
+      ['lightcav', 'Pilaji Jadhav\'s horse', 1253, 428, 2.4],
       ['shiledar', 'the Peshwa\'s shiledars', 1290, 492, WEST],
-      ['horsearcher', 'the Peshwa\'s horse archers', 1358, 520, WEST],
+      ['lightcav', 'bargirs of the Peshwa\'s paga', 1358, 520, WEST],
       ['huzurat', 'the Peshwa\'s household horse', 1294, 541, WEST],
       ['huzurat', 'the Peshwa\'s own paga', 1296, 598, WEST],
       ['horsearcher', 'the Peshwa\'s horse archers', 1276, 683, WEST],
@@ -88,13 +90,12 @@ export const SCENARIOS: Scenario[] = [
       ['lightcav', 'Davalji Somvanshi\'s horse', 1034, 808, -2.2],
       ['horsearcher', 'Davalji Somvanshi\'s horse archers', 948, 839, -2.2],
       ['lightcav', 'Davalji Somvanshi\'s horse', 870, 879, -2.2],
-      ['horsearcher', 'Davalji Somvanshi\'s horse archers', 798, 910, -2.2],
-      ['horsearcher', 'Malharrao Holkar\'s horse archers', 210, 477, EAST],
+      ['lightcav', 'Davalji Somvanshi\'s horse', 798, 910, -2.2],
+      ['lightcav', 'Malharrao Holkar\'s horse', 210, 477, EAST],
       ['lightcav', 'Malharrao Holkar\'s horse', 173, 555, EAST],
       ['shiledar', 'Malharrao Holkar\'s horse', 173, 619, EAST],
       ['lightcav', 'Malharrao Holkar\'s horse', 208, 697, EAST],
       ['horsearcher', 'Malharrao Holkar\'s horse archers', 275, 747, EAST],
-      ['horsearcher', 'the Peshwa\'s horse archers', 1360, 640, WEST],
     ],
     theirs: [
       ['heavycav', 'Mughal sowars facing Pilaji', 767, 357, -0.785],
@@ -122,6 +123,14 @@ export const SCENARIOS: Scenario[] = [
       ['cannon', 'the Nizam\'s great guns, left at Puntamba', 224, 925, -0.785],
       ['cannon', 'the Nizam\'s great guns, left at Puntamba', 173, 981, -0.785],
       ['musket', 'the gun guard at Puntamba', 275, 981, -0.785],
+      ['lightcav', 'Rao Rambha Nimbalkar\'s horse', 640, 600, 2.6],
+      // The Nizam's foot: far more of it than the Maratha horse could hope to ride down.
+      ['musket', 'the Nizam\'s matchlockmen', 905, 395, -0.785],
+      ['musket', 'the Nizam\'s matchlockmen', 760, 545, 2.6],
+      ['musket', 'the Nizam\'s matchlockmen', 1030, 700, 0.6],
+      ['spear', 'Deccani spearmen', 950, 720, 1.0],
+      ['spear', 'Deccani spearmen', 830, 690, 1.57],
+      ['musket', 'the Nizam\'s matchlockmen', 700, 420, 3.0],
     ],
     // The Marathas ring the Nizam: they may take post anywhere on the field.
     zone0: [20, 1060],
@@ -130,11 +139,11 @@ export const SCENARIOS: Scenario[] = [
     // where the Nizam's heavy guns were left behind.
     map: {
       rivers: [
-        { pts: [[19, 771], [60, 776], [193, 797], [337, 825], [439, 846], [562, 882], [624, 903], [706, 953], [808, 1003], [911, 1052], [972, 1102]], w: 54, fords: [{ x: 337, y: 825, r: 46 }] },
-        { pts: [[1208, 385], [1214, 428], [1222, 470], [1239, 520], [1218, 555], [1188, 626], [1177, 697], [1208, 754], [1188, 811], [1300, 882], [1464, 925], [1587, 946]], w: 24, fords: [{ x: 1239, y: 520, r: 36 }, { x: 1181, y: 676, r: 36 }, { x: 1300, y: 882, r: 36 }] },
-        { pts: [[870, 503], [993, 501], [1095, 506], [1177, 510], [1228, 527]], w: 16, fords: [] },
-        { pts: [[624, 903], [607, 839], [599, 790]], w: 14, fords: [] },
-        { pts: [[644, 875], [696, 811], [747, 733]], w: 14, fords: [] },
+        { pts: [[19, 771], [60, 776], [193, 797], [337, 825], [439, 846], [562, 882], [624, 903], [706, 953], [808, 1003], [911, 1052], [972, 1102]], w: 54, fords: [{ x: 337, y: 825, r: 46 }], shallow: true },
+        { pts: [[1208, 385], [1214, 428], [1222, 470], [1239, 520], [1218, 555], [1188, 626], [1177, 697], [1208, 754], [1188, 811], [1300, 882], [1464, 925], [1587, 946]], w: 24, fords: [{ x: 1239, y: 520, r: 36 }, { x: 1181, y: 676, r: 36 }, { x: 1300, y: 882, r: 36 }], shallow: true },
+        { pts: [[870, 503], [993, 501], [1095, 506], [1177, 510], [1228, 527]], w: 16, fords: [], shallow: true },
+        { pts: [[624, 903], [607, 839], [599, 790]], w: 14, fords: [], shallow: true },
+        { pts: [[644, 875], [696, 811], [747, 733]], w: 14, fords: [], shallow: true },
       ],
       villages: [{ x: 870, y: 506, r: 44 }, { x: 333, y: 534, r: 38 }, { x: 833, y: 822, r: 38 }, { x: 193, y: 943, r: 40 }],
       // The long ridge across the north.
@@ -150,7 +159,10 @@ export const SCENARIOS: Scenario[] = [
     generals: [10, 4],
     thirst: [0, 0.1],
     // Weeks of Bajirao's horse burning their forage and cutting their convoys: the Nizam's men are hungry and losing heart.
-    morale: [1, 0.72],
+    morale: [1, 0.85],
+    // Hold the ring: the camp starves over four minutes, its guns at Puntamba march to relieve it,
+    // and if the Nizam's own regiment reaches the edge of the field he has broken out.
+    encircled: { side: 1, starveSeconds: 240, relief: [21, 22, 23] },
     history: 'At Palkhed the Nizam, cut off from food and water and surrounded by horse he could not bring to battle, gave in without a great fight. On 6 March 1728 he signed the Treaty of Mungi Shevgaon: he recognised Shahu as the Chhatrapati, gave up the cause of Sambhaji of Kolhapur, and granted the Marathas the right to collect chauth and sardeshmukhi in the Deccan. Jadunath Sarkar called the campaign a classic example of what light horse led by a genius could achieve.',
   },
   {

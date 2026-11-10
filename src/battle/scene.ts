@@ -43,6 +43,7 @@ export interface BattleSetup {
   generals?: [number, number];
   map?: BattleOptions['map'];
   morale?: [number, number];
+  encircled?: BattleOptions['encircled'];
   /** The button that ends the battle (default: back to the campaign map). */
   doneLabel?: string;
   /** draw: night fell with neither side broken. */
@@ -110,7 +111,7 @@ export class BattleScene implements Scene {
       mode: setup.mode, playerAttacks: setup.playerAttacks, seed: setup.seed, terrain: setup.terrain,
       rain: setup.rain, walls: setup.walls, ladders: setup.ladders, ram: setup.ram, river: setup.river, marsh: setup.marsh,
       fog: setup.fog, dusk: setup.dusk, leaders: setup.leaders,
-      placement: setup.placement, zone0: setup.zone0, thirst: setup.thirst, generals: setup.generals, map: setup.map, morale: setup.morale,
+      placement: setup.placement, zone0: setup.zone0, thirst: setup.thirst, generals: setup.generals, map: setup.map, morale: setup.morale, encircled: setup.encircled,
     });
     this.bg = renderBattlefield(this.b, setup);
     if (this.use3D) this.load3D();
@@ -240,6 +241,7 @@ export class BattleScene implements Scene {
     else if (retreated) text = 'You sound the retreat. The army withdraws, bloodied but intact.';
     else if (siege && won) text = s.playerAttacks ? 'The defenders break. The settlement is yours to take.' : 'The assault is thrown back from the walls!';
     else if (siege) text = s.playerAttacks ? 'The assault fails beneath the walls.' : 'The enemy is inside the walls. The settlement falls.';
+    else if (this.b.brokeOut) text = `${s.enemyGeneral ?? 'The enemy commander'} has broken out of the ring with his household. The trap has failed.`;
     else if (this.b.surrenderAccepted) text = `${s.enemyGeneral ?? 'The enemy commander'} surrenders. His men lay down their arms and are sent home; he is your prisoner.`;
     else text = won ? `The ${s.enemyFaction.short} break and flee the field.` : 'Your lines break and scatter.';
     showModal(draw ? 'Nightfall' : won ? 'Victory!' : 'Defeat', h('div', {},
@@ -1710,6 +1712,16 @@ export class BattleScene implements Scene {
     const m = share - 0.5;
     ctx.fillText(b.surrenderOffered ? (b.pursuit ? 'The enemy is broken: pursuit!' : 'The enemy is broken') : Math.abs(m) < 0.06 ? 'The battle hangs in the balance'
       : m > 0 ? (m > 0.2 ? 'The day is yours' : 'The battle goes your way') : (m < -0.2 ? 'The day is going against you' : 'The battle turns against you'), VIEW_W / 2, y + 20);
+    const ring = this.s.encircled;
+    if (ring) {
+      const who = ring.side === 1 ? (this.s.enemyGeneral ?? 'the enemy') : 'your army';
+      ctx.fillStyle = 'rgba(20,15,10,0.78)';
+      ctx.beginPath();
+      ctx.roundRect(x - 10, y + 30, w + 20, 20, 8);
+      ctx.fill();
+      ctx.fillStyle = '#ffd27a';
+      ctx.fillText(`Hunger in the camp of ${who}: ${Math.round(b.hunger * 100)}%${b.reliefCame ? ' · his guns have come up' : ''} · if he reaches the field's edge he escapes`, VIEW_W / 2, y + 40);
+    }
     ctx.restore();
   }
 
@@ -2086,8 +2098,14 @@ function renderBattlefield(b: Battle, s: BattleSetup): HTMLCanvasElement {
     g.strokeStyle = 'rgba(92,72,44,0.95)';
     g.lineWidth = r.w + Math.min(10, r.w * 0.4);
     g.stroke(path);
+    if (r.shallow) {
+      // Low water in the dry season: a sandy bed with a thin channel, fordable anywhere.
+      g.strokeStyle = 'rgba(206,186,140,0.95)';
+      g.lineWidth = r.w;
+      g.stroke(path);
+    }
     g.strokeStyle = '#3f74a0';
-    g.lineWidth = r.w;
+    g.lineWidth = r.shallow ? r.w * 0.45 : r.w;
     g.stroke(path);
     g.strokeStyle = 'rgba(200,228,245,0.3)';
     g.lineWidth = r.w * 0.3;
