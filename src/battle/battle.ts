@@ -36,6 +36,8 @@ export interface BattleOptions {
   placement?: [Spot[] | undefined, Spot[] | undefined];
   /** Where the player may move regiments before the battle (y range); default: the bottom of the field. */
   zone0?: [number, number];
+  /** A drawn map of the real ground (historical battles), instead of a random field. */
+  map?: BattleMap;
   /** Which regiment (by index in each side's list) the commander rides with; default: the strongest. */
   generals?: [number, number];
   /** Thirst or hunger: each side's regiments never rest below this fatigue. */
@@ -135,6 +137,17 @@ export interface BUnit {
 export interface Forest { x: number; y: number; r: number }
 export interface River { pts: [number, number][]; w: number; fords: Forest[] }
 export interface Hill { x: number; y: number; r: number; h: number }
+
+/** The ground of a real battlefield: its features, and names written on the map. */
+export interface BattleMap {
+  forests?: Forest[];
+  hills?: Hill[];
+  /** Streams; a short, wide one is a tank or pond. Only the first one's width is used for wading. */
+  rivers?: River[];
+  marshes?: Forest[];
+  villages?: Forest[];
+  labels?: { x: number; y: number; text: string; rot?: number; size?: number }[];
+}
 
 export interface WallSeg {
   x0: number;
@@ -371,6 +384,15 @@ export class Battle {
     const rng = this.rng;
     const t = this.opts.terrain;
     const siege = this.opts.mode === 'siege';
+    const m = this.opts.map;
+    if (m) {
+      this.forests = [...(m.forests ?? [])];
+      this.hills = [...(m.hills ?? [])];
+      this.rivers = (m.rivers ?? []).map((r) => ({ ...r, fords: [...r.fords] }));
+      this.marshes = [...(m.marshes ?? [])];
+      this.villages = [...(m.villages ?? [])];
+      return;
+    }
     const nForest = t === 'forest' ? rng.int(9, 13) : t === 'desert' ? rng.int(0, 2) : rng.int(3, 6);
     const nHill = t === 'hills' ? rng.int(6, 9) : t === 'desert' ? rng.int(2, 4) : rng.int(2, 3);
     const yMin = siege ? FIELD_H * 0.46 : FIELD_H * 0.3;

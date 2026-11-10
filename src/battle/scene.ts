@@ -41,6 +41,7 @@ export interface BattleSetup {
   zone0?: [number, number];
   thirst?: [number, number];
   generals?: [number, number];
+  map?: BattleOptions['map'];
   /** The button that ends the battle (default: back to the campaign map). */
   doneLabel?: string;
   /** draw: night fell with neither side broken. */
@@ -106,7 +107,7 @@ export class BattleScene implements Scene {
       mode: setup.mode, playerAttacks: setup.playerAttacks, seed: setup.seed, terrain: setup.terrain,
       rain: setup.rain, walls: setup.walls, ladders: setup.ladders, ram: setup.ram, river: setup.river, marsh: setup.marsh,
       fog: setup.fog, dusk: setup.dusk, leaders: setup.leaders,
-      placement: setup.placement, zone0: setup.zone0, thirst: setup.thirst, generals: setup.generals,
+      placement: setup.placement, zone0: setup.zone0, thirst: setup.thirst, generals: setup.generals, map: setup.map,
     });
     this.bg = renderBattlefield(this.b, setup);
     if (this.use3D) this.load3D();
@@ -2166,6 +2167,21 @@ function renderBattlefield(b: Battle, s: BattleSetup): HTMLCanvasElement {
     g.arc(f.x, f.y, f.r, 0, Math.PI * 2);
     g.stroke();
     g.setLineDash([]);
+  }
+  // Names of the real places on a historical field, as on an old campaign map.
+  for (const l of b.opts.map?.labels ?? []) {
+    g.save();
+    g.translate(l.x, l.y);
+    g.rotate(l.rot ?? 0);
+    g.font = `italic 600 ${l.size ?? 26}px "EB Garamond", Georgia, serif`;
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.lineWidth = 4;
+    g.strokeStyle = 'rgba(250,244,226,0.75)';
+    g.strokeText(l.text, 0, 0);
+    g.fillStyle = 'rgba(52,40,24,0.9)';
+    g.fillText(l.text, 0, 0);
+    g.restore();
   }
   const grad = g.createRadialGradient(FIELD_W / 2, FIELD_H / 2, FIELD_H * 0.35, FIELD_W / 2, FIELD_H / 2, FIELD_W * 0.7);
   grad.addColorStop(0, 'rgba(0,0,0,0)');

@@ -253,14 +253,25 @@ export class View3D {
     ground.material = mat;
 
     // Country beyond the field, so the edges don't fall away into the sky.
-    const outer = CreateGround('outer', { width: FIELD_W * 5, height: FIELD_H * 5 }, scene);
-    outer.position.y = -0.5;
+    // Four strips around the field (not one sheet under it, which would cover river beds and tanks).
     const om = new StandardMaterial('outerMat', scene);
     // The same olive as the field's own ground, so the edge melts into the haze.
     const avg = this.averageColor(painted);
     om.diffuseColor = new Color3(avg[0], avg[1], avg[2]);
     om.specularColor = Color3.Black();
-    outer.material = om;
+    const W = FIELD_W * 5;
+    const H = FIELD_H * 5;
+    const strips: [number, number, number, number][] = [
+      [W, (H - FIELD_H) / 2, 0, (FIELD_H + (H - FIELD_H) / 2) / 2],
+      [W, (H - FIELD_H) / 2, 0, -(FIELD_H + (H - FIELD_H) / 2) / 2],
+      [(W - FIELD_W) / 2, FIELD_H, (FIELD_W + (W - FIELD_W) / 2) / 2, 0],
+      [(W - FIELD_W) / 2, FIELD_H, -(FIELD_W + (W - FIELD_W) / 2) / 2, 0],
+    ];
+    strips.forEach(([w, h, x, z], i) => {
+      const s = CreateGround(`outer${i}`, { width: w + 2, height: h + 2 }, scene);
+      s.position.set(x, -0.5, z);
+      s.material = om;
+    });
     return ground;
   }
 

@@ -27,10 +27,10 @@ export function fightHistorical(sc: Scenario, marathas: Faction, back: () => voi
   app.setScene(new BattleScene({
     mode: 'field', playerUnits: mine.units, enemyUnits: theirs.units, playerAttacks: sc.playerAttacks,
     title: `${sc.title}, ${sc.date}`, seed: sc.id.length * 7919 + 1728, terrain: 'plains', rain: false,
-    walls: 0, ladders: false, ram: false, place: sc.place.split(',')[0],
+    walls: 0, ladders: false, ram: false, place: sc.title.replace('Battle of ', ''),
     playerGeneral: sc.playerGeneral, enemyGeneral: sc.enemyGeneral, playerFaction: peshwa, enemyFaction: enemy,
     leaders: sc.leaders, leaderNotes: sc.leaderNotes,
-    placement: [mine.spots, theirs.spots], zone0: sc.zone0, thirst: sc.thirst, generals: sc.generals,
+    placement: [mine.spots, theirs.spots], zone0: sc.zone0, thirst: sc.thirst, generals: sc.generals, map: sc.map,
     doneLabel: 'What really happened',
     onDone: (won, draw) => {
       if (returnTo) app.setScene(returnTo);
