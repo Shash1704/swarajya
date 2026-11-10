@@ -36,10 +36,6 @@ export interface BattleSetup {
   leaders?: [LeaderMods, LeaderMods];
   /** One line on each commander's gifts, for the side panel. */
   leaderNotes?: [string, string];
-  /** The player's own regiments (refs); the rest of the player's side are allies the AI commands. Omitted: all are the player's. */
-  controlled?: CUnit[];
-  /** Who commands the allied regiments, for the panel. */
-  alliesLed?: string;
   /** draw: night fell with neither side broken. */
   onDone(playerWon: boolean, draw?: boolean, generalLost?: [boolean, boolean]): void;
 }
@@ -80,8 +76,6 @@ export class BattleScene implements Scene {
   private listEl: HTMLElement | null = null;
   private statusEl: HTMLElement | null = null;
   private ordersEl: HTMLElement | null = null;
-  /** Regiments on your side that are not yours to command. */
-  private allied = new Set<number>();
   private ordersSig = '';
   private notice = '';
   private noticeT = 0;
@@ -107,11 +101,6 @@ export class BattleScene implements Scene {
       fog: setup.fog, dusk: setup.dusk, leaders: setup.leaders,
     });
     this.bg = renderBattlefield(this.b, setup);
-    // Regiments of other armies on your side (a commander under your banner, a garrison) fight under the AI.
-    if (setup.controlled) {
-      const own = new Set(setup.controlled);
-      for (const u of this.b.units) if (u.side === 0 && !own.has(u.ref)) this.allied.add(u.id);
-    }
     if (this.use3D) this.load3D();
   }
 
@@ -193,7 +182,6 @@ export class BattleScene implements Scene {
       this.aiT -= STEP;
       if (this.aiT <= 0) {
         planSide(this.b, 1);
-        if (this.allied.size) planSide(this.b, 0, this.allied);
         this.aiT = AI_EVERY;
       }
       this.b.step(STEP);
@@ -214,7 +202,6 @@ export class BattleScene implements Scene {
     if (this.phase !== 'deploy') return;
     this.phase = 'live';
     planSide(this.b, 1);
-    if (this.allied.size) planSide(this.b, 0, this.allied);
     this.aiT = AI_EVERY;
     this.renderUI();
   }
@@ -293,7 +280,7 @@ export class BattleScene implements Scene {
     let best: BUnit | null = null;
     let bd = this.v3 ? 30 : 28 / Math.min(1, this.cam.z);
     for (const u of this.b.units) {
-      if (u.side !== side || u.state !== 'ok' || (side === 1 && !this.b.sees(0, u)) || (side === 0 && this.allied.has(u.id))) continue;
+      if (u.side !== side || u.state !== 'ok' || (side === 1 && !this.b.sees(0, u))) continue;
       const d = Math.hypot(u.x - x, u.y - y);
       if (d < bd) {
         bd = d;
@@ -402,7 +389,7 @@ export class BattleScene implements Scene {
       const [x0, x1] = [Math.min(ds.x0, ds.x1), Math.max(ds.x0, ds.x1)];
       const [y0, y1] = [Math.min(ds.y0, ds.y1), Math.max(ds.y0, ds.y1)];
       for (const u of this.b.units) {
-        if (u.side !== 0 || u.state !== 'ok' || this.allied.has(u.id)) continue;
+        if (u.side !== 0 || u.state !== 'ok') continue;
         const p = this.v3.project(u.x, u.y, 8);
         if (p && p[0] >= x0 && p[0] <= x1 && p[1] >= y0 && p[1] <= y1) this.selected.add(u.id);
       }
@@ -413,7 +400,7 @@ export class BattleScene implements Scene {
     const [x0, x1] = [Math.min(d.x0, d.x1), Math.max(d.x0, d.x1)];
     const [y0, y1] = [Math.min(d.y0, d.y1), Math.max(d.y0, d.y1)];
     for (const u of this.b.units) {
-      if (u.side === 0 && u.state === 'ok' && !this.allied.has(u.id) && u.x >= x0 && u.x <= x1 && u.y >= y0 && u.y <= y1) this.selected.add(u.id);
+      if (u.side === 0 && u.state === 'ok' && u.x >= x0 && u.x <= x1 && u.y >= y0 && u.y <= y1) this.selected.add(u.id);
     }
     this.refreshList();
   }
@@ -435,7 +422,7 @@ export class BattleScene implements Scene {
       this.refreshList();
     } else if (k === 'a' && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
-      this.selected = new Set(this.b.units.filter((u) => u.side === 0 && u.state === 'ok' && !this.allied.has(u.id)).map((u) => u.id));
+      this.selected = new Set(this.b.units.filter((u) => u.side === 0 && u.state === 'ok').map((u) => u.id));
       this.refreshList();
     } else if (k === '1' || k === '2' || k === '3') {
       this.speed = Number(k);
@@ -545,7 +532,7 @@ export class BattleScene implements Scene {
   }
 
   private mySelected(): BUnit[] {
-    return this.b.units.filter((u) => this.selected.has(u.id) && u.state === 'ok' && u.side === 0 && !this.allied.has(u.id));
+    return this.b.units.filter((u) => this.selected.has(u.id) && u.state === 'ok' && u.side === 0);
   }
 
   /** Sends the selected regiments along a drawn path, keeping their formation; ending on an enemy attacks it. */
@@ -1584,8 +1571,7 @@ export class BattleScene implements Scene {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.font = '700 10.5px Cinzel, Georgia, serif';
-    // Allied regiments (not yours to command) are marked with a flag after their numbers.
-    const label = `${Math.ceil(u.men)}${this.allied.has(u.id) ? ' ⚑' : ''}`;
+    const label = `${Math.ceil(u.men)}`;
     ctx.lineWidth = 3;
     ctx.strokeStyle = 'rgba(244,236,214,0.85)';
     ctx.strokeText(label, 0, 0);
@@ -1678,7 +1664,7 @@ export class BattleScene implements Scene {
       this.b.inRiver(u) ? 'wading the river!' : '', this.b.onFord(u) ? 'at a ford' : '', this.b.inMarsh(u) ? 'in marsh' : '', this.b.inVillage(u) ? 'in a village' : '']
       .filter(Boolean).join(', ');
     const lines = [
-      `${u.side === 0 ? (this.allied.has(u.id) ? `Allied (${this.s.alliesLed ?? 'not yours to command'})` : 'Your') : 'Enemy'} ${st.name}`,
+      `${u.side === 0 ? 'Your' : 'Enemy'} ${st.name}`,
       `${Math.ceil(u.men)}/${u.maxMen} ${st.cls === 'elephant' ? 'elephants' : 'men'} · morale ${Math.round(u.morale)} · tier ${st.tier} · ${VET_NAMES[u.rank]}`,
       `${FORMATION_NAMES[u.formation]} · ${fatigueName(u.fatigue)}${u.maxAmmo > 0 && Number.isFinite(u.maxAmmo) ? ` · ammo ${Math.round((u.ammo / u.maxAmmo) * 100)}%` : ''}`,
       statusOf(u, this.b) + (where ? ` · ${where}` : ''),
@@ -1831,9 +1817,7 @@ export class BattleScene implements Scene {
     const el = this.listEl;
     if (!el) return;
     clear(el).append(
-      ...(this.allied.size ? [h('div', { class: 'muted', style: 'font-size:12.5px' },
-        `Allied: ${[...this.allied].map((id) => this.b.get(id)).filter((u) => u && u.state === 'ok').length} of ${this.allied.size} regiments${this.s.alliesLed ? ` under ${this.s.alliesLed}` : ''} fight beside you under their own commander. Only your own regiments take your orders.`)] : []),
-      ...this.b.units.filter((u) => u.side === 0 && !this.allied.has(u.id)).map((u) => {
+      ...this.b.units.filter((u) => u.side === 0).map((u) => {
         const st = UNIT_STATS[u.type];
         const alive = u.state === 'ok';
         const m = Math.max(0, u.morale / u.maxMorale);

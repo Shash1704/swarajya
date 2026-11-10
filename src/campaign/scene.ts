@@ -1131,10 +1131,6 @@ export class CampaignScene implements Scene {
             hideModal();
             app.setScene(new BattleScene({
               mode, playerUnits: mine, enemyUnits: theirs, playerAttacks, title,
-              // Only your own army's regiments take your orders; allies and garrisons fight under the AI.
-              controlled: myArmy?.units,
-              alliesLed: [...(playerAttacks ? b.attArmies : b.defArmies).filter((x) => !isYours(s, x)).map((x) => x.general.name),
-                ...((!playerAttacks && b.garrison) ? [`the garrison of ${p.town}`] : [])].join(', ') || undefined,
               seed: Math.floor(s.seed * 31 + s.day * 7 + p.id), terrain: this.terrainAt(siege || garrison ? p : (defArmy ?? p)),
               rain: isMonsoon(s.day), walls: siege ? p.walls : 0, ladders: eq >= 1, ram: eq >= 2,
               ...(siege ? {} : this.featuresAt(garrison ? p : (defArmy ?? p))),

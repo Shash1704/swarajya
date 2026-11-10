@@ -20,9 +20,8 @@ const cls = (u: BUnit) => UNIT_STATS[u.type].cls;
 const strength = (list: BUnit[]) => list.reduce((s, u) => s + u.men * UNIT_STATS[u.type].value, 0);
 
 /** Re-plans orders for one side. Called every second or two of battle time. */
-/** Plans for one side; `only`: just these regiments (allies fighting beside the player under their own commander). */
-export function planSide(b: Battle, side: 0 | 1, only?: Set<number>) {
-  const mine = b.units.filter((u) => u.side === side && u.state === 'ok' && !u.climbing && (!only || only.has(u.id)));
+export function planSide(b: Battle, side: 0 | 1) {
+  const mine = b.units.filter((u) => u.side === side && u.state === 'ok' && !u.climbing);
   // The AI knows only what its scouts can see.
   const foes = b.units.filter((u) => u.side !== side && u.state === 'ok' && b.sees(side, u));
   if (!mine.length) return;
