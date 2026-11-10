@@ -313,6 +313,20 @@ export class Map3D {
         if (p.kind === 'port') quays.add(X - 4, WATER + 0.3, Z - 3, 0.4, [6, 0.6, 1.6]);
       }
     }
+    // Villages: three or four huts each, out in the countryside.
+    for (const v of state.villages) {
+      const y0 = this.surfaceY(v.x, v.y);
+      const n = 3 + (v.wealth > 14 ? 1 : 0);
+      for (let k = 0; k < n; k++) {
+        const a = rand() * Math.PI * 2;
+        const d = 0.6 + rand() * 1.6;
+        const hx = toX(v.x) + Math.cos(a) * d;
+        const hz = toZ(v.y) + Math.sin(a) * d;
+        const yaw = rand() * Math.PI;
+        houses.add(hx, y0 + 0.4, hz, yaw, [0.9, 0.8, 1.1]);
+        roofs.add(hx, y0 + 1.1, hz, yaw + Math.PI / 4, [1.3, 0.6, 1.3]);
+      }
+    }
     for (const m of [towers, walls, houses, roofs, quays]) m.end();
   }
 

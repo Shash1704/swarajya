@@ -29,7 +29,23 @@ export type Goal =
   | { kind: 'siege'; prov: number }
   | { kind: 'raid'; prov: number }
   | { kind: 'chase'; army: number }
-  | { kind: 'join'; army: number };
+  | { kind: 'join'; army: number }
+  /** March to a village and sack it on arrival. */
+  | { kind: 'sack'; village: number };
+
+/** A village in the countryside: something to plunder, and to defend. */
+export interface Village {
+  id: number;
+  name: string;
+  /** The province it lies in (its owner is the province's owner). */
+  prov: number;
+  x: number;
+  y: number;
+  /** Loot it yields when sacked (rises with the province's wealth). */
+  wealth: number;
+  /** Burnt and empty until this day. */
+  burnedUntil: number;
+}
 
 /** What a commander is good at. */
 export type Trait = 'bold' | 'cautious' | 'horseman' | 'sapper' | 'raider' | 'quartermaster';
@@ -256,6 +272,7 @@ export interface GameState {
   player: { gen: General; origin: Origin; armyId: number; lastAsk: number; reportedXp: number };
   /** The chronicle of the player's deeds (see chronicle.ts). */
   chronicle: ChronEntry[];
+  villages: Village[];
 }
 
 /** Is this the army the player leads in person? */
@@ -359,8 +376,9 @@ export function newGame(seed: number): GameState {
     officers: factions.map((f) => (GENERALS[f.key] ?? []).map(([name, house], i) => makeGeneral(rng, name, house, i === 0 ? 3 : rng.range(0, 4)))),
     captives: [], fleets: [], nextFleetId: 1, eventsDone: [], rulers: [], honour: 60,
     player: { gen: { ...makeGeneral(rng, 'Rao', 'of no great house', 0), trait: 'raider', loyalty: 100, isPlayer: true }, origin: 'mavala', armyId: -1, lastAsk: -999, reportedXp: 0 },
-    chronicle: [],
+    chronicle: [], villages: [],
   };
+  state.villages = makeVillages(map, provinces, rng);
   // Shivaji is the sovereign you serve, at Raigad, not a commander in the field.
   state.officers[0] = state.officers[0].filter((g) => g.name !== 'Shivaji');
 
@@ -676,6 +694,10 @@ export function goalPoint(state: GameState, g: Goal): Pt | null {
   if (g.kind === 'chase' || g.kind === 'join') {
     const t = armyById(state, g.army);
     return t ? { x: t.x, y: t.y } : null;
+  }
+  if (g.kind === 'sack') {
+    const v = state.villages[g.village];
+    return v ? { x: v.x, y: v.y } : null;
   }
   const p = state.provinces[g.prov];
   return { x: p.x, y: p.y };
@@ -1089,3 +1111,59 @@ export function eliteBlock(state: GameState, p: Province, type: UnitType, f = PL
   if (eliteCount(state, f, type) >= ELITE_CAP) return `At most ${ELITE_CAP} regiments of ${UNIT_STATS[type].short}.`;
   return null;
 }
+
+// ---------------------------------------------------------------- villages
+
+const SYL_A = ['Ram', 'Shiv', 'Kal', 'Mor', 'Wad', 'Sas', 'Nar', 'Dev', 'Kon', 'Bhor', 'Sat', 'Kar', 'Pal', 'Ved', 'Man', 'Jam', 'Har', 'Chin', 'Ambe', 'Kes', 'Gor', 'Lon', 'Nim', 'Sir', 'Tal', 'Dhan', 'Ran', 'Mal', 'Ang', 'Bel'];
+const SYL_B = ['', 'a', 'i', 'o', 'u', 'ni', 'de', 'ra', 'go', 'ha'];
+const SUFFIX = ['pur', 'gaon', 'wadi', 'abad', 'nagar', 'khed', 'ner', 'oli', 'gad', 'wade', 'pada', 'sar'];
+
+/** A village name of the country: a root, a joining sound, and a place-ending. */
+function villageName(rng: RNG): string {
+  return rng.pick(SYL_A) + rng.pick(SYL_B) + rng.pick(SUFFIX);
+}
+
+/** Scatters villages through each province: a few per province, away from the town and from each other. */
+export function makeVillages(map: MapData, provinces: Province[], rng: RNG): Village[] {
+  const cells: number[][] = provinces.map(() => []);
+  for (let i = 0; i < map.prov.length; i++) {
+    const p = map.prov[i];
+    if (p >= 0 && map.elev[i] < 0.6) cells[p].push(i);
+  }
+  const out: Village[] = [];
+  const names = new Set<string>();
+  for (const p of provinces) {
+    const want = 2 + (p.wealth >= 8 ? 1 : 0);
+    const mine: Village[] = [];
+    for (let tries = 0; tries < 60 && mine.length < want && cells[p.id].length; tries++) {
+      const c = rng.pick(cells[p.id]);
+      const x = (c % MW) * CELL + CELL / 2;
+      const y = Math.floor(c / MW) * CELL + CELL / 2;
+      if (Math.hypot(x - p.x, y - p.y) < 12) continue;
+      if ([...mine, ...out].some((v) => Math.hypot(v.x - x, v.y - y) < 10)) continue;
+      let name = villageName(rng);
+      for (let k = 0; names.has(name) && k < 5; k++) name = villageName(rng);
+      names.add(name);
+      mine.push({ id: out.length + mine.length, name, prov: p.id, x, y, wealth: Math.round(4 + p.wealth * 1.6 + rng.range(0, 4)), burnedUntil: 0 });
+    }
+    out.push(...mine);
+  }
+  return out;
+}
+
+/** The village at (or right by) a point, if any. */
+export function villageAt(state: GameState, pt: { x: number; y: number }, within = 4): Village | null {
+  let best: Village | null = null;
+  let bd = within;
+  for (const v of state.villages) {
+    const d = Math.hypot(v.x - pt.x, v.y - pt.y);
+    if (d <= bd) {
+      bd = d;
+      best = v;
+    }
+  }
+  return best;
+}
+
+export const villageOwner = (state: GameState, v: Village) => state.provinces[v.prov].owner;
+export const villageBurnt = (state: GameState, v: Village) => v.burnedUntil > state.day;

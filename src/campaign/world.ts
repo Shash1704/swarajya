@@ -6,6 +6,7 @@ import {
   maxSupplies, MAX_UNITS, monthOf, netIncome, newUnit, PLAYER, type Province, provinceUnder, RAID_DAYS, raidSpoils,
   retreat, sack, setGoal, startSiege, townAt, unitsStrength, manpowerRatio, maxManpower, manpowerRegen, drawMen,
   generalK, releaseGeneral, blockaded, capture as captureProv, isYours, yourArmy, spawnArmy, leaveBanner, armySpeed as baseSpeedOf,
+  type Village, villageOwner, villageBurnt, maxFood,
 } from './state';
 import {
   aiSpiesMonthly, battleRenown, captivesMonthly, cessionFor, demandChauth, diplomacyMonthly, fleetsMove, type GameEvent,
@@ -241,6 +242,11 @@ export class World {
       a.node = provinceUnder(s, a, a.node);
       const g = a.goal;
       if (g?.kind === 'point' && !a.route.length) a.goal = null;
+      if (g?.kind === 'sack' && !a.route.length) {
+        const v = s.villages[g.village];
+        a.goal = null;
+        if (v && dist(a, v) <= 4) this.sackVillage(a, v);
+      }
       if (g && !a.route.length && (g.kind === 'go' || g.kind === 'siege' || g.kind === 'raid')) {
         const p = s.provinces[g.prov];
         if (dist(a, p) <= AT_TOWN) {
@@ -299,8 +305,55 @@ export class World {
     this.hooks.changed();
   }
 
+  /**
+   * Sack a village: a day of plunder, and word of it spreads. The owner's armies nearby, and any
+   * Mughal army within reach that is at war with the raiders, ride out to catch them.
+   */
+  sackVillage(a: Army, v: Village) {
+    const s = this.state;
+    const owner = villageOwner(s, v);
+    if (villageBurnt(s, v) || !hostile(s, a.owner, owner)) return;
+    a.goal = null;
+    a.route = [];
+    a.raidUntil = s.day + 1;
+    a.raidProv = -1 - v.id; // negative: a village, not a whole province
+    const f = s.factions;
+    log(s, `The ${f[a.owner].short} fall on the village of ${v.name} in ${s.provinces[v.prov].name}.`, isYours(s, a) || owner === PLAYER);
+    const mug = f.findIndex((x) => x.key === 'mug');
+    const hunters = s.armies.filter((o) => o !== a && !isYours(s, o) && o.follows === undefined && o.siegeOf < 0 && s.day >= o.busyUntil
+      && hostile(s, o.owner, a.owner) && o.owner !== IND
+      && ((o.owner === owner || s.ally[o.owner][owner]) && dist(o, v) < 260 || (o.owner === mug && dist(o, v) < 340)));
+    for (const o of hunters) {
+      setGoal(s, o, { kind: 'chase', army: a.id });
+      o.aiNext = s.day + 8; // they stay on the trail a while
+    }
+    if (hunters.length) {
+      const who = [...new Set(hunters.map((o) => f[o.owner].short))].join(' and the ');
+      log(s, `Word of the raid on ${v.name} spreads: the ${who} ride out after the raiders (${hunters.map((o) => o.general.name).join(', ')}).`, isYours(s, a) || owner === PLAYER);
+    }
+    this.hooks.changed();
+  }
+
   private finishRaid(a: Army) {
     const s = this.state;
+    if (a.raidProv < 0) {
+      // A village sacked: gold, food, and a burnt village that will take months to recover.
+      const v = s.villages[-1 - a.raidProv];
+      a.raidUntil = 0;
+      a.raidProv = -1;
+      a.aiNext = s.day;
+      if (!v || !hostile(s, a.owner, villageOwner(s, v))) return;
+      const gold = Math.round(v.wealth * (a.general.trait === 'raider' ? 1.5 : 1));
+      s.gold[a.owner] += gold;
+      a.food = Math.min(maxFood(a), a.food + 8);
+      v.burnedUntil = s.day + 150;
+      const p = s.provinces[v.prov];
+      p.unrest = Math.min(100, p.unrest + 4);
+      log(s, `${v.name} is sacked and burnt: the ${s.factions[a.owner].short} carry off ${gold} gold.`, isYours(s, a) || p.owner === PLAYER);
+      if (isYours(s, a)) chronicle(s, 'raid', `You sacked the village of ${v.name} in ${p.name} (${s.factions[p.owner].short}) and carried off ${gold} gold and a week's food.`);
+      this.hooks.changed();
+      return;
+    }
     const p = s.provinces[a.raidProv];
     a.raidUntil = 0;
     a.raidProv = -1;
@@ -506,7 +559,7 @@ export class World {
       capture(s, p, owner);
       if (sackIt) sack(s, p, owner);
       // The victors garrison the place and rest before the next campaign.
-      for (const a of s.armies) if (a.owner === owner && dist(a, p) < 12) a.aiNext = s.day + 25 + s.rng.next() * 20;
+      for (const a of s.armies) if (a.owner === owner && dist(a, p) < 12) a.aiNext = s.day + 8 + s.rng.next() * 8;
     }
     this.hooks.changed();
   }

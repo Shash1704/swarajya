@@ -13,7 +13,7 @@ import {
   newGame, PLAYER, type Province, provinceIncome, provincesOf, provinceUnder, RAID_DAYS, recruit, regionOwners,
   seasonOf, setGoal, siegeEquipment, townAt, unitsMen, unitsStrength, upkeep, VICTORY_PROVINCES, wallFactor,
   wallsCost, manpowerLabel, manpowerRatio, manpowerRegen, maxManpower, levyFraction,
-  generalK, generalRank, TRAITS, isCoastal, seaOf, isYours, yourArmy, ORIGINS, followersOf, leaveBanner, keyFort, maxFood, recruitCost, tributeShare, type General,
+  generalK, generalRank, TRAITS, isCoastal, seaOf, isYours, yourArmy, ORIGINS, followersOf, leaveBanner, villageAt, villageBurnt, villageOwner, keyFort, maxFood, recruitCost, tributeShare, type General,
 } from './state';
 import {
   bribe, bribeCost, build, BUILDINGS, type Building, buildShip, demandChauth, type GameEvent, generalFate, generalLine,
@@ -372,6 +372,7 @@ export class CampaignScene implements Scene {
       }
     }
 
+    this.drawVillages(ctx);
     for (const c of this.world.clashes) this.drawClash(ctx, c.x, c.y);
     for (const fl of s.fleets) this.drawFleet(ctx, fl);
     const order = [...s.armies].sort((a, b) => (a === this.selArmy ? 1 : 0) - (b === this.selArmy ? 1 : 0));
@@ -427,6 +428,46 @@ export class CampaignScene implements Scene {
     ctx.beginPath();
     ctx.arc(ex, ey, selected ? 5 : 3.5, 0, Math.PI * 2);
     ctx.fill();
+    ctx.restore();
+  }
+
+  /** Villages: little huts (drawn as 3D models on the 3D map), flames over burnt ones, names up close. */
+  private drawVillages(ctx: CanvasRenderingContext2D) {
+    const s = this.state;
+    const z = this.cam.z;
+    if (z < 0.9) return;
+    ctx.save();
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    for (const v of s.villages) {
+      const [x, y] = this.toScreen(v.x, v.y);
+      if (x < -20 || y < -20 || x > VIEW_W + 20 || y > VIEW_H + 20) continue;
+      const burnt = villageBurnt(s, v);
+      if (!this.v3) {
+        // Flat map: a pair of hut roofs.
+        ctx.fillStyle = burnt ? 'rgba(60,40,30,0.75)' : 'rgba(110,70,40,0.85)';
+        for (const dx of [-2.2, 2.2]) {
+          ctx.beginPath();
+          ctx.moveTo(x + dx - 2.4, y + 1.5);
+          ctx.lineTo(x + dx, y - 2);
+          ctx.lineTo(x + dx + 2.4, y + 1.5);
+          ctx.closePath();
+          ctx.fill();
+        }
+      }
+      if (burnt) {
+        ctx.font = `${Math.round(Math.max(8, 7 * Math.min(2, z)))}px sans-serif`;
+        ctx.fillText('🔥', x - 5, y - 7);
+      }
+      if (z >= 1.8) {
+        ctx.font = 'italic 600 9px "EB Garamond", Georgia, serif';
+        ctx.lineWidth = 2.5;
+        ctx.strokeStyle = 'rgba(250,244,228,0.7)';
+        ctx.strokeText(v.name, x + 5, y + 4);
+        ctx.fillStyle = burnt ? 'rgba(90,50,40,0.85)' : 'rgba(60,42,26,0.85)';
+        ctx.fillText(v.name, x + 5, y + 4);
+      }
+    }
     ctx.restore();
   }
 
@@ -720,6 +761,8 @@ export class CampaignScene implements Scene {
       `Garrison ${unitsMen(p.garrison)} · wealth ${p.wealth}${p.devastated ? ` (devastated ${Math.ceil(p.devastated)}d)` : ''}`,
     ];
     lines.push(`Unrest ${Math.round(p.unrest)} · ${p.faith === 'mixed' ? 'mixed faiths' : p.faith}${p.tribute && p.tribute.until >= s.day ? ` · pays chauth to the ${s.factions[p.tribute.to].short}` : ''}`);
+    const nearV = s.villages.filter((v) => v.prov === p.id);
+    if (nearV.length) lines.push(`Villages: ${nearV.map((v) => `${v.name}${villageBurnt(s, v) ? ' (burnt)' : ''}`).join(', ')}`);
     if (p.siege) lines.push(`Under siege · ${Math.max(0, Math.ceil(p.supplies))} days of food left`);
     ctx.save();
     ctx.font = '12px ui-sans-serif, system-ui, sans-serif';
@@ -846,10 +889,12 @@ export class CampaignScene implements Scene {
       if (p < 0) return;
       const prov = s.provinces[p];
       if (prov.owner !== PLAYER && !(await this.ensureWar(prov.owner, `march into ${prov.name}`))) return;
-      // Click on (or right by) a town to march there; anywhere else, the army marches straight to that spot.
+      // Click on (or right by) a town to march there; a village, to march to it; anywhere else, straight to that spot.
       const [tx, ty] = this.toScreen(prov.x, prov.y);
       const [wx, wy] = this.toWorldPt(x, y);
+      const vil = s.villages.find((v) => { const [vx, vy] = this.toScreen(v.x, v.y); return Math.hypot(vx - x, vy - y) < 10; });
       if (Math.hypot(tx - x, ty - y) < 16) setGoal(s, a, { kind: 'go', prov: p });
+      else if (vil) setGoal(s, a, { kind: 'point', x: vil.x, y: vil.y });
       else setGoal(s, a, { kind: 'point', x: wx, y: wy });
       if (!a.goal) log(s, 'There is no way over land to get there.', true);
     }
@@ -1086,6 +1131,10 @@ export class CampaignScene implements Scene {
             hideModal();
             app.setScene(new BattleScene({
               mode, playerUnits: mine, enemyUnits: theirs, playerAttacks, title,
+              // Only your own army's regiments take your orders; allies and garrisons fight under the AI.
+              controlled: myArmy?.units,
+              alliesLed: [...(playerAttacks ? b.attArmies : b.defArmies).filter((x) => !isYours(s, x)).map((x) => x.general.name),
+                ...((!playerAttacks && b.garrison) ? [`the garrison of ${p.town}`] : [])].join(', ') || undefined,
               seed: Math.floor(s.seed * 31 + s.day * 7 + p.id), terrain: this.terrainAt(siege || garrison ? p : (defArmy ?? p)),
               rain: isMonsoon(s.day), walls: siege ? p.walls : 0, ladders: eq >= 1, ram: eq >= 2,
               ...(siege ? {} : this.featuresAt(garrison ? p : (defArmy ?? p))),
@@ -1499,7 +1548,11 @@ export class CampaignScene implements Scene {
       const p = s.provinces[a.siegeOf];
       return `Besieging ${p.town}, day ${Math.floor(s.day - (p.siege?.start ?? s.day)) + 1}`;
     }
-    if (a.raidUntil > s.day) return `Plundering ${s.provinces[a.raidProv]?.name}: ${(a.raidUntil - s.day).toFixed(1)} days left`;
+    if (a.raidUntil > s.day) {
+      const what = a.raidProv < 0 ? `the village of ${s.villages[-1 - a.raidProv]?.name}` : s.provinces[a.raidProv]?.name;
+      return `Plundering ${what}: ${(a.raidUntil - s.day).toFixed(1)} days left`;
+    }
+    if (a.goal?.kind === 'sack') return `Marching to sack ${s.villages[a.goal.village]?.name}: ${this.eta(a).toFixed(1)} days`;
     if (s.day < a.busyUntil) return 'Locked in battle';
     const g = a.goal;
     if (g?.kind === 'chase' || g?.kind === 'join') {
@@ -1598,9 +1651,25 @@ export class CampaignScene implements Scene {
             onclick: () => { const [, t] = demandChauth(s, a, here); log(s, t, true); this.renderUI(true); },
           }, '💰 Demand chauth'));
         }
+        // A village where the army stands: sack it (and bring the hunt down on you).
+        const vil = villageAt(s, a, 5);
+        if (vil && a.raidUntil <= s.day) {
+          const owner = villageOwner(s, vil);
+          if (villageBurnt(s, vil)) parts.push(h('div', { class: 'muted' }, `${vil.name} lies burnt and empty.`));
+          else if (owner !== PLAYER) {
+            btns.push(h('button', {
+              class: 'small primary', title: `A day's plunder: about ${vil.wealth} gold and a week's food. Word will spread: the ${s.factions[owner].short}${s.factions.some((f) => f.key === 'mug' && s.war[PLAYER][f.id]) ? ' and the Mughals' : ''} nearby will come after you.`,
+              onclick: async () => {
+                if (!hostile(s, PLAYER, owner) && !(await this.ensureWar(owner, `sack ${vil.name}`))) return;
+                this.world.sackVillage(a, vil);
+                this.renderUI(true);
+              },
+            }, `🔥 Sack ${vil.name} (~${vil.wealth} gold)`));
+          }
+        }
         if (btns.length) parts.push(h('div', { class: 'btns' }, ...btns));
         parts.push(h('p', { class: 'muted', style: 'font-size:12.5px' },
-          'Right-click a town to march there, anywhere else to march across country, an enemy army to attack it, or one of the Raje\'s armies to ride over to it.'));
+          'Right-click a town to march there, a village to ride to it (then sack it), anywhere else to march across country, an enemy army to attack it, or one of the Raje\'s armies to ride over to it.'));
         if (here && here.owner === PLAYER && !here.siege) parts.push(this.recruitButtons(here));
       }
     }

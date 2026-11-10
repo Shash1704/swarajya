@@ -5,7 +5,7 @@ import {
   siegeEquipment, spawnArmy, townAt, unitsStrength, wallFactor, manpowerRatio, levyFraction,
 } from './state';
 import { supplied, warBlocked } from './realm';
-import { FRONT_RANGE, isYours, type Province } from './state';
+import { FRONT_RANGE, isYours, type Province, villageBurnt, villageOwner } from './state';
 
 /** Is this point on the army's own front (armies without a front go anywhere)? */
 const onFront = (s: GameState, a: Army, p: { x: number; y: number }) => a.front === undefined || dist(s.provinces[a.front], p) < FRONT_RANGE;
@@ -131,6 +131,18 @@ export function thinkArmy(w: WorldLike, a: Army) {
     return;
   }
 
+  // Sack a village: quick plunder in enemy country (the Marathas' favourite war, but everyone does it).
+  // It brings the owner's armies down on the raiders, so only where none stronger is close by.
+  const village = s.rng.chance(maratha ? 0.5 : 0.3) && !isMonsoon(s.day) ? s.villages
+    .filter((v) => !villageBurnt(s, v) && hostile(s, a.owner, villageOwner(s, v)) && dist(a, v) < 200 && onFront(s, a, v)
+      && (villageOwner(s, v) !== PLAYER || mayHitPlayer)
+      && !s.armies.some((e) => hostile(s, e.owner, a.owner) && dist(e, v) < 80 && armyStrength(e) > str * 0.7))
+    .sort((x, y) => (dist(a, x) - x.wealth * 6) - (dist(a, y) - y.wealth * 6))[0] : undefined;
+  if (village) {
+    setGoal(s, a, { kind: 'sack', village: village.id });
+    return;
+  }
+
   // Ganimi kava: Maratha armies raid enemy country more often than they lay sieges.
   if (maratha && !isMonsoon(s.day) && s.rng.chance(0.55)) {
     const loot = s.provinces
@@ -150,11 +162,10 @@ export function thinkArmy(w: WorldLike, a: Army) {
     for (const p of s.provinces) {
       if (!hostile(s, a.owner, p.owner) || p.siege) continue;
       const d = dist(a, p);
-      if (d > 350 || !onFront(s, a, p) || (p.owner === PLAYER && !mayHitPlayer)) continue;
-      if (p.owner === IND && !s.rng.chance(0.25 + fac.aggression * 0.3)) continue;
+      if (d > 480 || !onFront(s, a, p) || (p.owner === PLAYER && !mayHitPlayer)) continue;
       const G = (unitsStrength(p.garrison) + 10) * wallFactor(p, a.units, 0);
       if (str < G * (maratha ? 1.7 : 1.3)) continue;
-      let score = 60 + p.wealth * 3 + (p.capitalOf >= 0 ? 30 : 0) + (p.owner === PLAYER ? 12 : 0) - p.walls * 4 - d / 12 + s.rng.next() * 10;
+      let score = (p.owner === IND ? 45 : 60) + p.wealth * 3 + (p.capitalOf >= 0 ? 30 : 0) + (p.owner === PLAYER ? 12 : 0) - p.walls * 4 - d / 12 + s.rng.next() * 10;
       if (s.armies.some((o) => o !== a && o.owner === a.owner && o.goal?.kind === 'siege' && o.goal.prov === p.id)) score -= 30;
       if (score > bestScore) {
         bestScore = score;
@@ -189,7 +200,24 @@ export function thinkArmy(w: WorldLike, a: Army) {
     }
   }
 
-  // Nothing to do: stand at the nearest friendly town.
+  // Nothing worth taking in reach: no army sits still. Move up towards the nearest enemy
+  // ground on its front, or else ride a circuit of its own towns, showing the flag.
+  const enemyGround = s.provinces
+    .filter((p) => hostile(s, a.owner, p.owner) && (p.owner !== PLAYER || mayHitPlayer) && onFront(s, a, p))
+    .sort((x, y) => dist(a, x) - dist(a, y))[0];
+  if (enemyGround && dist(a, enemyGround) > 60) {
+    const base = s.provinces.filter((p) => p.owner === a.owner && !p.siege)
+      .sort((x, y) => dist(x, enemyGround) - dist(y, enemyGround))[0];
+    if (base && townAt(s, a) !== base.id) {
+      setGoal(s, a, { kind: 'go', prov: base.id });
+      return;
+    }
+  }
+  const circuit = s.provinces.filter((p) => p.owner === a.owner && !p.siege && townAt(s, a) !== p.id && onFront(s, a, p) && dist(a, p) < 260);
+  if (circuit.length) {
+    setGoal(s, a, { kind: 'go', prov: s.rng.pick(circuit).id });
+    return;
+  }
   if (townAt(s, a) < 0 && !a.goal) {
     const home = nearestOwned(s, a);
     if (home >= 0) setGoal(s, a, { kind: 'go', prov: home });
@@ -205,7 +233,11 @@ function stillValid(s: GameState, a: Army, g: Goal): boolean {
     const p = s.provinces[g.prov];
     return hostile(s, a.owner, p.owner) && (!p.siege || p.siege.army === a.id);
   }
-  return g.kind === 'go' && a.route.length > 0;
+  if (g.kind === 'sack') {
+    const v = s.villages[g.village];
+    return !!v && !villageBurnt(s, v) && hostile(s, a.owner, villageOwner(s, v));
+  }
+  return (g.kind === 'go' || g.kind === 'point') && a.route.length > 0;
 }
 
 function considerAssault(w: WorldLike, a: Army) {
