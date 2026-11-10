@@ -1141,13 +1141,13 @@ export class CampaignScene implements Scene {
               fog, dusk, leaders: [leaderMods(myLead), leaderMods(theirLead)],
               leaderNotes: [myLead ? `${myLead.general.name}, ${generalLine(myLead.general)}` : 'the qiledar',
                 theirLead ? `${theirLead.general.name}, ${generalLine(theirLead.general)}` : 'the qiledar'],
-              onDone: (playerWon, draw, lost) => {
+              onDone: (playerWon, draw, lost, surrendered) => {
                 app.setScene(this);
                 // A commander whose regiment broke may be dead or in chains.
                 if (lost?.[0] && myLead && s.armies.includes(myLead)) generalFate(s, myLead, enemy.id, playerWon ? 0.4 : 0.8);
                 if (lost?.[1] && theirLead && s.armies.includes(theirLead)) {
                   const name = theirLead.general.name;
-                  const fate = generalFate(s, theirLead, PLAYER, playerWon ? 0.8 : 0.4);
+                  const fate = generalFate(s, theirLead, PLAYER, playerWon ? 0.8 : 0.4, surrendered);
                   if (fate) chronicle(s, 'capture', fate.includes('prisoner') ? `You took ${name} of the ${enemy.short} prisoner on the field.` : `${name} of the ${enemy.short} fell in battle against you.`);
                 }
                 done(playerWon, draw);

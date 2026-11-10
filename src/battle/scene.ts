@@ -45,7 +45,8 @@ export interface BattleSetup {
   /** The button that ends the battle (default: back to the campaign map). */
   doneLabel?: string;
   /** draw: night fell with neither side broken. */
-  onDone(playerWon: boolean, draw?: boolean, generalLost?: [boolean, boolean]): void;
+  /** surrendered: the enemy commander gave himself up (the player accepted his surrender). */
+  onDone(playerWon: boolean, draw?: boolean, generalLost?: [boolean, boolean], surrendered?: boolean): void;
 }
 
 const STEP = 1 / 60;
@@ -66,6 +67,7 @@ export class BattleScene implements Scene {
   private uiT = 0;
   private t = 0;
   private selected = new Set<number>();
+  private surrenderAsked = false;
   private drag: { x0: number; y0: number; x1: number; y1: number } | null = null;
   /** A path being drawn with the right mouse button (or a long press), in world coords. */
   private sketch: [number, number][] | null = null;
@@ -198,6 +200,11 @@ export class BattleScene implements Scene {
         this.finish(this.b.winner === 0);
         return;
       }
+      if (this.b.surrenderOffered && !this.b.pursuit && !this.surrenderAsked) {
+        this.surrenderAsked = true;
+        this.askSurrender();
+        return;
+      }
     }
     this.spawnParticles(dt);
     this.uiT += dt;
@@ -232,6 +239,7 @@ export class BattleScene implements Scene {
     else if (retreated) text = 'You sound the retreat. The army withdraws, bloodied but intact.';
     else if (siege && won) text = s.playerAttacks ? 'The defenders break. The settlement is yours to take.' : 'The assault is thrown back from the walls!';
     else if (siege) text = s.playerAttacks ? 'The assault fails beneath the walls.' : 'The enemy is inside the walls. The settlement falls.';
+    else if (this.b.surrenderAccepted) text = `${s.enemyGeneral ?? 'The enemy commander'} surrenders. His men lay down their arms and are sent home; he is your prisoner.`;
     else text = won ? `The ${s.enemyFaction.short} break and flee the field.` : 'Your lines break and scatter.';
     showModal(draw ? 'Nightfall' : won ? 'Victory!' : 'Defeat', h('div', {},
       h('p', {}, text),
@@ -239,7 +247,20 @@ export class BattleScene implements Scene {
         h('div', { class: 'card' }, h('h3', {}, swatch(s.playerFaction.color), 'Your losses'), h('div', {}, `${Math.round(before[0] - after[0])} of ${Math.round(before[0])} men`)),
         h('div', { class: 'card' }, h('h3', {}, swatch(s.enemyFaction.color), 'Enemy losses'), h('div', {}, `${Math.round(before[1] - after[1])} of ${Math.round(before[1])} men`)),
       ),
-    ), [{ label: s.doneLabel ?? 'Return to the campaign map', primary: true, onClick: () => { hideModal(); s.onDone(won, draw, [...this.b.generalLost] as [boolean, boolean]); } }]);
+    ), [{ label: s.doneLabel ?? 'Return to the campaign map', primary: true, onClick: () => { hideModal(); s.onDone(won, draw, [this.b.generalLost[0], this.b.generalLost[1] || this.b.surrenderAccepted], this.b.surrenderAccepted); } }]);
+  }
+
+  /** The enemy's army has broken and its commander asks for terms: accept, or ride them down. */
+  private askSurrender() {
+    const s = this.s;
+    const who = s.enemyGeneral ?? `the ${s.enemyFaction.short} commander`;
+    showModal(`The ${s.enemyFaction.short} ask for terms`, h('div', {},
+      h('p', {}, `The battle has turned against them past bearing. Their army breaks, and ${who} sends his standard down to you asking for quarter.`),
+      h('p', { class: 'muted' }, 'Accept, and the battle ends: his men lay down their arms and are sent home, and he is yours to hold. Or ride them down while they run: more of them fall, but some escape, and so may he.'),
+    ), [
+      { label: '🗡 Ride them down', onClick: () => { hideModal(); this.b.pursue(); this.say('No quarter: ride them down!'); this.renderUI(); } },
+      { label: '🏳 Accept the surrender', primary: true, onClick: () => { hideModal(); this.b.acceptSurrender(); this.finish(true); } },
+    ]);
   }
 
   private say(msg: string) {
@@ -1647,7 +1668,52 @@ export class BattleScene implements Scene {
     ctx.restore();
   }
 
+  /** The battle meter across the top: whose favour the battle is going in, and where an army breaks. */
+  private drawMeter(ctx: CanvasRenderingContext2D) {
+    const b = this.b;
+    if (b.walls) return;
+    const w = 320;
+    const x = VIEW_W / 2 - w / 2;
+    const y = 12;
+    const share = Math.max(0, Math.min(1, b.balance));
+    ctx.save();
+    ctx.fillStyle = 'rgba(20,15,10,0.78)';
+    ctx.beginPath();
+    ctx.roundRect(x - 10, y - 6, w + 20, 34, 10);
+    ctx.fill();
+    ctx.fillStyle = this.s.playerFaction.color;
+    ctx.fillRect(x, y, w * share, 10);
+    ctx.fillStyle = this.s.enemyFaction.color;
+    ctx.fillRect(x + w * share, y, w * (1 - share), 10);
+    // Where the enemy army breaks and asks for terms.
+    const T = Battle.SURRENDER;
+    ctx.strokeStyle = 'rgba(255,240,200,0.85)';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([3, 2]);
+    ctx.beginPath();
+    ctx.moveTo(x + w * (1 - T), y - 3);
+    ctx.lineTo(x + w * (1 - T), y + 13);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    // The needle.
+    ctx.fillStyle = '#fff4d6';
+    ctx.fillRect(x + w * share - 1.5, y - 4, 3, 18);
+    ctx.font = '600 11px Georgia, serif';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#f4e3b5';
+    ctx.textAlign = 'left';
+    ctx.fillText(`${this.s.playerFaction.short} ${Math.round(share * 100)}%`, x, y + 20);
+    ctx.textAlign = 'right';
+    ctx.fillText(`${Math.round((1 - share) * 100)}% ${this.s.enemyFaction.short}`, x + w, y + 20);
+    ctx.textAlign = 'center';
+    const m = share - 0.5;
+    ctx.fillText(b.surrenderOffered ? (b.pursuit ? 'The enemy is broken: pursuit!' : 'The enemy is broken') : Math.abs(m) < 0.06 ? 'The battle hangs in the balance'
+      : m > 0 ? (m > 0.2 ? 'The day is yours' : 'The battle goes your way') : (m < -0.2 ? 'The day is going against you' : 'The battle turns against you'), VIEW_W / 2, y + 20);
+    ctx.restore();
+  }
+
   private drawBanner(ctx: CanvasRenderingContext2D) {
+    this.drawMeter(ctx);
     let text: string;
     if (this.phase === 'deploy') text = 'DEPLOYMENT · RIGHT-CLICK TO PLACE · RIGHT-DRAG FOR A LINE · SPACE TO BEGIN';
     else if (this.phase === 'done') text = 'THE BATTLE IS OVER';

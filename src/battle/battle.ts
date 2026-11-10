@@ -240,6 +240,15 @@ export class Battle {
   rallyCd: [number, number] = [0, 0];
   /** Night fell before either side broke. */
   draw = false;
+  /** The battle meter: side 0's share of the fighting strength on the field (0..1, smoothed). */
+  balance = 0.5;
+  /** The enemy's army has broken and its commander asks for terms; the player must choose. */
+  surrenderOffered = false;
+  /** The player chose to ride down the broken army: the battle runs on until it has gone. */
+  pursuit = false;
+  private pursuitEnd = 0;
+  /** The player accepted the enemy's surrender. */
+  surrenderAccepted = false;
   /** Fog of war: the enemy regiments each side can see, and where it last saw the rest. */
   readonly fogOn: boolean;
   seen: [Set<number>, Set<number>] = [new Set(), new Set()];
@@ -1063,6 +1072,11 @@ export class Battle {
     // 7. Casualties, morale, rout and rally.
     for (const u of us) {
       if (u.state === 'dead' || u.state === 'fled') continue;
+      // The battle meter: men on the winning side fight better and hold their nerve; the losing side wavers.
+      const edge = 1 - 0.36 * this.momentum(u.side);
+      u.dmgMelee *= edge;
+      u.dmgMissile *= edge;
+      u.moraleHit *= edge;
       const total = u.dmgMelee + u.dmgMissile;
       // Tight ranks steady men; loose order, weariness and a ragged pursuit unnerve them.
       const nerve = (u.formation === 'tight' || u.formation === 'brace' ? 0.85 : u.formation === 'loose' ? 1.1 : 1)
@@ -1094,7 +1108,7 @@ export class Battle {
         } else if (!u.fighting && u.calm > 1) {
           u.morale = Math.min(u.maxMorale, u.morale + 3 * (1 - 0.5 * u.fatigue) * dt);
         }
-      } else if (u.state === 'routing' && cls(u) !== 'elephant' && u.men > u.startMen * 0.25) {
+      } else if (u.state === 'routing' && cls(u) !== 'elephant' && u.men > u.startMen * 0.25 && !(u.side === 1 && this.surrenderOffered)) {
         // Men rally sooner, and more than once, under the commander's standard.
         const g = this.get(this.generalIds[u.side]);
         const byStandard = !!g && g !== u && g.state === 'ok' && !g.fighting && dist(g, u) < 170;
@@ -1125,7 +1139,10 @@ export class Battle {
     for (const f of this.floaters) f.t += dt;
     this.floaters = this.floaters.filter((f) => f.t < 1.6);
 
-    if (this.winner < 0) this.checkEnd();
+    if (this.winner < 0) {
+      this.updateBalance(dt);
+      this.checkEnd();
+    }
   }
 
   private act(u: BUnit, dt: number) {
@@ -1380,7 +1397,13 @@ export class Battle {
     if (t.disengageT > 0 || t.feignT > 0 || (t.moving && !t.fighting)) n++;
     if (this.units.some((e) => e !== by && e.side === by.side && e.state === 'ok' && dist(e, t) < CONTACT)) n++;
     if (t.morale < t.maxMorale * 0.45 || t.fatigue > 0.6 || t.men < t.startMen * 0.5) n++;
+    if (this.inWater(t)) n++; // floundering through water: no order, no footing
     return n;
+  }
+
+  /** Wading a river or tank, or splashing over a ford. */
+  inWater(p: { x: number; y: number }): boolean {
+    return this.inRiver(p) || this.onFord(p);
   }
 
   /** Where a blow lands on the target: its front, a flank, or its rear. */
@@ -1429,6 +1452,14 @@ export class Battle {
       if (t.formation === 'brace') mult *= 1.2; // a hedge faces one way only
     }
 
+    // Men in the water cannot keep their ranks or footing: every blow tells, a charge most of all.
+    if (this.inWater(t) && !this.inWater(a)) {
+      mult *= 1.35;
+      if (a.chargeT > 0) {
+        mult *= horse ? 1.9 : 1.5;
+        t.moraleHit += (horse ? 12 : 7) * dt;
+      }
+    }
     // The charge.
     if (a.chargeT > 0 && !this.inRiver(a) && !this.inMarsh(a)) {
       // Downhill: up to x2.2 for horse, x1.6 for foot, and the shock shakes the men struck.
@@ -1576,7 +1607,66 @@ export class Battle {
     }
   }
 
+  /** Fighting strength a side still has: men, quality, nerve and freshness; broken men count for little. */
+  private sideStrength(side: 0 | 1): number {
+    let s = 0;
+    for (const u of this.units) {
+      if (u.side !== side) continue;
+      const v = u.men * UNIT_STATS[u.type].value;
+      if (u.state === 'ok') s += v * (0.5 + 0.5 * Math.max(0, u.morale) / Math.max(1, u.maxMorale)) * (1 - 0.3 * u.fatigue);
+      else if (u.state === 'routing') s += v * 0.12;
+    }
+    return s;
+  }
+
+  /** How the battle is going for a side: +0.5 winning outright, -0.5 losing outright. */
+  momentum(side: 0 | 1): number {
+    return side === 0 ? this.balance - 0.5 : 0.5 - this.balance;
+  }
+
+  /** Below this share of the field's strength, the enemy army breaks and its commander asks for terms. */
+  static readonly SURRENDER = 0.2;
+
+  private updateBalance(dt: number) {
+    const a = this.sideStrength(0);
+    const b = this.sideStrength(1);
+    const raw = a + b > 0 ? a / (a + b) : 0.5;
+    this.balance += (raw - this.balance) * Math.min(1, dt * 1.5);
+    if (this.surrenderOffered || this.pursuit || this.time < 15 || this.walls) return;
+    if (1 - this.balance < Battle.SURRENDER) {
+      // The enemy's nerve is gone: every regiment breaks, and the commander sends to ask for terms.
+      this.surrenderOffered = true;
+      for (const u of this.units) {
+        if (u.side !== 1 || u.state !== 'ok') continue;
+        u.state = 'routing';
+        u.morale = 0;
+        u.climbing = false;
+        u.order = { kind: 'hold' };
+      }
+      const g = this.get(this.generalIds[1]);
+      if (g) this.float(g.x, g.y - 24, 'The army breaks! Their commander asks for terms', '#ffe08a');
+    }
+  }
+
+  /** The player rides the broken army down: the battle goes on until it has fled or for two minutes. */
+  pursue() {
+    this.pursuit = true;
+    this.pursuitEnd = this.time + 120;
+  }
+
+  acceptSurrender() {
+    this.surrenderAccepted = true;
+    this.winner = 0;
+  }
+
   private checkEnd() {
+    // A broken army asking for terms: wait for the player's answer; a pursuit runs until they have gone.
+    if (this.surrenderOffered && !this.pursuit) return;
+    if (this.pursuit) {
+      const left = this.units.some((u) => u.side === 1 && (u.state === 'ok' || u.state === 'routing'));
+      if (!left || this.time >= this.pursuitEnd) this.winner = 0;
+      return;
+    }
     // Gun crews alone cannot hold a field.
     const alive = (s: number) => this.units.some((u) => u.side === s && u.state === 'ok' && cls(u) !== 'artillery');
     const a0 = alive(0);
@@ -1677,6 +1767,7 @@ export class Battle {
       if (u.state === 'dead') m = 0;
       else if (this.draw) m *= u.state === 'fled' ? 0.8 : 1; // nobody is cut down in a pursuit
       else if (u.state === 'fled') m *= u.side === winnerSide ? 0.85 : 0.5;
+      else if (u.side !== winnerSide && this.surrenderAccepted) m *= 0.4; // disarmed and sent away; most go home
       else if (u.side !== winnerSide) m *= retreated ? 0.85 : 0.7;
       u.ref.men = Math.floor(m);
       // Survivors learn their trade: more for those who fought hard and won.
