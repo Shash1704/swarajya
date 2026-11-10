@@ -746,7 +746,7 @@ export class World {
         const k = here.kind === 'fort' ? 2 : 1;
         for (const u of a.units) {
           const max = UNIT_STATS[u.type].maxMen;
-          const add = drawMen(s, a.owner, Math.min(max * 0.004 * k, max - u.men));
+          const add = drawMen(s, a.owner, Math.min(max * 0.012 * k, max - u.men));
           // Raw recruits dilute a veteran regiment's experience.
           if (add > 0 && u.xp) u.xp *= u.men / (u.men + add);
           u.men += add;

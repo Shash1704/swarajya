@@ -73,7 +73,8 @@ export function thinkArmy(w: WorldLike, a: Army) {
   const enemies = s.armies.filter((e) => e.owner !== IND && hostile(s, a.owner, e.owner));
 
   // Run from anything much stronger that is close.
-  const threat = enemies.find((e) => dist(a, e) < 110 && armyStrength(e) > str * 1.25);
+  // Maratha armies are quick on their feet: they give way only to a much stronger host close by.
+  const threat = enemies.find((e) => dist(a, e) < (a.owner === PLAYER ? 80 : 110) && armyStrength(e) > str * (a.owner === PLAYER ? 1.6 : 1.25));
   if (threat) {
     const home = nearestOwned(s, a);
     if (home >= 0 && townAt(s, a) !== home && !(a.goal?.kind === 'go' && a.goal.prov === home)) {
@@ -124,12 +125,37 @@ export function thinkArmy(w: WorldLike, a: Army) {
   }
 
   // Too weak to campaign: go home and wait for recruits.
-  if (str < 160 || a.units.length < 4) {
+  if (str < 160 || a.units.length < 3) {
     const cap = s.provinces.find((p) => p.capitalOf === a.owner && p.owner === a.owner && !p.siege);
     const home = cap ? cap.id : nearestOwned(s, a);
     if (home >= 0 && townAt(s, a) !== home) setGoal(s, a, { kind: 'go', prov: home });
     return;
   }
+
+  // Conquest: pick a town worth taking that we can actually take.
+  const conquer = () => {
+    if (fac.ai !== 'major' || isMonsoon(s.day) || exhausted) return false;
+    let best = -1;
+    let bestScore = -Infinity;
+    for (const p of s.provinces) {
+      if (!hostile(s, a.owner, p.owner) || p.siege) continue;
+      const d = dist(a, p);
+      if (d > 480 || !onFront(s, a, p) || (p.owner === PLAYER && !mayHitPlayer)) continue;
+      const G = (unitsStrength(p.garrison) + 10) * wallFactor(p, a.units, 0);
+      if (str < G * (maratha ? 1.5 : 1.3)) continue;
+      let score = (p.owner === IND ? 45 : 60) + p.wealth * 3 + (p.capitalOf >= 0 ? 30 : 0) + (p.owner === PLAYER ? 12 : 0) - p.walls * 4 - d / 12 + s.rng.next() * 10;
+      if (s.armies.some((o) => o !== a && o.owner === a.owner && o.goal?.kind === 'siege' && o.goal.prov === p.id)) score -= 30;
+      if (score > bestScore) {
+        bestScore = score;
+        best = p.id;
+      }
+    }
+    if (best < 0) return false;
+    setGoal(s, a, { kind: 'siege', prov: best });
+    return true;
+  };
+  // The Raje's commanders take a fort they can win before they ride off raiding.
+  if (maratha && s.rng.chance(0.6) && conquer()) return;
 
   // Sack a village: quick plunder in enemy country (the Marathas' favourite war, but everyone does it).
   // It brings the owner's armies down on the raiders, so only where none stronger is close by.
@@ -155,28 +181,7 @@ export function thinkArmy(w: WorldLike, a: Army) {
     }
   }
 
-  // Conquest: pick a town worth taking that we can actually take.
-  if (fac.ai === 'major' && !isMonsoon(s.day) && !exhausted) {
-    let best = -1;
-    let bestScore = -Infinity;
-    for (const p of s.provinces) {
-      if (!hostile(s, a.owner, p.owner) || p.siege) continue;
-      const d = dist(a, p);
-      if (d > 480 || !onFront(s, a, p) || (p.owner === PLAYER && !mayHitPlayer)) continue;
-      const G = (unitsStrength(p.garrison) + 10) * wallFactor(p, a.units, 0);
-      if (str < G * (maratha ? 1.7 : 1.3)) continue;
-      let score = (p.owner === IND ? 45 : 60) + p.wealth * 3 + (p.capitalOf >= 0 ? 30 : 0) + (p.owner === PLAYER ? 12 : 0) - p.walls * 4 - d / 12 + s.rng.next() * 10;
-      if (s.armies.some((o) => o !== a && o.owner === a.owner && o.goal?.kind === 'siege' && o.goal.prov === p.id)) score -= 30;
-      if (score > bestScore) {
-        bestScore = score;
-        best = p.id;
-      }
-    }
-    if (best >= 0) {
-      setGoal(s, a, { kind: 'siege', prov: best });
-      return;
-    }
-  }
+  if (conquer()) return;
 
   // No town worth a siege: plunder an enemy province nearby instead.
   if (fac.ai === 'major' && !isMonsoon(s.day) && !exhausted && s.rng.chance(0.5)) {

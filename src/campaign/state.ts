@@ -936,8 +936,9 @@ export function autoResolve(state: GameState, att: CUnit[], def: CUnit[], attK =
   const D = unitsStrength(def) * defK * 1.1 * rng.range(0.85, 1.15);
   const won = rng.next() < (A * A) / (A * A + D * D);
   const [ws, ls] = won ? [A, D] : [D, A];
-  applyLosses(won ? att : def, Math.min(0.5, (0.25 * ls) / Math.max(1, ws)));
-  applyLosses(won ? def : att, rng.range(0.35, 0.6));
+  // The victors lose a little; the beaten lose a third or more, but most of them scatter rather than die.
+  applyLosses(won ? att : def, Math.min(0.35, (0.18 * ls) / Math.max(1, ws)));
+  applyLosses(won ? def : att, rng.range(0.28, 0.45));
   for (const u of won ? att : def) if (u.men > 0) u.xp = (u.xp ?? 0) + 0.45;
   for (const u of won ? def : att) if (u.men > 0) u.xp = (u.xp ?? 0) + 0.2;
   return won;
@@ -1026,7 +1027,8 @@ export function maxManpower(state: GameState, f: number): number {
   let m = 0;
   for (const p of state.provinces) if (p.owner === f) m += p.wealth * MEN_PER_WEALTH;
   // Every realm with land can also call on its nobles' retainers and hereditary soldiers.
-  return m > 0 ? m + 400 : 0;
+  // The Marathas also draw on the Maval valleys and the Ghats: hillmen who turn out for every campaign.
+  return m > 0 ? m + (f === PLAYER ? 1400 : 400) : 0;
 }
 
 /** Men who come of age (or come back from the fields) each month, from provinces not ravaged by war. */
@@ -1037,7 +1039,7 @@ export function manpowerRegen(state: GameState, f: number): number {
     const key = keyFort(state, p.region);
     m += p.wealth * MEN_PER_WEALTH * 0.05 * (key && key.owner === f ? 1.25 : 1);
   }
-  return Math.round(m > 0 ? m + 20 : 0);
+  return Math.round(m > 0 ? (f === PLAYER ? m * 1.5 + 90 : m + 20) : 0);
 }
 
 /** 1 = a full pool, 0 = nobody left to call up. */
