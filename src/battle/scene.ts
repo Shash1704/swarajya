@@ -44,6 +44,7 @@ export interface BattleSetup {
   map?: BattleOptions['map'];
   morale?: [number, number];
   encircled?: BattleOptions['encircled'];
+  arrivals?: BattleOptions['arrivals'];
   /** The button that ends the battle (default: back to the campaign map). */
   doneLabel?: string;
   /** draw: night fell with neither side broken. */
@@ -111,7 +112,7 @@ export class BattleScene implements Scene {
       mode: setup.mode, playerAttacks: setup.playerAttacks, seed: setup.seed, terrain: setup.terrain,
       rain: setup.rain, walls: setup.walls, ladders: setup.ladders, ram: setup.ram, river: setup.river, marsh: setup.marsh,
       fog: setup.fog, dusk: setup.dusk, leaders: setup.leaders,
-      placement: setup.placement, zone0: setup.zone0, thirst: setup.thirst, generals: setup.generals, map: setup.map, morale: setup.morale, encircled: setup.encircled,
+      placement: setup.placement, zone0: setup.zone0, thirst: setup.thirst, generals: setup.generals, map: setup.map, morale: setup.morale, encircled: setup.encircled, arrivals: setup.arrivals,
     });
     this.bg = renderBattlefield(this.b, setup);
     if (this.use3D) this.load3D();
@@ -1712,6 +1713,16 @@ export class BattleScene implements Scene {
     const m = share - 0.5;
     ctx.fillText(b.surrenderOffered ? (b.pursuit ? 'The enemy is broken: pursuit!' : 'The enemy is broken') : Math.abs(m) < 0.06 ? 'The battle hangs in the balance'
       : m > 0 ? (m > 0.2 ? 'The day is yours' : 'The battle goes your way') : (m < -0.2 ? 'The day is going against you' : 'The battle turns against you'), VIEW_W / 2, y + 20);
+    const next = b.nextArrival();
+    if (next && !this.s.encircled) {
+      ctx.fillStyle = 'rgba(20,15,10,0.78)';
+      ctx.beginPath();
+      ctx.roundRect(x - 10, y + 30, w + 20, 20, 8);
+      ctx.fill();
+      ctx.fillStyle = next.side === 1 ? '#ff9a8a' : '#ffd27a';
+      const s = Math.ceil(next.inSec);
+      ctx.fillText(`${next.who} comes up in ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}${next.side === 1 ? ' · win before then, or get away' : ''}`, VIEW_W / 2, y + 40);
+    }
     const ring = this.s.encircled;
     if (ring) {
       const who = ring.side === 1 ? (this.s.enemyGeneral ?? 'the enemy') : 'your army';

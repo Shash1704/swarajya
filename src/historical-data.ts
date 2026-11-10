@@ -37,6 +37,8 @@ export interface Scenario {
   theirs: Reg[];
   zone0?: [number, number];
   thirst?: [number, number];
+  /** Enemy armies that come onto the field partway through (seconds into the battle). */
+  arrivals?: { at: number; who: string; regs: Reg[] }[];
   /** A ringed, starving army (see BattleOptions.encircled). */
   encircled?: { side: 0 | 1; starveSeconds: number; relief?: number[] };
   /** Each side's starting heart (1 = as usual). */
@@ -172,11 +174,11 @@ export const SCENARIOS: Scenario[] = [
     place: 'Rikabganj and Talkatora, outside Delhi',
     brief: [
       'Saadat Khan of Awadh boasted that he had driven the Marathas back across the Chambal. To give him the lie, Bajirao left the main Mughal armies behind him on the Agra road and rode for the capital by the Jat and Mewati hill tracks, covering in days what an imperial army marched in weeks.',
-      'His horse now camps by the Talkatora tank, at the gates of Delhi. Emperor Muhammad Shah sends Mir Hasan Khan Koka out of the city against him, with the imperial household troopers, the nobles\' contingents, matchlockmen and his elephant.',
-      'The Mughals come on in the old order: matchlocks in front, the heavy horse of the vanguard behind them, the commander on his elephant among the household troopers, and a wing to each side. Draw them away from their guns, then fall on their flanks. Feigned flight (F) was the Marathas\' oldest trick.',
+      'His horse now camps by the Talkatora tank, at the gates of Delhi. Emperor Muhammad Shah sends Mir Hasan Khan Koka out of the city against him with the imperial household cavalry. But the Vizier, Qamar-ud-din Khan, is hurrying back towards Delhi with the main imperial army, and the Mughal armies Bajirao left behind on the Agra road are turning after him.',
+      'Break Koka\'s horse quickly. In a few minutes the Vizier\'s army comes up from the east, and then you must win against both, or get away as Bajirao did. Draw the heavy horse out of their order and fall on their flanks; feigned flight (F) was the Marathas\' oldest trick.',
     ],
-    marathas: 'Peshwa Bajirao with his household horse in reserve; a screen of light horse before the camp; Ranoji Shinde\'s horse on the left wing and Malharrao Holkar\'s on the right, lying back on the flanks; horse archers to gall the Mughal ranks. 16 regiments, all cavalry, after a long forced march.',
-    enemy: 'Mir Hasan Khan Koka on his elephant, with the Ahadi household troopers; matchlockmen at the front; the heavy horse of the vanguard; the nobles\' sowars on both wings. 12 regiments, the best armour in Hindustan.',
+    marathas: 'Peshwa Bajirao with his household horse in reserve; a screen of light horse before the camp; the left and right wings lying back on the flanks (which sardars led them is not recorded in the sources used here); horse archers to gall the Mughal ranks. 16 regiments, all cavalry, after a long forced march.',
+    enemy: 'Mir Hasan Khan Koka with the Emperor\'s household cavalry, a vanguard, a centre round his elephant and a wing to each side, and a few matchlockmen from the city. 11 regiments, almost all heavy horse. Coming up from the east after a few minutes: the Vizier Qamar-ud-din Khan with part of the main army (his guns are still on the road).',
     enemyName: 'Mughal Empire', enemyShort: 'Mughals', enemyColor: '#2f8f4e', enemyRgb: [47, 143, 78],
     playerGeneral: 'Peshwa Bajirao', enemyGeneral: 'Mir Hasan Khan Koka',
     leaders: [BAJIRAO, { morale: 1, melee: 1, charge: 1.05, horse: 1.05, defense: 1, fatigue: 1 }],
@@ -187,33 +189,47 @@ export const SCENARIOS: Scenario[] = [
       ['lightcav', 'the screen before the camp', 760, 760, UP],
       ['lightcav', 'the screen before the camp', 860, 760, UP],
       ['lightcav', 'the screen before the camp', 970, 760, UP],
-      ['shiledar', 'Ranoji Shinde\'s horse', 240, 640, UP + 0.4],
-      ['shiledar', 'Ranoji Shinde\'s horse', 250, 730, UP + 0.4],
-      ['lightcav', 'Ranoji Shinde\'s horse', 330, 680, UP + 0.4],
-      ['lightcav', 'Ranoji Shinde\'s horse', 335, 770, UP + 0.4],
-      ['shiledar', 'Malharrao Holkar\'s horse', 1380, 640, UP - 0.4],
-      ['shiledar', 'Malharrao Holkar\'s horse', 1370, 730, UP - 0.4],
-      ['lightcav', 'Malharrao Holkar\'s horse', 1290, 680, UP - 0.4],
-      ['lightcav', 'Malharrao Holkar\'s horse', 1285, 770, UP - 0.4],
+      ['shiledar', 'the Maratha left wing', 240, 640, UP + 0.4],
+      ['shiledar', 'the Maratha left wing', 250, 730, UP + 0.4],
+      ['lightcav', 'the Maratha left wing', 330, 680, UP + 0.4],
+      ['lightcav', 'the Maratha left wing', 335, 770, UP + 0.4],
+      ['shiledar', 'the Maratha right wing', 1380, 640, UP - 0.4],
+      ['shiledar', 'the Maratha right wing', 1370, 730, UP - 0.4],
+      ['lightcav', 'the Maratha right wing', 1290, 680, UP - 0.4],
+      ['lightcav', 'the Maratha right wing', 1285, 770, UP - 0.4],
       ['huzurat', 'the Peshwa\'s household horse', 780, 920, UP],
       ['huzurat', 'the Peshwa\'s own paga', 850, 920, UP],
       ['horsearcher', 'Maratha horse archers', 540, 720, UP],
       ['horsearcher', 'Maratha horse archers', 1080, 760, UP],
     ],
     theirs: [
-      ['musket', 'imperial matchlockmen', 700, 400, DOWN],
-      ['musket', 'imperial matchlockmen', 920, 400, DOWN],
-      ['heavycav', 'the vanguard (harawal)', 700, 320, DOWN],
-      ['heavycav', 'the vanguard (harawal)', 810, 315, DOWN],
-      ['heavycav', 'the vanguard (harawal)', 920, 320, DOWN],
-      ['ahadi', 'Ahadi household troopers', 740, 235, DOWN],
+      ['musket', 'matchlockmen from the city', 810, 400, DOWN],
+      ['heavycav', 'household horse of the vanguard', 700, 320, DOWN],
+      ['heavycav', 'household horse of the vanguard', 810, 315, DOWN],
+      ['heavycav', 'household horse of the vanguard', 920, 320, DOWN],
+      ['heavycav', 'the Emperor\'s household horse', 740, 235, DOWN],
       ['elephant', 'Mir Hasan Khan Koka\'s elephant', 810, 220, DOWN],
-      ['ahadi', 'Ahadi household troopers', 880, 235, DOWN],
-      ['heavycav', 'the nobles\' sowars, left wing', 470, 290, DOWN],
-      ['heavycav', 'the nobles\' sowars, left wing', 480, 365, DOWN],
-      ['heavycav', 'the nobles\' sowars, right wing', 1150, 290, DOWN],
-      ['heavycav', 'the nobles\' sowars, right wing', 1140, 365, DOWN],
+      ['heavycav', 'the Emperor\'s household horse', 880, 235, DOWN],
+      ['heavycav', 'household horse, left wing', 470, 290, DOWN],
+      ['heavycav', 'household horse, left wing', 480, 365, DOWN],
+      ['heavycav', 'household horse, right wing', 1150, 290, DOWN],
+      ['heavycav', 'household horse, right wing', 1140, 365, DOWN],
     ],
+    // Qamar-ud-din Khan comes up from the east with part of the main army; his guns are still on the road.
+    arrivals: [{
+      at: 90, who: 'The Vizier Qamar-ud-din Khan',
+      regs: [
+        ['elephant', 'the Vizier Qamar-ud-din Khan\'s elephant', 1560, 520, WEST],
+        ['heavycav', 'the Vizier\'s sowars', 1540, 400, WEST],
+        ['heavycav', 'the Vizier\'s sowars', 1545, 460, WEST],
+        ['heavycav', 'the Vizier\'s sowars', 1545, 580, WEST],
+        ['heavycav', 'the Vizier\'s sowars', 1540, 640, WEST],
+        ['rajput', 'Rajput horse in the Vizier\'s army', 1580, 330, WEST],
+        ['heavycav', 'the Vizier\'s sowars', 1580, 710, WEST],
+        ['musket', 'the Vizier\'s matchlockmen', 1590, 460, WEST],
+        ['musket', 'the Vizier\'s matchlockmen', 1590, 580, WEST],
+      ],
+    }],
     // Weary horses after the forced march.
     thirst: [0.05, 0],
     map: {
@@ -231,8 +247,8 @@ export const SCENARIOS: Scenario[] = [
         { x: 600, y: 1000, text: 'Bajirao\'s camp', size: 22 },
       ],
     },
-    generals: [12, 6],
-    history: 'At Rikabganj the Marathas routed the force that came out of Delhi, and Mir Hasan Khan Koka was carried from the field wounded. Bajirao did not storm the city: hearing that the Vizier Qamar-ud-din Khan was hurrying back with the main army, he drew off, skirmished with it at Badshahpur in failing light, and rode away by Narnaul. The raid showed all Hindustan that the Mughal capital lay open to the Maratha horse. Accounts of the numbers on each side differ widely.',
+    generals: [12, 5],
+    history: 'At Rikabganj the Marathas routed the force that came out of Delhi, and Mir Hasan Khan Koka was carried from the field wounded. Bajirao did not storm the city: hearing that the Vizier Qamar-ud-din Khan was hurrying back with the main army, he drew off rather than be caught between them, skirmished with it at Badshahpur in failing light, and rode away by Narnaul. The raid showed all Hindustan that the Mughal capital lay open to the Maratha horse. Accounts of the numbers on each side differ widely.',
   },
 ];
 

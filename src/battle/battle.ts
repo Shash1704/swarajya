@@ -42,6 +42,8 @@ export interface BattleOptions {
   generals?: [number, number];
   /** Each side's starting heart (e.g. 0.75: hungry and dispirited men start at three quarters of their usual morale, and cannot recover more). */
   morale?: [number, number];
+  /** Armies that march onto the field partway through the battle (e.g. the Vizier coming up at Delhi). */
+  arrivals?: Arrival[];
   /**
    * An army ringed in and starving (Palkhed): its hearts sink over `starveSeconds` until it breaks;
    * the `relief` regiments (indices in its list) march to it, and their arrival lifts it; it wins
@@ -51,6 +53,9 @@ export interface BattleOptions {
   /** Thirst or hunger: each side's regiments never rest below this fatigue. */
   thirst?: [number, number];
 }
+
+/** An army that reaches the field `at` seconds into the battle, where `spots` say. */
+export interface Arrival { side: 0 | 1; at: number; units: CUnit[]; spots: Spot[]; who: string }
 
 /** A regiment's starting place on the field, facing in radians (0 = east, pi/2 = south). */
 export interface Spot { x: number; y: number; face?: number }
@@ -263,6 +268,8 @@ export class Battle {
   private starveFrom = 0;
   reliefCame = false;
   brokeOut = false;
+  /** How many of opts.arrivals have reached the field. */
+  arrived = 0;
   /** Fog of war: the enemy regiments each side can see, and where it last saw the rest. */
   readonly fogOn: boolean;
   seen: [Set<number>, Set<number>] = [new Set(), new Set()];
@@ -1169,6 +1176,7 @@ export class Battle {
     this.floaters = this.floaters.filter((f) => f.t < 1.6);
 
     if (this.winner < 0) {
+      this.updateArrivals();
       this.updateRing();
       if (this.winner >= 0) return;
       this.updateBalance(dt);
@@ -1659,6 +1667,26 @@ export class Battle {
 
   /** Below this share of the field's strength, the enemy army breaks and its commander asks for terms. */
   static readonly SURRENDER = 0.2;
+
+  /** The next army still on its way, and the seconds until it arrives. */
+  nextArrival(): { who: string; side: 0 | 1; inSec: number } | null {
+    const a = this.opts.arrivals?.[this.arrived];
+    return a ? { who: a.who, side: a.side, inSec: Math.max(0, a.at - this.time) } : null;
+  }
+
+  private updateArrivals() {
+    const list = this.opts.arrivals;
+    while (list && this.arrived < list.length && this.time >= list[this.arrived].at) {
+      const a = list[this.arrived++];
+      const facing = this.homeTop(a.side) ? Math.PI / 2 : -Math.PI / 2;
+      a.units.forEach((u, i) => {
+        const p = a.spots[i] ?? a.spots[a.spots.length - 1];
+        this.addUnit(u, a.side, p.x, p.y, p.face ?? facing);
+      });
+      const p = a.spots[0];
+      if (p) this.float(p.x, p.y - 30, `${a.who} comes up!`, a.side === 1 ? '#ff8a7a' : '#ffe08a');
+    }
+  }
 
   /** The ring: hunger saps the ringed army, its relief marches to it, and its commander may break out. */
   private updateRing() {
