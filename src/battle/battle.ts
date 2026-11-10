@@ -199,6 +199,8 @@ function turnToward(u: BUnit, ang: number, maxStep: number) {
  * The high-ground edge: attacks from clearly higher ground hit harder, rising to double strength
  * when the attacker stands well above the target (a third of a hill's height or more).
  */
+/** How much of a downhill run a charge has behind it: 0 on the flat, 1 coming down a steep hill. */
+export const downhill = (dh: number) => Math.max(0, Math.min(1, (dh - 0.05) / 0.45));
 export const heightEdge = (dh: number) => 1 + Math.max(0, Math.min(1, (dh - 0.1) / 0.2));
 
 export const radiusOf = (t: UnitType) => {
@@ -738,9 +740,10 @@ export class Battle {
     const vy = straight ? dy / d : Math.sin(u.facing);
     const nimble = away || UNIT_STATS[u.type].cls === 'infantry' || UNIT_STATS[u.type].cls === 'missile';
     let k = off > 1.6 ? (nimble ? 0.4 : 0.2) : Math.max(nimble ? 0.6 : 0.35, Math.cos(off));
-    // Climbing slows a march; going downhill does not speed it up much.
+    // Climbing slows a march; running downhill gathers speed, horse most of all.
     const climb = this.height({ x: u.x + vx * 12, y: u.y + vy * 12 }) - this.height(u);
     if (climb > 0) k *= Math.max(0.55, 1 - climb * 6);
+    else if (climb < 0 && !away) k *= 1 + Math.min(0.3, -climb * (UNIT_STATS[u.type].cls === 'cavalry' ? 5 : 2.5));
     const s = Math.min(speed * k * dt, d - stop);
     u.x += vx * s;
     u.y += vy * s;
@@ -880,6 +883,8 @@ export class Battle {
         const st = UNIT_STATS[u.type];
         if (u.contactTime === 0 && u.movingT > 0.4 && (st.charge > 1.1 || st.cls === 'infantry') && !u.climbing) {
           u.chargeT = st.cls === 'infantry' ? 1.6 : 2.5;
+          // Charging down a slope carries the impetus further.
+          u.chargeT *= 1 + downhill(this.height(u) - this.height(contact)) * 0.5;
           const zone = this.attackZone(u, contact);
           const intoFoot = UNIT_STATS[contact.type].cls === 'infantry' && contact.state === 'ok';
           const label = zone === 'front' ? 'Charge!' : zone === 'flank' ? 'Flank charge!' : 'Charge from behind!';
@@ -1426,7 +1431,11 @@ export class Battle {
 
     // The charge.
     if (a.chargeT > 0 && !this.inRiver(a) && !this.inMarsh(a)) {
-      const slope = (this.height(a) - this.height(t) > 0.2 ? 1.2 : 1)
+      // Downhill: up to x2.2 for horse, x1.6 for foot, and the shock shakes the men struck.
+      const down = downhill(this.height(a) - this.height(t));
+      const slopeK = 1 + down * (horse ? 1.2 : sa.cls === 'infantry' ? 0.6 : 0.25);
+      if (down > 0) t.moraleHit += down * (horse ? 10 : 5) * dt;
+      const slope = slopeK
         * (a.formation === 'wedge' ? 1.3 : 1) * this.leaders[a.side].charge
         * (this.opts.rain && horse ? 0.8 : 1) * (1 - 0.4 * a.fatigue);
       if (horse && tFoot && zone === 'front' && t.state === 'ok' && (t.formation === 'loose' || caught)) {
@@ -1436,7 +1445,9 @@ export class Battle {
         // Head-on into a formed infantry line the charge breaks, and the riders pay for it:
         // spears and pikes most of all, a braced hedge worst of all.
         const k = t.formation === 'brace' ? 1.6 : t.formation === 'tight' ? 1.2 : 1;
-        const recoil = (MELEE_RATE * t.men * st.melee * (st.antiLarge > 1 ? 2.4 : 1.3) * k * dt) / sa.defense;
+        // Riders coming down a slope crash through: the line gives way before it can punish them.
+        mult *= 1 + (slopeK - 1) * 0.8;
+        const recoil = (MELEE_RATE * t.men * st.melee * (st.antiLarge > 1 ? 2.4 : 1.3) * k * dt) / (sa.defense * slopeK);
         a.dmgMelee += recoil;
         a.moraleHit += 3 * dt;
       } else if (st.antiLarge > 1 && isLarge(a.type) && zone === 'front' && t.state === 'ok') {

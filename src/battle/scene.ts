@@ -2013,11 +2013,11 @@ function renderBattlefield(b: Battle, s: BattleSetup): HTMLCanvasElement {
     r.pts.forEach(([x, y], i) => (i ? path.lineTo(x, y) : path.moveTo(x, y)));
     g.lineCap = 'round';
     g.lineJoin = 'round';
-    g.strokeStyle = 'rgba(132,150,96,0.6)'; // reedy banks
-    g.lineWidth = r.w + 34;
+    g.strokeStyle = 'rgba(132,150,96,0.6)'; // reedy banks (narrower for a small stream)
+    g.lineWidth = r.w + Math.min(34, r.w * 1.2);
     g.stroke(path);
     g.strokeStyle = 'rgba(92,72,44,0.95)';
-    g.lineWidth = r.w + 10;
+    g.lineWidth = r.w + Math.min(10, r.w * 0.4);
     g.stroke(path);
     g.strokeStyle = '#3f74a0';
     g.lineWidth = r.w;
