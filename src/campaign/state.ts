@@ -19,6 +19,8 @@ export interface CUnit {
   men: number;
   /** Battle experience; see vetRank. */
   xp?: number;
+  /** Historical battles: whose men these are (e.g. "Holkar's horse"). */
+  label?: string;
 }
 
 /** What an army means to do when it gets where it is going. */

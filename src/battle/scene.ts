@@ -5,7 +5,7 @@ import { RNG } from '../rng';
 import { FORMATION_HELP, FORMATION_NAMES, type Formation, formationsFor, UNIT_STATS, VET_NAMES } from '../data';
 import { drawTileSymbol, inkFor, symbolEl, tierBadge } from '../symbols';
 import type { CUnit, Faction } from '../campaign/state';
-import { Battle, type BUnit, FIELD_H, FIELD_W, type LeaderMods, radiusOf, type Terrain } from './battle';
+import { Battle, type BUnit, FIELD_H, FIELD_W, type LeaderMods, type BattleOptions, radiusOf, type Terrain } from './battle';
 import { planSide } from './ai';
 import type { View3D } from './view3d';
 
@@ -36,6 +36,13 @@ export interface BattleSetup {
   leaders?: [LeaderMods, LeaderMods];
   /** One line on each commander's gifts, for the side panel. */
   leaderNotes?: [string, string];
+  /** Historical battles: set starting places, the player's deployment area, and thirst. */
+  placement?: BattleOptions['placement'];
+  zone0?: [number, number];
+  thirst?: [number, number];
+  generals?: [number, number];
+  /** The button that ends the battle (default: back to the campaign map). */
+  doneLabel?: string;
   /** draw: night fell with neither side broken. */
   onDone(playerWon: boolean, draw?: boolean, generalLost?: [boolean, boolean]): void;
 }
@@ -99,6 +106,7 @@ export class BattleScene implements Scene {
       mode: setup.mode, playerAttacks: setup.playerAttacks, seed: setup.seed, terrain: setup.terrain,
       rain: setup.rain, walls: setup.walls, ladders: setup.ladders, ram: setup.ram, river: setup.river, marsh: setup.marsh,
       fog: setup.fog, dusk: setup.dusk, leaders: setup.leaders,
+      placement: setup.placement, zone0: setup.zone0, thirst: setup.thirst, generals: setup.generals,
     });
     this.bg = renderBattlefield(this.b, setup);
     if (this.use3D) this.load3D();
@@ -227,10 +235,10 @@ export class BattleScene implements Scene {
     showModal(draw ? 'Nightfall' : won ? 'Victory!' : 'Defeat', h('div', {},
       h('p', {}, text),
       h('div', { class: 'versus' },
-        h('div', { class: 'card' }, h('h3', {}, swatch(s.playerFaction.color), 'Your losses'), h('div', {}, `${before[0] - after[0]} of ${before[0]} men`)),
-        h('div', { class: 'card' }, h('h3', {}, swatch(s.enemyFaction.color), 'Enemy losses'), h('div', {}, `${before[1] - after[1]} of ${before[1]} men`)),
+        h('div', { class: 'card' }, h('h3', {}, swatch(s.playerFaction.color), 'Your losses'), h('div', {}, `${Math.round(before[0] - after[0])} of ${Math.round(before[0])} men`)),
+        h('div', { class: 'card' }, h('h3', {}, swatch(s.enemyFaction.color), 'Enemy losses'), h('div', {}, `${Math.round(before[1] - after[1])} of ${Math.round(before[1])} men`)),
       ),
-    ), [{ label: 'Return to the campaign map', primary: true, onClick: () => { hideModal(); s.onDone(won, draw, [...this.b.generalLost] as [boolean, boolean]); } }]);
+    ), [{ label: s.doneLabel ?? 'Return to the campaign map', primary: true, onClick: () => { hideModal(); s.onDone(won, draw, [...this.b.generalLost] as [boolean, boolean]); } }]);
   }
 
   private say(msg: string) {
@@ -479,6 +487,20 @@ export class BattleScene implements Scene {
     return out;
   }
 
+  /** Deployment: no regiment may start within charging distance of the enemy. */
+  private keepClear(u: BUnit) {
+    const CLEAR = 170;
+    for (let pass = 0; pass < 4; pass++) {
+      const e = this.b.units.find((o) => o.side === 1 && Math.hypot(o.x - u.x, o.y - u.y) < CLEAR);
+      if (!e) return;
+      const d = Math.hypot(u.x - e.x, u.y - e.y) || 1;
+      const k = (u.x - e.x) / d;
+      const m = d < 1.5 ? 1 : (u.y - e.y) / d;
+      u.x = Math.max(15, Math.min(FIELD_W - 15, e.x + k * CLEAR));
+      u.y = Math.max(15, Math.min(FIELD_H - 15, e.y + m * CLEAR));
+    }
+  }
+
   /** Forms the selected regiments up on a drawn line, facing square to it. */
   private issueLine(a: [number, number], b: [number, number]) {
     const slots = this.lineSlots(a, b);
@@ -491,6 +513,7 @@ export class BattleScene implements Scene {
         s.u.y = Math.max(y0, Math.min(y1, s.y));
         s.u.facing = face;
         s.u.order = { kind: 'hold', face };
+        this.keepClear(s.u);
       }
       return;
     }
@@ -574,6 +597,7 @@ export class BattleScene implements Scene {
         const p = spot(u);
         u.x = p.x;
         u.y = Math.max(y0, Math.min(y1, p.y));
+        this.keepClear(u);
       }
       return;
     }
@@ -1664,7 +1688,7 @@ export class BattleScene implements Scene {
       this.b.inRiver(u) ? 'wading the river!' : '', this.b.onFord(u) ? 'at a ford' : '', this.b.inMarsh(u) ? 'in marsh' : '', this.b.inVillage(u) ? 'in a village' : '']
       .filter(Boolean).join(', ');
     const lines = [
-      `${u.side === 0 ? 'Your' : 'Enemy'} ${st.name}`,
+      `${u.side === 0 ? 'Your' : 'Enemy'} ${st.name}${u.ref.label ? `: ${u.ref.label}` : ''}`,
       `${Math.ceil(u.men)}/${u.maxMen} ${st.cls === 'elephant' ? 'elephants' : 'men'} · morale ${Math.round(u.morale)} · tier ${st.tier} · ${VET_NAMES[u.rank]}`,
       `${FORMATION_NAMES[u.formation]} · ${fatigueName(u.fatigue)}${u.maxAmmo > 0 && Number.isFinite(u.maxAmmo) ? ` · ammo ${Math.round((u.ammo / u.maxAmmo) * 100)}%` : ''}`,
       statusOf(u, this.b) + (where ? ` · ${where}` : ''),

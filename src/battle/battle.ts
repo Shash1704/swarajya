@@ -32,7 +32,18 @@ export interface BattleOptions {
   dusk?: boolean;
   /** The two commanders' gifts: [player side, enemy side]. */
   leaders?: [LeaderMods, LeaderMods];
+  /** Set starting places for each side's regiments, in order (historical battles). */
+  placement?: [Spot[] | undefined, Spot[] | undefined];
+  /** Where the player may move regiments before the battle (y range); default: the bottom of the field. */
+  zone0?: [number, number];
+  /** Which regiment (by index in each side's list) the commander rides with; default: the strongest. */
+  generals?: [number, number];
+  /** Thirst or hunger: each side's regiments never rest below this fatigue. */
+  thirst?: [number, number];
 }
+
+/** A regiment's starting place on the field, facing in radians (0 = east, pi/2 = south). */
+export interface Spot { x: number; y: number; face?: number }
 
 /** How a commander's traits and experience shape his side in battle. */
 export interface LeaderMods {
@@ -237,11 +248,15 @@ export class Battle {
     if (opts.mode === 'siege') this.makeWalls();
     this.deploy(player, 0);
     this.deploy(enemy, 1);
+    if (opts.thirst) for (const u of this.units) u.fatigue = opts.thirst[u.side];
     // Each commander rides with the strongest regiment on his side.
     for (const side of [0, 1] as const) {
       const best = this.units.filter((u) => u.side === side)
         .sort((a, c) => c.men * UNIT_STATS[c.type].value - a.men * UNIT_STATS[a.type].value)[0];
       if (best) this.generalIds[side] = best.id;
+      const pick = opts.generals?.[side];
+      const set = pick !== undefined ? this.units.filter((u) => u.side === side)[pick] : undefined;
+      if (set) this.generalIds[side] = set.id;
     }
     this.updateVision();
   }
@@ -489,6 +504,14 @@ export class Battle {
     const top = this.homeTop(side);
     const facing = top ? Math.PI / 2 : -Math.PI / 2;
     const dir = top ? -1 : 1; // +1 means "further back" is down the screen
+    const spots = this.opts.placement?.[side];
+    if (spots) {
+      cunits.forEach((u, i) => {
+        const p = spots[i] ?? { x: FIELD_W / 2 + (i % 8 - 4) * 60, y: FIELD_H * (top ? 0.2 : 0.8) };
+        this.addUnit(u, side, p.x, p.y, p.face ?? facing);
+      });
+      return;
+    }
     const cx = FIELD_W / 2;
     const gap = 64;
     const rowGap = 58;
@@ -567,6 +590,7 @@ export class Battle {
 
   /** Deployment-phase zone for a side (y range). */
   deployZone(side: 0 | 1): [number, number] {
+    if (side === 0 && this.opts.zone0) return this.opts.zone0;
     const W = this.walls;
     if (W && side === this.defender) return [20, W.y + W.t];
     return this.homeTop(side) ? [20, FIELD_H * 0.4] : [FIELD_H * 0.6, FIELD_H - 20];
@@ -895,7 +919,7 @@ export class Battle {
         if (this.opts.rain) tire *= 1.2;
       } else tire = u.calm > 2 ? -0.035 : -0.02;
       if (tire > 0) tire *= this.leaders[u.side].fatigue * (1 - u.rank * 0.08) * (c === 'artillery' ? 0.3 : 1);
-      u.fatigue = Math.max(0, Math.min(1, u.fatigue + tire * dt));
+      u.fatigue = Math.max(this.opts.thirst?.[u.side] ?? 0, Math.min(1, u.fatigue + tire * dt));
       if (c === 'elephant') {
         u.panic = Math.max(0, u.panic - (u.calm > 2 ? 0.06 : 0.02) * dt);
         if (u.panic >= 1 && this.rng.chance(0.4 * dt)) {

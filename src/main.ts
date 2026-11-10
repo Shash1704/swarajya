@@ -4,6 +4,7 @@ import { CampaignScene } from './campaign/scene';
 import { newGame, ORIGINS, type Origin } from './campaign/state';
 import { applyPlayerCharacter } from './campaign/characters';
 import { h, hideModal, showModal } from './ui';
+import { showHistorical } from './historical';
 
 const canvas = document.getElementById('view') as HTMLCanvasElement;
 const canvas3d = document.getElementById('view3d') as HTMLCanvasElement;
@@ -157,7 +158,7 @@ const begin = () => {
   hideModal();
   (app.scene as { renderUI?: (f?: boolean) => void } | null)?.renderUI?.(true);
 };
-showModal(
+const showStart = () => showModal(
   'Swarajya: January 1670',
   h('div', {},
     h('p', {}, 'Five years ago, at Purandar, Shivaji surrendered twenty-three forts to the Mughal general Jai Singh. Now Aurangzeb is distracted, and the Marathas are ready to take them back.'),
@@ -175,5 +176,9 @@ showModal(
     ),
     h('p', { class: 'muted' }, `Map seed ${seed}. Drag to pan, scroll to zoom. The world is paused until you press Space.`),
   ),
-  [{ label: 'Har Har Mahadev!', primary: true, onClick: begin }],
+  [
+    { label: '⚔ Historical battles', onClick: () => { hideModal(); showHistorical(game.factions[0], showStart); } },
+    { label: 'Har Har Mahadev!', primary: true, onClick: begin },
+  ],
 );
+showStart();
