@@ -119,6 +119,7 @@ function smoothLine(raw: Pt[], closed: boolean): Pt[] {
  */
 export class MapRenderer {
   private prov: Int16Array;
+  private elev: Float32Array;
   private seaImg: HTMLCanvasElement;
   private landImg: HTMLCanvasElement;
   /** Mountain and forest symbols, drawn in vector so they stay crisp at any zoom. */
@@ -137,6 +138,7 @@ export class MapRenderer {
 
   constructor(map: MapData, seed: number, provinceCount: number) {
     this.prov = map.prov;
+    this.elev = map.elev;
     [this.seaImg, this.landImg] = paintTerrain(map, seed);
     [this.peaks, this.peakShadow, this.trees] = reliefSymbols(map, seed);
     this.buildShapes(provinceCount);
@@ -315,7 +317,72 @@ export class MapRenderer {
   }
 
   /** `symbols`: draw the little mountain and forest marks (off when the map has real 3D relief). */
-  draw(ctx: CanvasRenderingContext2D, state: GameState, v: View, selected: number, targets: Set<number>, symbols = true) {
+  /** Farm fields round every town and village, and dirt roads between neighbouring towns (built once). */
+  private countryside: { fields: { path: Path2D; color: string }[]; roads: Path2D } | null = null;
+
+  private buildCountryside(state: GameState) {
+    const fields: { path: Path2D; color: string }[] = [];
+    const tints = ['rgba(128,150,70,0.55)', 'rgba(170,160,80,0.55)', 'rgba(150,120,70,0.5)', 'rgba(110,140,60,0.5)', 'rgba(196,176,96,0.5)'];
+    let seed = 11;
+    const rand = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+    const land = (x: number, y: number) => this.provAt(x, y) >= 0;
+    const patch = (cx: number, cy: number, r0: number, r1: number, n: number) => {
+      for (let k = 0; k < n; k++) {
+        const a = rand() * Math.PI * 2;
+        const d = r0 + rand() * (r1 - r0);
+        const x = cx + Math.cos(a) * d;
+        const y = cy + Math.sin(a) * d;
+        if (!land(x, y)) continue;
+        const w = 1.6 + rand() * 2.6;
+        const h = 1.2 + rand() * 1.8;
+        const rot = rand() * Math.PI;
+        const c = Math.cos(rot);
+        const s = Math.sin(rot);
+        const path = new Path2D();
+        for (const [px, py] of [[-w, -h], [w, -h], [w, h], [-w, h]]) {
+          const X = x + px * c - py * s;
+          const Y = y + px * s + py * c;
+          if (px === -w && py === -h) path.moveTo(X, Y);
+          else path.lineTo(X, Y);
+        }
+        path.closePath();
+        fields.push({ path, color: tints[Math.floor(rand() * tints.length)] });
+      }
+    };
+    for (const p of state.provinces) patch(p.x, p.y, 7, 16 + p.wealth * 0.6, 10 + p.wealth);
+    for (const v of state.villages) patch(v.x, v.y, 2, 8, 7);
+    // Roads: a gently bent dirt track to each neighbour, if it runs over land and not over the peaks.
+    const roads = new Path2D();
+    const elevAt = (x: number, y: number) => this.elev[Math.max(0, Math.min(MH - 1, Math.floor(y / CELL))) * MW + Math.max(0, Math.min(MW - 1, Math.floor(x / CELL)))];
+    for (const p of state.provinces) {
+      for (const qi of p.neighbors) {
+        if (qi <= p.id) continue;
+        const q = state.provinces[qi];
+        const d = Math.hypot(q.x - p.x, q.y - p.y);
+        if (d > 140) continue;
+        const bend = (rand() - 0.5) * d * 0.25;
+        const mx = (p.x + q.x) / 2 + ((q.y - p.y) / d) * bend;
+        const my = (p.y + q.y) / 2 - ((q.x - p.x) / d) * bend;
+        let ok = true;
+        for (let k = 1; k < 20 && ok; k++) {
+          const s = k / 20;
+          const x = (1 - s) * (1 - s) * p.x + 2 * (1 - s) * s * mx + s * s * q.x;
+          const y = (1 - s) * (1 - s) * p.y + 2 * (1 - s) * s * my + s * s * q.y;
+          if (!land(x, y) || elevAt(x, y) > 0.62) ok = false;
+        }
+        if (!ok) continue;
+        roads.moveTo(p.x, p.y);
+        roads.quadraticCurveTo(mx, my, q.x, q.y);
+      }
+    }
+    this.countryside = { fields, roads };
+  }
+
+  /**
+   * natural: the 3D map's look, as in Bannerlord: the land in its own colours (fields, roads, snow),
+   * the realms as a light wash with a band of their colour along their borders.
+   */
+  draw(ctx: CanvasRenderingContext2D, state: GameState, v: View, selected: number, targets: Set<number>, symbols = true, natural = false) {
     const z = v.z;
     const px = (n: number) => n / z; // screen pixels -> world units
     ctx.save();
@@ -345,15 +412,41 @@ export class MapRenderer {
     ctx.globalCompositeOperation = 'multiply';
     for (const p of provinces) {
       const f = factions[p.owner];
-      const a = f.id === IND ? 0.2 : 0.66;
+      const a = natural ? (f.id === IND ? 0.04 : 0.16) : f.id === IND ? 0.2 : 0.66;
       ctx.fillStyle = `rgba(${f.rgb[0]},${f.rgb[1]},${f.rgb[2]},${a})`;
       ctx.fill(this.provPaths[p.id], 'evenodd');
     }
     // A wash of light keeps the colours soft rather than muddy.
     ctx.globalCompositeOperation = 'screen';
-    ctx.fillStyle = 'rgba(255,248,230,0.16)';
+    ctx.fillStyle = `rgba(255,248,230,${natural ? 0.06 : 0.16})`;
     ctx.fill(this.landClip);
     ctx.globalCompositeOperation = 'source-over';
+    if (natural) {
+      if (!this.countryside) this.buildCountryside(state);
+      const cs = this.countryside!;
+      for (const f of cs.fields) {
+        ctx.fillStyle = f.color;
+        ctx.fill(f.path);
+      }
+      ctx.strokeStyle = 'rgba(150,118,80,0.75)';
+      ctx.lineWidth = 1.1;
+      ctx.stroke(cs.roads);
+      ctx.strokeStyle = 'rgba(206,182,138,0.6)';
+      ctx.lineWidth = 0.5;
+      ctx.stroke(cs.roads);
+      // Each realm's colour as a band just inside its borders.
+      for (const p of provinces) {
+        const f = factions[p.owner];
+        if (f.id === IND) continue;
+        ctx.save();
+        ctx.clip(this.provPaths[p.id], 'evenodd');
+        // Only along the realm's own frontier, not between its provinces.
+        ctx.strokeStyle = `rgba(${f.rgb[0]},${f.rgb[1]},${f.rgb[2]},0.6)`;
+        ctx.lineWidth = 2.2;
+        ctx.stroke(this.realmPath);
+        ctx.restore();
+      }
+    }
 
     // Mountains and forests as map symbols over the paint.
     if (z >= 0.55 && symbols) {

@@ -21,6 +21,7 @@ import { CELL, MH, MW, WH, WW } from '../geo';
 import { engineFor } from '../three/engine';
 import { groundGrain, plasterTexture, stoneTexture, waterRipples } from '../three/textures';
 import type { Army, GameState } from './state';
+import { buildClouds, buildForests, buildRoads, buildSettlements, daylight, Many, type Roads, type Settlements, type Sky, toX, toZ, type Traveller } from './mapLife';
 
 /**
  * The campaign map in 3D (Babylon.js): India in relief from the map's own
@@ -31,58 +32,12 @@ import type { Army, GameState } from './state';
  */
 
 /** Height (world px) of the highest ground. */
-const HS = 55;
+const HS = 64;
 /** Map cells per terrain vertex. */
 const K = 2;
 const GW = Math.ceil(MW / K) + 1;
 const GH = Math.ceil(MH / K) + 1;
 const WATER = 0.8;
-
-const toX = (x: number) => x - WW / 2;
-const toZ = (y: number) => WH / 2 - y;
-
-/** Thin-instance helper: one mesh drawn many times with per-instance matrices (and colours). */
-class Many {
-  private mats = new Float32Array(16 * 32);
-  private cols: Float32Array | null;
-  private n = 0;
-  private m = new Matrix();
-  private q = new Quaternion();
-  constructor(readonly mesh: Mesh, coloured: boolean) {
-    this.cols = coloured ? new Float32Array(4 * 32) : null;
-    mesh.thinInstanceSetBuffer('matrix', this.mats, 16, false);
-    if (this.cols) mesh.thinInstanceSetBuffer('color', this.cols, 4, false);
-    mesh.thinInstanceCount = 0;
-    mesh.alwaysSelectAsActiveMesh = true;
-  }
-  begin() {
-    this.n = 0;
-  }
-  add(x: number, y: number, z: number, yaw: number, s: [number, number, number], col?: [number, number, number]) {
-    if ((this.n + 1) * 16 > this.mats.length) {
-      const m = new Float32Array(this.mats.length * 2);
-      m.set(this.mats);
-      this.mats = m;
-      this.mesh.thinInstanceSetBuffer('matrix', this.mats, 16, false);
-      if (this.cols) {
-        const c = new Float32Array(this.cols.length * 2);
-        c.set(this.cols);
-        this.cols = c;
-        this.mesh.thinInstanceSetBuffer('color', this.cols, 4, false);
-      }
-    }
-    Quaternion.RotationYawPitchRollToRef(yaw, 0, 0, this.q);
-    Matrix.ComposeToRef(new Vector3(s[0], s[1], s[2]), this.q, new Vector3(x, y, z), this.m);
-    this.m.copyToArray(this.mats, this.n * 16);
-    if (this.cols) this.cols.set([...(col ?? [1, 1, 1]), 1], this.n * 4);
-    this.n++;
-  }
-  end() {
-    this.mesh.thinInstanceCount = this.n;
-    this.mesh.thinInstanceBufferUpdated('matrix');
-    if (this.cols) this.mesh.thinInstanceBufferUpdated('color');
-  }
-}
 
 export class Map3D {
   private engine: Engine;
@@ -94,7 +49,13 @@ export class Map3D {
   private skinScale: number;
   private ripples: Texture;
   private water: Mesh;
-  private troops: { body: Many; head: Many; horse: Many };
+  private troops: { body: Many; head: Many; horse: Many; flag: Many; pole: Many };
+  private towns: Settlements;
+  private roads: Roads;
+  private sky: Sky;
+  private sun: DirectionalLight;
+  private hemi: HemisphericLight;
+  private landMat!: StandardMaterial;
 
   constructor(canvas: HTMLCanvasElement, state: GameState) {
     this.engine = engineFor(canvas);
@@ -110,8 +71,8 @@ export class Map3D {
     cam.maxZ = 12000;
     cam.fov = 0.7;
     cam.lowerBetaLimit = 0.15;
-    cam.upperBetaLimit = 1.25;
-    cam.lowerRadiusLimit = 90;
+    cam.upperBetaLimit = 1.32;
+    cam.lowerRadiusLimit = 32;
     cam.upperRadiusLimit = 3400;
     this.camera = cam;
 
@@ -121,6 +82,8 @@ export class Map3D {
     const sun = new DirectionalLight('mapSun', new Vector3(0.6, -0.8, 0.5), scene);
     sun.intensity = 0.7;
     sun.diffuse = new Color3(1, 0.95, 0.85);
+    this.sun = sun;
+    this.hemi = sky;
 
     // The painted map is the ground's skin: as sharp as the GPU allows, up to 2 texels per world px.
     const maxTex = this.engine.getCaps().maxTextureSize;
@@ -135,7 +98,11 @@ export class Map3D {
     this.buildGround();
     this.ripples = waterRipples(scene);
     this.water = this.buildWater();
-    this.buildSettlements(state);
+    const ground = (x: number, y: number) => this.groundY(x, y);
+    this.towns = buildSettlements(scene, state, ground, WATER, { stone: stoneTexture(scene), plaster: plasterTexture(scene) });
+    buildForests(scene, state, ground);
+    this.roads = buildRoads(scene, state, ground, WATER);
+    this.sky = buildClouds(scene);
     const body = CreateCylinder('tBody', { height: 2.6, diameterTop: 0.8, diameterBottom: 1.2, tessellation: 6 }, scene);
     body.bakeTransformIntoVertices(Matrix.Translation(0, 1.3, 0));
     body.material = this.mat('tBodyM', [1, 1, 1]);
@@ -145,7 +112,12 @@ export class Map3D {
     const horse = CreateBox('tHorse', { width: 1, height: 1.5, depth: 3 }, scene);
     horse.bakeTransformIntoVertices(Matrix.Translation(0, 1.6, 0));
     horse.material = this.mat('tHorseM', [1, 1, 1]);
-    this.troops = { body: new Many(body, true), head: new Many(head, false), horse: new Many(horse, true) };
+    const flag = CreateBox('tFlag', { width: 2.2, height: 1.4, depth: 0.1 }, scene);
+    flag.material = this.mat('tFlagM', [1, 1, 1]);
+    (flag.material as StandardMaterial).emissiveColor = new Color3(0.25, 0.25, 0.25);
+    const pole = CreateCylinder('tPole', { height: 1, diameter: 0.18, tessellation: 4 }, scene);
+    pole.material = this.mat('tPoleM', [0.35, 0.26, 0.18]);
+    this.troops = { body: new Many(body, true), head: new Many(head, false), horse: new Many(horse, true), flag: new Many(flag, true), pole: new Many(pole, false) };
   }
 
   // ---------------------------------------------------------------- terrain
@@ -226,6 +198,7 @@ export class Map3D {
     // A little self-light keeps the realm colours bright, as on the painted map.
     mat.emissiveColor = new Color3(0.3, 0.29, 0.27);
     ground.material = mat;
+    this.landMat = mat;
     // Sea floor beyond the map, the same deep blue as the painted sea, so there is no seam.
     const floor = CreateGround('seaFloor', { width: WW * 4, height: WH * 4 }, scene);
     floor.position.y = -26;
@@ -262,74 +235,6 @@ export class Map3D {
     return m;
   }
 
-  /** Forts get towers and a curtain wall, cities a huddle of houses, ports a quay; capitals are larger. */
-  private buildSettlements(state: GameState) {
-    const scene = this.scene;
-    const stone = this.mat('fortStone', [1, 1, 1], stoneTexture(scene));
-    const plaster = this.mat('plaster', [1, 1, 1], plasterTexture(scene));
-    const tower = CreateCylinder('mTower', { height: 1, diameter: 1, tessellation: 8 }, scene);
-    tower.material = stone;
-    const wall = CreateCylinder('mWall', { height: 1, diameter: 1, tessellation: 10 }, scene);
-    wall.material = stone;
-    const house = CreateBox('mHouse', { size: 1 }, scene);
-    house.material = plaster;
-    const roof = CreateCylinder('mRoof', { height: 1, diameterTop: 0, diameterBottom: 1, tessellation: 4 }, scene);
-    roof.material = this.mat('mRoofM', [0.55, 0.3, 0.18]);
-    const quay = CreateBox('mQuay', { size: 1 }, scene);
-    quay.material = this.mat('mQuayM', [0.45, 0.34, 0.22]);
-    const towers = new Many(tower, false);
-    const walls = new Many(wall, false);
-    const houses = new Many(house, false);
-    const roofs = new Many(roof, false);
-    const quays = new Many(quay, false);
-    let seed = 7;
-    const rand = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
-    for (const p of state.provinces) {
-      const y0 = this.surfaceY(p.x, p.y);
-      const X = toX(p.x);
-      const Z = toZ(p.y);
-      const big = p.capitalOf >= 0 ? 1.4 : 1;
-      if (p.kind === 'fort') {
-        const r = (2.2 + p.walls * 0.5) * big;
-        walls.add(X, y0 + 0.7, Z, 0, [r * 2, 1.4, r * 2]);
-        for (let k = 0; k < 4; k++) {
-          const a = (k / 4) * Math.PI * 2 + 0.4;
-          towers.add(X + Math.cos(a) * r, y0 + 1.4, Z + Math.sin(a) * r, 0, [0.9, 2.8, 0.9]);
-        }
-        towers.add(X, y0 + 2.2 * big, Z, 0, [1.6 * big, 4.4 * big, 1.6 * big]);
-      } else {
-        const n = Math.round((4 + Math.min(6, p.wealth / 2)) * big);
-        for (let k = 0; k < n; k++) {
-          const a = rand() * Math.PI * 2;
-          const d = rand() * 3.2 * big;
-          const hx = X + Math.cos(a) * d;
-          const hz = Z + Math.sin(a) * d;
-          const yaw = rand() * Math.PI;
-          const s = 0.9 + rand() * 0.7;
-          houses.add(hx, y0 + 0.6 * s, hz, yaw, [1.4 * s, 1.2 * s, 1.8 * s]);
-          roofs.add(hx, y0 + 1.6 * s, hz, yaw + Math.PI / 4, [1.9 * s, 0.9 * s, 1.9 * s]);
-        }
-        if (p.walls > 0) walls.add(X, y0 + 0.5, Z, 0, [8 * big, 1, 8 * big]);
-        if (p.kind === 'port') quays.add(X - 4, WATER + 0.3, Z - 3, 0.4, [6, 0.6, 1.6]);
-      }
-    }
-    // Villages: three or four huts each, out in the countryside.
-    for (const v of state.villages) {
-      const y0 = this.surfaceY(v.x, v.y);
-      const n = 3 + (v.wealth > 14 ? 1 : 0);
-      for (let k = 0; k < n; k++) {
-        const a = rand() * Math.PI * 2;
-        const d = 0.6 + rand() * 1.6;
-        const hx = toX(v.x) + Math.cos(a) * d;
-        const hz = toZ(v.y) + Math.sin(a) * d;
-        const yaw = rand() * Math.PI;
-        houses.add(hx, y0 + 0.4, hz, yaw, [0.9, 0.8, 1.1]);
-        roofs.add(hx, y0 + 1.1, hz, yaw + Math.PI / 4, [1.3, 0.6, 1.3]);
-      }
-    }
-    for (const m of [towers, walls, houses, roofs, quays]) m.end();
-  }
-
   // ---------------------------------------------------------------- per frame
 
   /** Repaints the map skin (realm colours change, a province is selected...). */
@@ -342,22 +247,65 @@ export class Map3D {
     this.skinTex.update(true);
   }
 
-  render(t: number, armies: Army[], color: (owner: number) => [number, number, number], cavalry: (a: Army) => boolean) {
+  /**
+   * t: real seconds (for motion); day: the game day (for travellers); hour: 0..1 through the day of
+   * the light (noon at 0.5). Returns the caravans and villagers on the roads, for their nameplates.
+   */
+  render(t: number, day: number, hour: number, state: GameState, color: (owner: number) => [number, number, number], cavalry: (a: Army) => boolean): Traveller[] {
+    const armies = state.armies;
+    // The camera looks at the ground under its target (the hills are high now), and never sinks into a hillside.
+    const cam = this.camera;
+    const gx = cam.target.x + WW / 2;
+    const gz = WH / 2 - cam.target.z;
+    const want = this.surfaceY(gx, gz);
+    cam.target.y += (want - cam.target.y) * 0.2;
+    const cp = cam.position;
+    const under = this.surfaceY(cp.x + WW / 2, WH / 2 - cp.z) + 6;
+    if (cp.y < under) cam.beta = Math.max(cam.lowerBetaLimit!, cam.beta - 0.02);
     // The sea moves.
     this.ripples.uOffset = (t * 0.012) % 1;
     this.ripples.vOffset = (t * 0.007) % 1;
-    // A company of men under each banner, facing its line of march.
-    const { body, head, horse } = this.troops;
+    // The light of the hour: the sun swings over, dusk reddens the sky, and at night the lamps are lit.
+    const L = daylight(hour);
+    const az = hour * Math.PI * 2;
+    this.sun.direction.set(Math.cos(az) * 0.7, -Math.max(0.25, L.sun), Math.sin(az) * 0.5 + 0.3);
+    this.sun.intensity = 0.1 + 0.62 * L.day;
+    this.sun.diffuse.set(1, 0.95 - L.dusk * 0.3, 0.85 - L.dusk * 0.45);
+    this.hemi.intensity = 0.42 + 0.36 * L.day;
+    this.hemi.diffuse.set(0.75 + 0.25 * L.day, 0.8 + 0.2 * L.day, 1);
+    const mix = (d: number[], k: number[], n: number[]) => [0, 1, 2].map((i) => (d[i] * L.day + n[i] * L.night) * (1 - L.dusk * 0.6) + k[i] * L.dusk * 0.6);
+    const skyC = mix([0.62, 0.74, 0.82], [0.86, 0.6, 0.45], [0.16, 0.2, 0.32]);
+    this.scene.clearColor.set(skyC[0], skyC[1], skyC[2], 1);
+    this.scene.fogColor.set(skyC[0], skyC[1], skyC[2]);
+    const glow = 0.12 + 0.18 * L.day;
+    this.landMat.emissiveColor.set(glow, glow * 0.97, glow * 0.92 + 0.03 * L.night);
+    this.towns.update(t, (p) => color(state.provinces[p].owner), L.night);
+    const travellers = this.roads.update(day, t, (p) => color(state.provinces[p].owner));
+    this.sky.update(t, this.camera.radius);
+    // A company of men under each banner, facing its line of march, with its standard.
+    const { body, head, horse, flag, pole } = this.troops;
     body.begin();
     head.begin();
     horse.begin();
+    flag.begin();
+    pole.begin();
     for (const a of armies) {
-      const n = Math.min(9, 3 + Math.floor(a.units.length / 3));
+      if (a.follows !== undefined) continue; // marching with another army's host
+      const n = Math.min(15, 4 + Math.floor(a.units.length / 2));
       const next = a.route[0];
       const yaw = next ? Math.atan2(next.x - a.x, -(next.y - a.y)) : Math.PI;
       const c = color(a.owner);
       const mounted = cavalry(a);
       const moving = a.route.length > 0;
+      // The standard rides at the head of the column.
+      {
+        const fy = this.surfaceY(a.x, a.y);
+        const fx = toX(a.x) + Math.sin(yaw) * 1.5;
+        const fz = toZ(a.y) + Math.cos(yaw) * 1.5;
+        pole.add(fx, fy + 3.5, fz, 0, [1, 7, 1]);
+        const sway = Math.sin(t * 2.4 + a.id) * 0.25;
+        flag.add(fx + Math.cos(yaw + sway) * 1.1, fy + 6.2, fz - Math.sin(yaw + sway) * 1.1, yaw + Math.PI / 2 + sway, [1, 1, 1], c);
+      }
       for (let k = 0; k < n; k++) {
         const row = Math.floor(k / 3);
         const col = (k % 3) - 1;
@@ -382,9 +330,12 @@ export class Map3D {
     body.end();
     head.end();
     horse.end();
+    flag.end();
+    pole.end();
     this.engine.beginFrame();
     this.scene.render();
     this.engine.endFrame();
+    return travellers;
   }
 
   // ---------------------------------------------------------------- picking, projection, camera
@@ -446,7 +397,7 @@ export class Map3D {
 
   setTarget(x: number, y: number) {
     // Move the target in place: assigning a new one would keep the camera where it is and change the zoom.
-    this.camera.target.set(toX(Math.max(0, Math.min(WW, x))), 0, toZ(Math.max(0, Math.min(WH, y))));
+    this.camera.target.set(toX(Math.max(0, Math.min(WW, x))), this.surfaceY(x, y), toZ(Math.max(0, Math.min(WH, y))));
   }
 
   panGround(right: number, fwd: number) {
@@ -456,7 +407,7 @@ export class Map3D {
     const t = c.target;
     const x = t.x + fz * right + fx * fwd;
     const z = t.z - fx * right + fz * fwd;
-    c.target.set(Math.max(-WW / 2, Math.min(WW / 2, x)), 0, Math.max(-WH / 2, Math.min(WH / 2, z)));
+    c.target.set(Math.max(-WW / 2, Math.min(WW / 2, x)), c.target.y, Math.max(-WH / 2, Math.min(WH / 2, z)));
   }
 
   panScreen(dx: number, dy: number) {
