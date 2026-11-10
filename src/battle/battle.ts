@@ -223,6 +223,8 @@ export const radiusOf = (t: UnitType) => {
 };
 const cls = (u: BUnit) => UNIT_STATS[u.type].cls;
 /** How fast each kind of unit can wheel, in radians per second. */
+/** Turns larger than this (about 70 degrees) are made at once, as an about-face, not wheeled. */
+const SNAP_TURN = 1.2;
 const TURN_RATE: Record<string, number> = { infantry: 3.3, missile: 3.0, cavalry: 1.6, elephant: 1.1, artillery: 0.8 };
 const weapon = (u: BUnit) => UNIT_STATS[u.type].weapon;
 const canMountWalls = (t: UnitType) => {
@@ -772,11 +774,11 @@ export class Battle {
     const dy = wy - u.y;
     const d = Math.hypot(dx, dy);
     if (d <= stop + 0.5) return false;
-    // Regiments wheel rather than slide: they turn at a limited rate and march
-    // along their facing, so changes of direction trace curves. Horse swing wide.
+    // Small changes of course are wheeled, so drawn paths trace curves; a big change of
+    // direction is an about-face: the ranks turn on the spot at once and march off.
     const want = Math.atan2(dy, dx);
-    // A regiment falling back from a melee simply about-faces rather than wheeling round.
     const away = u.disengageT > 0;
+    if (Math.abs(angDiff(u.facing, want)) > SNAP_TURN) u.facing = want;
     const formTurn = u.formation === 'tight' ? 0.7 : u.formation === 'wedge' ? 0.8 : 1;
     turnToward(u, want, TURN_RATE[UNIT_STATS[u.type].cls] * (away ? 3 : formTurn) * dt);
     const off = Math.abs(angDiff(u.facing, want));
@@ -1260,6 +1262,7 @@ export class Battle {
       const n = this.nearestEnemy(u, face === undefined ? 300 : 130);
       if (n) turnToward(u, Math.atan2(n.y - u.y, n.x - u.x), (cls(u) === 'cavalry' ? 1.2 : 0.6) * dt);
       else if (face !== undefined) {
+        if (Math.abs(angDiff(u.facing, face)) > SNAP_TURN) u.facing = face; // about-face at once
         const formTurn = u.formation === 'tight' ? 0.7 : u.formation === 'brace' ? 0.3 : 1;
         turnToward(u, face, TURN_RATE[cls(u)] * 0.8 * formTurn * dt);
       }
