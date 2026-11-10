@@ -25,6 +25,8 @@ export interface CUnit {
 
 /** What an army means to do when it gets where it is going. */
 export type Goal =
+  /** Shadow an enemy army out of its reach, cutting its supplies and burning its forage (Bajirao's way). */
+  | { kind: 'harass'; army: number }
   | { kind: 'go'; prov: number }
   /** March to a spot in open country. */
   | { kind: 'point'; x: number; y: number }
@@ -127,6 +129,14 @@ export interface Army {
   /** Marching under another army's banner (a host): the leader's id, and the day it goes its own way again. */
   follows?: number;
   followUntil?: number;
+  /** Riding light: the baggage left behind, an all-horse army marches faster and lives off the land, but cannot besiege. */
+  light?: boolean;
+  /** Harassed: enemy horse have cut its convoys and burn its forage until this day. */
+  cutOffUntil?: number;
+  /** Days in a row it has starved while cut off (it asks for terms after a few). */
+  starveDays?: number;
+  /** The last day it asked for terms (so it doesn't ask every day). */
+  termsAsked?: number;
 }
 
 /** Armies marching under this one's banner. */
@@ -506,7 +516,8 @@ export function assignFront(state: GameState, a: Army) {
   a.front = fronts[0]?.id;
 }
 
-export const maxFood = (a: Army) => (a.general.trait === 'quartermaster' ? 45 : 30);
+/** Days of food an army can carry; riding light, only what the horsemen carry themselves. */
+export const maxFood = (a: Army) => (a.light ? 12 : a.general.trait === 'quartermaster' ? 45 : 30);
 
 export function spawnArmy(state: GameState, owner: number, province: number, units: CUnit[], general?: General): Army {
   const p = state.provinces[province];
@@ -596,6 +607,8 @@ function baseSpeed(state: GameState, a: Army): number {
   if (cls.length && cls.every((c) => c === 'cavalry')) v = 22 * (a.general.trait === 'horseman' ? 1.1 : 1);
   else if (cls.some((c) => c === 'elephant' || c === 'artillery')) v = 9;
   if (a.general.trait === 'raider') v *= 1.1;
+  // Riding light: no baggage train to wait for.
+  if (a.light && cls.length && cls.every((c) => c === 'cavalry')) v *= 1.35;
   // Hill country is slow going (mountain-bred Maratha armies least of all).
   const e = state.map.elev[Math.max(0, Math.min(MH - 1, Math.floor(a.y / CELL))) * MW + Math.max(0, Math.min(MW - 1, Math.floor(a.x / CELL)))];
   if (e > 0.32) v *= a.owner === PLAYER ? 0.85 : 0.75;
@@ -693,7 +706,7 @@ export function log(state: GameState, text: string, mine = false) {
 /** Where a goal leads: a town, a spot, or another army's position. */
 export function goalPoint(state: GameState, g: Goal): Pt | null {
   if (g.kind === 'point') return { x: g.x, y: g.y };
-  if (g.kind === 'chase' || g.kind === 'join') {
+  if (g.kind === 'chase' || g.kind === 'join' || g.kind === 'harass') {
     const t = armyById(state, g.army);
     return t ? { x: t.x, y: t.y } : null;
   }

@@ -46,6 +46,8 @@ export interface Hooks {
   event(ev: GameEvent): Promise<number>;
   /** An enemy army before one of the player's towns demands chauth. True = pay. */
   chauthDemand(a: Army, p: Province): Promise<boolean>;
+  /** An enemy army, cut off and starving under your harassment, asks for terms. True = accept its surrender. */
+  terms(a: Army): Promise<boolean>;
   changed(): void;
 }
 
@@ -58,6 +60,7 @@ export const autoHooks = (s: GameState): Hooks => ({
   peaceOffer: async () => true,
   event: async () => 0,
   chauthDemand: async () => false,
+  terms: async () => true,
   changed: () => {},
 });
 
@@ -74,6 +77,10 @@ export interface Clash {
 
 /** Armies within this distance of a battle march to the sound of the guns. */
 export const REINFORCE_RANGE = 60;
+/** How far a harassing army keeps from its quarry: out of its reach, close enough to take its convoys. */
+export const HARASS_DIST = 24;
+/** Within this distance a harasser cuts its quarry off. */
+const HARASS_REACH = 70;
 /** A battle lost within this distance of one of your forts empties it. */
 export const ABANDON_RANGE = 25;
 
@@ -203,6 +210,25 @@ export class World {
       }
       if (a.siegeOf >= 0 || s.day < a.busyUntil) continue;
       let target: Army | undefined;
+      if (a.goal?.kind === 'harass') {
+        // Shadow the enemy just out of reach: close enough to take his convoys, too far to be brought to battle.
+        const t = armyById(s, a.goal.army);
+        if (!t || !hostile(s, a.owner, t.owner)) {
+          a.goal = null;
+          a.route = [];
+        } else {
+          const d = dist(a, t);
+          const k = d > 1 ? HARASS_DIST / d : 0;
+          const want = { x: t.x + (a.x - t.x) * k, y: t.y + (a.y - t.y) * k };
+          if (dist(a, want) < 3) a.route = [];
+          else if (d > 80) {
+            if ((this.replanAt.get(a.id) ?? 0) <= s.day) {
+              this.replanAt.set(a.id, s.day + 0.5);
+              a.route = findRoute(s, a, want) ?? [];
+            }
+          } else a.route = [want];
+        }
+      }
       if (a.goal && (a.goal.kind === 'chase' || a.goal.kind === 'join')) {
         target = armyById(s, a.goal.army);
         if (!target) {
@@ -377,6 +403,10 @@ export class World {
     const s = this.state;
     if (!hostile(s, a.owner, p.owner)) return;
     if (p.siege && p.siege.army !== a.id) return; // someone else is already besieging it
+    if (p.walls > 0 && p.garrison.length && a.light) {
+      if (isYours(s, a)) log(s, `Riding light, your army has no ladders, rams or stores for a siege of ${p.town}. Bring up the baggage first.`, true);
+      return;
+    }
     if (p.walls > 0 && p.garrison.length) {
       startSiege(s, a, p);
       if (isYours(s, a)) chronicle(s, 'siege', `You laid siege to ${p.town} (${p.name}), held by the ${s.factions[p.owner].short} with ${Math.round(unitsMen(p.garrison))} men.`);
@@ -608,6 +638,9 @@ export class World {
    * odds; besiegers hold their siege lines.
    */
   private wantsFight(x: Army, y: Army): boolean {
+    // Light horse shadowing an army can't be brought to battle by anything slower.
+    if (y.goal?.kind === 'harass' && armySpeed(this.state, y) > armySpeed(this.state, x) * 1.15 && !(x.goal?.kind === 'chase' && x.goal.army === y.id && armySpeed(this.state, x) >= armySpeed(this.state, y))) return false;
+    if (x.goal?.kind === 'harass' && x.goal.army === y.id) return false;
     if (x.goal?.kind === 'chase' && x.goal.army === y.id) return true;
     if (isYours(this.state, x) || x.follows !== undefined || x.siegeOf >= 0 || x.raidUntil > this.state.day) return false;
     return unitsStrength(x.units) >= unitsStrength(y.units) * 0.8;
@@ -698,6 +731,69 @@ export class World {
 
   // ---------------------------------------------------------------- the calendar
 
+  /**
+   * Bajirao's war: horse shadowing an army take its convoys and burn its forage. Cut off, it eats
+   * through its stores; starving, its men desert; after a few days of that it asks for terms.
+   */
+  private harassDaily() {
+    const s = this.state;
+    for (const a of s.armies) {
+      if (a.goal?.kind !== 'harass') continue;
+      const t = armyById(s, a.goal.army);
+      if (!t || !hostile(s, a.owner, t.owner) || dist(a, t) > HARASS_REACH) continue;
+      // An army inside one of its own towns is fed by the town: it can only be starved out in the field.
+      const home = townAt(s, t);
+      if (home >= 0 && !hostile(s, s.provinces[home].owner, t.owner)) continue;
+      const was = (t.cutOffUntil ?? 0) > s.day;
+      t.cutOffUntil = s.day + 1.5;
+      // Losing its convoys rouses an army from rest: it must decide what to do about it.
+      if (!was) t.aiNext = Math.min(t.aiNext, s.day);
+      // Every band of horse takes another day's convoy.
+      t.food = Math.max(0, t.food - (a.light ? 1.5 : 1));
+      if (!was && (isYours(s, a) || t.owner === PLAYER)) {
+        log(s, isYours(s, a) ? `Your horse are cutting off ${t.general.name}'s army: its convoys are taken and its forage burnt.`
+          : `${a.general.name}'s horse are cutting off ${t.general.name}'s army from its supplies.`, true);
+      }
+    }
+    for (const t of [...s.armies]) {
+      const cut = (t.cutOffUntil ?? 0) > s.day;
+      t.starveDays = cut && t.food <= 0 ? (t.starveDays ?? 0) + 1 : 0;
+      if ((t.starveDays ?? 0) < 3 || isYours(s, t) || t.siegeOf >= 0 || s.day < (t.termsAsked ?? -99) + 5) continue;
+      // Starving and cut off for days: the commander asks for terms from those who hem him in.
+      const ring = s.armies.filter((a) => a.goal?.kind === 'harass' && a.goal.army === t.id && dist(a, t) <= HARASS_REACH);
+      if (!ring.length) continue;
+      t.termsAsked = s.day;
+      const captor = ring[0].owner;
+      if (ring.some((a) => isYours(s, a))) {
+        this.run(async () => {
+          if (!this.alive(t)) return;
+          if (await this.hooks.terms(t)) this.capitulate(t, PLAYER, true);
+          else log(s, `You refuse ${t.general.name}'s terms. His army starves on.`, true);
+        });
+        return;
+      }
+      this.capitulate(t, captor, false);
+    }
+  }
+
+  /** A starving army lays down its arms: its commander is taken, its men go home, its baggage is the victors'. */
+  capitulate(t: Army, captor: number, you: boolean) {
+    const s = this.state;
+    const name = t.general.name;
+    const men = Math.round(unitsMen(t.units));
+    const loot = Math.round(20 + men / 12);
+    s.gold[captor] += loot;
+    log(s, `Starving and hemmed in, ${name} surrenders his army of ${men} men to the ${s.factions[captor].short}.`, you || t.owner === PLAYER || captor === PLAYER);
+    if (s.factions[t.owner].ai !== 'none' && captor !== IND) s.captives.push({ gen: t.general, owner: t.owner, by: captor, day: s.day });
+    if (you) {
+      chronicle(s, 'capture', `You starved ${name}'s army of ${men} men into surrender without a battle, took him prisoner, and ${loot} gold of his baggage.`);
+      battleRenown(s, s.armies.filter((a) => isYours(s, a)), [t]);
+    }
+    s.armies = s.armies.filter((a) => a !== t);
+    for (const a of s.armies) if ((a.goal?.kind === 'harass' || a.goal?.kind === 'chase') && a.goal.army === t.id) setGoal(s, a, null);
+    this.hooks.changed();
+  }
+
   private daily() {
     const s = this.state;
     const monsoon = isMonsoon(s.day);
@@ -755,6 +851,7 @@ export class World {
         for (const u of a.units) u.men *= 0.9985;
       }
     }
+    this.harassDaily();
     supplyDaily(s);
     sortiesDaily(s);
     cleanupArmies(s);

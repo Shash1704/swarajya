@@ -73,7 +73,9 @@ export function supplyDaily(s: GameState) {
     const qm = a.general.trait === 'quartermaster';
     const max = maxFood(a);
     const was = a.food;
-    const sup = supplied(s, a);
+    // Cut off: enemy horse take its convoys and burn the forage round its camp.
+    const cut = (a.cutOffUntil ?? 0) > s.day;
+    const sup = cut ? 'none' : supplied(s, a);
     if (sup !== 'none') {
       a.food = Math.min(max, a.food + (sup === 'fort' || townAt(s, a) >= 0 ? 10 : 5));
       const town = townAt(s, a);
@@ -84,10 +86,14 @@ export function supplyDaily(s: GameState) {
       let forage = here.devastated > 0 ? 0 : (here.wealth / 10) * (monsoon ? 0.5 : 1) * Math.max(0.3, 1 - a.units.length / 30);
       if (a.siegeOf >= 0) forage *= 0.7;
       if (a.raidUntil > s.day) forage += 6;
+      // Light horse live off the country better; a harassed army finds its forage burnt.
+      if (a.light) forage *= 1.5;
+      if (cut) forage *= 0.15;
       a.food = clamp(a.food - (qm ? 0.5 : 1) + forage, 0, max);
     }
     if (a.food <= 0) {
-      const loss = (monsoon ? 0.02 : 0.012) * (qm ? 0.5 : 1);
+      // Cut off and starving, men slip away from the camp by the hundred.
+      const loss = (monsoon ? 0.02 : 0.012) * (qm ? 0.5 : 1) + (cut ? 0.02 : 0);
       for (const u of a.units) u.men *= 1 - loss;
       if (was > 0) log(s, `${a.general.name}'s army has run out of food and is starving.`, a.owner === PLAYER);
     } else if (was > 5 && a.food <= 5 && a.owner === PLAYER) {

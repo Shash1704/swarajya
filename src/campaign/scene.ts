@@ -29,7 +29,7 @@ import { openAISettings, openTalk } from './talk';
 import { hail, liegeTitle, meName, parleyPartner, renown, rulerOf } from './characters';
 import { llmSettings } from '../llm';
 import { byYear, CHRON_ICON, chronicle, deeds } from './chronicle';
-import type { Terrain } from '../battle/battle';
+import type { Spot, Terrain } from '../battle/battle';
 
 const MAX_ZOOM = 3;
 /** Game days that pass per real second at 1x speed. */
@@ -1010,6 +1010,17 @@ export class CampaignScene implements Scene {
       battle: (b) => this.battlePrompt(b),
       arrival: (a, p) => this.arrivalPrompt(a, p),
       chooseSack: (p) => this.sackPrompt(p),
+      terms: (a) => new Promise((resolve) => {
+        const s = this.state;
+        this.setPaused(true);
+        showModal(`${a.general.name} asks for terms`, h('div', {},
+          h('p', {}, `Cut off from his convoys and starving, with his men deserting by the hundred, ${a.general.name} of the ${s.factions[a.owner].short} sends to ask for terms for his army of ${fmt(unitsMen(a.units))} men.`),
+          h('p', { class: 'muted' }, 'Accept, and his army lays down its arms and goes home: he is your prisoner and his baggage is yours, without a battle. Refuse, and let hunger work on; or attack him while he is weak.'),
+        ), [
+          { label: 'Refuse', onClick: () => { hideModal(); resolve(false); } },
+          { label: '🏳 Accept his surrender', primary: true, onClick: () => { hideModal(); resolve(true); this.renderUI(true); } },
+        ]);
+      }),
       event: (ev) => this.eventPrompt(ev),
       chauthDemand: (a, p) => new Promise((resolve) => {
         const s = this.state;
@@ -1038,6 +1049,45 @@ export class CampaignScene implements Scene {
     };
   }
 
+  /**
+   * Places for an encircled battle, if your armies came at the enemy from more than one side:
+   * each of yours on an arc on the side of the field it approached from, the enemy in the middle.
+   */
+  private ringSpots(side: Army[], foe: Army, foeUnits: number): [Spot[], Spot[]] | null {
+    if (side.length < 2) return null;
+    const ang = side.map((a) => Math.atan2(a.y - foe.y, a.x - foe.x));
+    const sorted = [...ang].sort((a, b) => a - b);
+    let gap = sorted[0] + Math.PI * 2 - sorted[sorted.length - 1];
+    for (let i = 1; i < sorted.length; i++) gap = Math.max(gap, sorted[i] - sorted[i - 1]);
+    // All from one direction is no ring: they must come from sides at least 90 degrees apart.
+    if (Math.PI * 2 - gap < Math.PI / 2) return null;
+    const W = 1620;
+    const H = 1080;
+    const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+    const mine: Spot[] = [];
+    side.forEach((a, k) => {
+      const th = ang[k];
+      const dx = Math.cos(th);
+      const dy = Math.sin(th);
+      const bx = W / 2 + dx * 560;
+      const by = H / 2 + dy * 390;
+      a.units.forEach((_, j) => {
+        const row = Math.floor(j / 7);
+        const n = Math.min(7, a.units.length - row * 7);
+        const col = (j % 7) - (n - 1) / 2;
+        mine.push({ x: clamp(bx - dy * col * 60 + dx * row * 56, 30, W - 30), y: clamp(by + dx * col * 60 + dy * row * 56, 30, H - 30), face: th + Math.PI });
+      });
+    });
+    const cols = Math.ceil(Math.sqrt(foeUnits));
+    const theirs: Spot[] = [];
+    for (let j = 0; j < foeUnits; j++) {
+      const r = Math.floor(j / cols);
+      const c = (j % cols) - (cols - 1) / 2;
+      theirs.push({ x: W / 2 + c * 62, y: H / 2 + (r - (Math.ceil(foeUnits / cols) - 1) / 2) * 60, face: ang[0] });
+    }
+    return [mine, theirs];
+  }
+
   private battlePrompt(b: BattleInfo): Promise<BattleResult> {
     const s = this.state;
     const { mode, att, p, defOwner } = b;
@@ -1049,6 +1099,12 @@ export class CampaignScene implements Scene {
     const enemy = s.factions[playerAttacks ? defOwner : att.owner];
     const siege = mode === 'siege';
     const garrison = !defArmy;
+    // Bajirao's war: an enemy cut off from his supplies comes to battle hungry, and one your armies
+    // have closed on from every side is fought surrounded, each of your armies on the side it came from.
+    const foeLead = playerAttacks ? b.def : b.att;
+    const foeCut = !!foeLead && (foeLead.cutOffUntil ?? 0) > s.day;
+    const hunger = !foeLead || siege ? 0 : foeLead.food <= 0 ? (foeCut ? 1 : 0.6) : foeCut ? 0.35 : 0;
+    const ring = !siege && !garrison && !b.garrison && foeLead ? this.ringSpots(playerAttacks ? b.attArmies : b.defArmies, foeLead, theirs.length) : null;
     const where = defArmy ? s.provinces[provinceUnder(s, defArmy, defArmy.node)] : p;
     const place = siege || garrison ? p.town : where.name;
     const title = siege ? `Siege of ${p.town}` : garrison ? `Storming ${p.town}` : `Battle near ${where.name}`;
@@ -1080,6 +1136,8 @@ export class CampaignScene implements Scene {
     const faster = !!myArmy && (!enemyArmy || armySpeed(s, myArmy) >= armySpeed(s, enemyArmy));
     const body = h('div', {},
       h('p', {}, intro),
+      ring ? h('p', { class: 'pos' }, 'Your armies close in from every side: the enemy is surrounded, and each of your armies takes the field on the side it came from.') : null,
+      hunger > 0 ? h('p', { class: 'pos' }, hunger >= 1 ? 'Cut off and starving, the enemy are weak with hunger and their hearts are failing.' : hunger > 0.5 ? 'The enemy have run out of food: they come to battle hungry.' : 'Cut off from their convoys, the enemy are short of food and uneasy.') : null,
       isMonsoon(s.day) ? h('p', { class: 'muted' }, '🌧 Monsoon rain: bows and matchlocks will suffer.') : null,
       h('p', { class: 'muted' }, `Estimated odds: ${odds}.`),
       theirArmies + myArmies > 2 ? h('p', {}, 'Armies nearby have marched to join the fight.') : null,
@@ -1174,6 +1232,9 @@ export class CampaignScene implements Scene {
               enemyGeneral: enemyArmy?.general.name ?? `Qiledar of ${p.town}`,
               playerFaction: s.factions[PLAYER], enemyFaction: enemy,
               fog, dusk, leaders: [leaderMods(myLead), leaderMods(theirLead)],
+              // A ringed army stands on open ground, not in a river (which would leave it in the water from the start).
+              ...(ring ? { placement: ring, zone0: [20, 1060] as [number, number], river: false, marsh: false } : {}),
+              ...(hunger > 0 ? { morale: [1, 1 - 0.28 * hunger] as [number, number], thirst: [0, 0.3 * hunger] as [number, number] } : {}),
               leaderNotes: [myLead ? `${myLead.general.name}, ${generalLine(myLead.general)}` : 'the qiledar',
                 theirLead ? `${theirLead.general.name}, ${generalLine(theirLead.general)}` : 'the qiledar'],
               onDone: (playerWon, draw, lost, surrendered) => {
@@ -1586,6 +1647,10 @@ export class CampaignScene implements Scene {
     if (a.goal?.kind === 'sack') return `Marching to sack ${s.villages[a.goal.village]?.name}: ${this.eta(a).toFixed(1)} days`;
     if (s.day < a.busyUntil) return 'Locked in battle';
     const g = a.goal;
+    if (g?.kind === 'harass') {
+      const t = armyById(s, g.army);
+      return t ? `Shadowing ${t.general.name}'s army (${fmt(unitsMen(t.units))}): cutting his convoys, burning his forage` : 'Searching';
+    }
     if (g?.kind === 'chase' || g?.kind === 'join') {
       const t = armyById(s, g.army);
       return t ? `${g.kind === 'chase' ? 'Pursuing' : 'Joining'} the ${s.factions[t.owner].short} army (${fmt(unitsMen(t.units))})` : 'Searching';
@@ -1645,6 +1710,22 @@ export class CampaignScene implements Scene {
     } else if (!mine) {
       parts.push(h('div', { class: 'muted', style: 'font-size:12.5px' }, 'Bring your army close to parley with its commander.'));
     }
+    if (!mine && !ours) {
+      if ((a.cutOffUntil ?? 0) > s.day) parts.push(h('div', { class: 'pos', style: 'font-size:12.5px' }, a.food <= 0 ? 'Cut off from its supplies and starving: its men are deserting.' : `Cut off from its supplies: about ${Math.ceil(a.food)} days of food left.`));
+      const you = yourArmy(s);
+      if (you && you.siegeOf < 0) {
+        const horse = you.units.length > 0 && you.units.every((u) => UNIT_STATS[u.type].cls === 'cavalry');
+        parts.push(h('div', { class: 'btns' }, h('button', {
+          class: 'small primary',
+          title: `Shadow this army just out of its reach: take its convoys and burn its forage. Cut off, it eats through its stores, then starves, then asks for terms. ${horse ? 'Your all-horse army is quick enough to stay out of its reach.' : 'Your army has foot or guns: if the enemy is as fast as you, he can turn and bring you to battle.'} If other armies close on him from other sides, a battle is fought with him surrounded.`,
+          onclick: async () => {
+            if (!(await this.ensureWar(a.owner, `harass the ${s.factions[a.owner].short} army`))) return;
+            setGoal(s, you, { kind: 'harass', army: a.id });
+            this.renderUI(true);
+          },
+        }, '🐎 Harass: cut off his supplies')));
+      }
+    }
     if (!mine && !ours && a.owner !== IND) {
       const say = (t: string) => { log(s, t, true); this.renderUI(true); };
       parts.push(h('div', { class: 'btns' },
@@ -1671,6 +1752,19 @@ export class CampaignScene implements Scene {
       }
       else {
         const btns: HTMLElement[] = [];
+        if (a.units.length && a.units.every((u) => UNIT_STATS[u.type].cls === 'cavalry')) {
+          btns.push(h('button', {
+            class: `small ${a.light ? 'primary' : ''}`,
+            title: a.light ? 'Bring up the baggage: back to a month of food and the means to lay a siege, at the old pace.'
+              : 'Leave the baggage behind: an all-horse army marches a third faster and lives off the land, carrying food for only 12 days, and cannot lay a siege.',
+            onclick: () => {
+              a.light = !a.light;
+              a.food = Math.min(a.food, maxFood(a));
+              log(s, a.light ? 'You leave the baggage behind: your horse ride light.' : 'You send for the baggage train.', true);
+              this.renderUI(true);
+            },
+          }, a.light ? '🐂 Bring up the baggage' : '🐎 Ride light'));
+        }
         if (a.route.length || a.goal) btns.push(h('button', { class: 'small', onclick: () => { setGoal(s, a, null); this.renderUI(true); } }, '✋ Halt'));
         const here = town >= 0 ? s.provinces[town] : null;
         if (here && hostile(s, PLAYER, here.owner) && a.raidUntil <= s.day) {

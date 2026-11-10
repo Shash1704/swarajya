@@ -5,7 +5,7 @@ import {
   siegeEquipment, spawnArmy, townAt, unitsStrength, wallFactor, manpowerRatio, levyFraction,
 } from './state';
 import { supplied, warBlocked } from './realm';
-import { FRONT_RANGE, isYours, type Province, villageBurnt, villageOwner } from './state';
+import { armySpeed, FRONT_RANGE, isYours, type Province, villageBurnt, villageOwner } from './state';
 
 /** Is this point on the army's own front (armies without a front go anywhere)? */
 const onFront = (s: GameState, a: Army, p: { x: number; y: number }) => a.front === undefined || dist(s.provinces[a.front], p) < FRONT_RANGE;
@@ -64,7 +64,8 @@ export function thinkArmy(w: WorldLike, a: Army) {
     return;
   }
   // Wagons nearly empty in enemy country: fall back to our own lands to eat.
-  if (a.food < 6 && supplied(s, a) === 'none') {
+  // Cut off by enemy horse with the stores running low: make for the nearest town of our own, where we can eat.
+  if ((a.food < 6 && supplied(s, a) === 'none') || ((a.cutOffUntil ?? 0) > s.day && a.food < 14)) {
     const home = nearestOwned(s, a);
     if (home >= 0 && !(a.goal?.kind === 'go' && a.goal.prov === home)) setGoal(s, a, { kind: 'go', prov: home });
     return;
@@ -72,6 +73,25 @@ export function thinkArmy(w: WorldLike, a: Army) {
   const str = armyStrength(a);
   const enemies = s.armies.filter((e) => e.owner !== IND && hostile(s, a.owner, e.owner));
 
+  // The Maratha way with a stronger army: don't fight it, shadow it. All-horse armies of the Raje's
+  // commanders hang on a nearby enemy host, take its convoys and burn its forage until it starves.
+  const allHorse = a.units.length > 0 && a.units.every((u) => UNIT_STATS[u.type].cls === 'cavalry');
+  if (a.owner === PLAYER && !isMonsoon(s.day)) {
+    if (a.goal?.kind === 'harass' && stillValid(s, a, a.goal)) return;
+    const quarry = enemies
+      .filter((e) => e.owner !== IND && dist(a, e) < 220 && onFront(s, a, e) && e.siegeOf < 0 && armyStrength(e) > str * 0.9
+        && armySpeed(s, a) > armySpeed(s, e) * 1.15 && !isYours(s, e))
+      .sort((x, y) => dist(a, x) - dist(a, y))[0];
+    if (quarry && s.rng.chance(0.6)) {
+      if (allHorse) {
+        a.light = true;
+        a.food = Math.min(a.food, 12);
+      }
+      setGoal(s, a, { kind: 'harass', army: quarry.id });
+      return;
+    }
+  }
+  if (a.light && a.goal?.kind !== 'harass') a.light = false; // back with the baggage for any other work
   // Run from anything much stronger that is close.
   // Maratha armies are quick on their feet: they give way only to a much stronger host close by.
   const threat = enemies.find((e) => dist(a, e) < (a.owner === PLAYER ? 80 : 110) && armyStrength(e) > str * (a.owner === PLAYER ? 1.6 : 1.25));
@@ -230,6 +250,11 @@ export function thinkArmy(w: WorldLike, a: Army) {
 }
 
 function stillValid(s: GameState, a: Army, g: Goal): boolean {
+  if (g.kind === 'harass') {
+    // Keep at it while the quarry lives, is still an enemy, and hasn't outrun us.
+    const t = armyById(s, g.army);
+    return !!t && hostile(s, a.owner, t.owner) && dist(a, t) < 260 && t.siegeOf < 0;
+  }
   if (g.kind === 'chase') {
     const t = armyById(s, g.army);
     return !!t && hostile(s, a.owner, t.owner) && dist(a, t) < 500 && s.day >= t.safeUntil;
