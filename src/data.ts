@@ -178,9 +178,9 @@ export const UNIT_STATS: Record<UnitType, UnitStats> = {
   },
   horsearcher: {
     ...horse, role: 'skirmish', weapon: 'bow', name: 'Turani Horse Archers', short: 'Horse Archers', tier: 'B', cost: 18,
-    upkeep: 2, maxMen: 35, speed: 80, melee: 0.7, defense: 1.0, charge: 1.2, range: 200, missile: 0.025, armor: 0.3,
-    morale: 65, value: 1.7, shootMoving: true, skirmish: true, symbol: ['diag', 'bow'],
-    blurb: 'Central Asian mounted archers who shoot on the move and keep out of reach.',
+    upkeep: 2, maxMen: 35, speed: 84, melee: 0.75, defense: 1.1, charge: 1.2, range: 220, missile: 0.04, armor: 0.3,
+    morale: 72, value: 1.7, shootMoving: true, skirmish: true, symbol: ['diag', 'bow'],
+    blurb: 'Mounted archers who shoot on the move and keep out of reach: their bows outrange the matchlock, so they can gall a formed line without ever closing.',
   },
   heavycav: {
     ...horse, role: 'shock', name: 'Sowar Heavy Horse', short: 'Sowars', tier: 'B', cost: 20, upkeep: 2, maxMen: 35,

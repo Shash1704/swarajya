@@ -30,7 +30,7 @@ export function fightHistorical(sc: Scenario, marathas: Faction, back: () => voi
     walls: 0, ladders: false, ram: false, place: '', // the real place names are written on the map itself
     playerGeneral: sc.playerGeneral, enemyGeneral: sc.enemyGeneral, playerFaction: peshwa, enemyFaction: enemy,
     leaders: sc.leaders, leaderNotes: sc.leaderNotes,
-    placement: [mine.spots, theirs.spots], zone0: sc.zone0, thirst: sc.thirst, generals: sc.generals, map: sc.map,
+    placement: [mine.spots, theirs.spots], zone0: sc.zone0, thirst: sc.thirst, generals: sc.generals, map: sc.map, morale: sc.morale,
     doneLabel: 'What really happened',
     onDone: (won, draw) => {
       if (returnTo) app.setScene(returnTo);

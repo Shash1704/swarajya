@@ -40,6 +40,8 @@ export interface BattleOptions {
   map?: BattleMap;
   /** Which regiment (by index in each side's list) the commander rides with; default: the strongest. */
   generals?: [number, number];
+  /** Each side's starting heart (e.g. 0.75: hungry and dispirited men start at three quarters of their usual morale, and cannot recover more). */
+  morale?: [number, number];
   /** Thirst or hunger: each side's regiments never rest below this fatigue. */
   thirst?: [number, number];
 }
@@ -607,7 +609,7 @@ export class Battle {
     const st = UNIT_STATS[ref.type];
     const rank = vetRank(ref.xp);
     // Veterans and a good commander steady the ranks.
-    const morale = st.morale * (1 + rank * 0.08) * this.leaders[side].morale;
+    const morale = st.morale * (1 + rank * 0.08) * this.leaders[side].morale * (this.opts.morale?.[side] ?? 1);
     // Garrisons on their own walls draw on the fort's magazines.
     const ammo = this.walls && side === this.defender ? Infinity : ammoFor(ref.type);
     this.units.push({

@@ -37,6 +37,8 @@ export interface Scenario {
   theirs: Reg[];
   zone0?: [number, number];
   thirst?: [number, number];
+  /** Each side's starting heart (1 = as usual). */
+  morale?: [number, number];
   /** The regiments (index in `mine`, `theirs`) the two commanders ride with. */
   generals: [number, number];
   /** The real ground, drawn for the battle. */
@@ -57,26 +59,26 @@ export const SCENARIOS: Scenario[] = [
     brief: [
       'The Nizam-ul-Mulk, Asaf Jah, has refused the Marathas their chauth and sardeshmukhi in the Deccan, and taken up the cause of Sambhaji of Kolhapur against Chhatrapati Shahu. While he plundered the country round Pune with his guns, Peshwa Bajirao rode the other way: through Jalna, Berar, Khandesh and into Gujarat, burning the Nizam\'s lands and drawing him out after him.',
       'Now the Nizam has crossed the Godavari to bring Bajirao to battle on an open plain where his artillery would tell, but in his haste he has left his great guns behind at Puntamba, on the far bank. At Palkhed, under the long ridge to the north, the Maratha horse has closed round him: Pilaji Jadhav to the north-east, the Peshwa himself to the east across the Shiv nadi, the Nizam\'s water, Davalji Somvanshi to the south-east, and Malharrao Holkar riding in from the west. His army is parched and penned in.',
-      'Your army is horse only, as it was: no infantry and no guns. Your horse archers ride close, loose their arrows into the packed square and wheel away before the spears and sowars can reach them. Hold the ring, keep clear of the matchlocks and the few light pieces that kept up, keep the great guns at Puntamba from crossing the ford to him, and break the Nizam\'s army before it breaks out.',
+      'Your army is horse only, as it was: no infantry and no guns. Your horse archers outrange his matchlocks: let them gall his packed ranks and wheel away before the spears and sowars can reach them. Hold the ring, keep clear of the matchlocks and the few light pieces that kept up, keep the great guns at Puntamba from crossing the ford to him, and break the Nizam\'s army before it breaks out.',
     ],
-    marathas: 'Pilaji Jadhav\'s horse to the north-east (8 regiments); Peshwa Bajirao with his household horse beyond the Shiv nadi to the east (6); Davalji Somvanshi\'s horse to the south-east (6); Malharrao Holkar\'s horse to the west (5). Each division has horse archers to harass the Nizam\'s ranks. 25 regiments, all cavalry, many of them light.',
-    enemy: 'Nizam-ul-Mulk on his elephant at Palkhed, his army bent in a crescent round the village: sowars and matchlocks facing Pilaji to the north-east, spearmen and Iwaz Khan\'s sowars facing Holkar to the west, matchlocks and two light pieces facing the Peshwa to the east, sowars facing Davalji to the south; Rao Chandrasen Jadhav\'s and Sambhaji of Kolhapur\'s Maratha horse fighting for the Nizam. 21 regiments, and his great guns with their guard far off at Puntamba. Parched: they never shake off their fatigue.',
+    marathas: 'Pilaji Jadhav\'s horse to the north-east (8 regiments); Peshwa Bajirao with his household horse beyond the Shiv nadi to the east (6); Davalji Somvanshi\'s horse to the south-east (6); Malharrao Holkar\'s horse to the west (5). Every division has horse archers (10 regiments in all) to gall the Nizam\'s ranks from beyond the reach of his matchlocks. 26 regiments, all cavalry.',
+    enemy: 'Nizam-ul-Mulk on his elephant at Palkhed, his army bent in a crescent round the village: sowars and matchlocks facing Pilaji to the north-east, spearmen and Iwaz Khan\'s sowars facing Holkar to the west, matchlocks and two light pieces facing the Peshwa to the east, sowars facing Davalji to the south; Rao Chandrasen Jadhav\'s and Sambhaji of Kolhapur\'s Maratha horse fighting for the Nizam. 21 regiments, and his great guns with their guard far off at Puntamba. Hungry and parched after weeks of Bajirao cutting his convoys and burning his forage: his men start the day low in heart and never shake off their fatigue.',
     enemyName: 'Army of the Nizam-ul-Mulk', enemyShort: 'Nizam', enemyColor: '#c9a227', enemyRgb: [201, 162, 39],
     playerGeneral: 'Peshwa Bajirao', enemyGeneral: 'Nizam-ul-Mulk',
     leaders: [BAJIRAO, { morale: 1.1, melee: 1, charge: 1, horse: 1, defense: 1.15, fatigue: 1 }],
     leaderNotes: [BAJIRAO_NOTE, 'Nizam-ul-Mulk Asaf Jah: a veteran of Aurangzeb\'s wars; his lines hold hard'],
     playerAttacks: true,
     mine: [
-      ['lightcav', 'Pilaji Jadhav\'s horse', 870, 250, 2.4],
+      ['horsearcher', 'Pilaji Jadhav\'s horse archers', 870, 250, 2.4],
       ['shiledar', 'Pilaji Jadhav\'s horse', 952, 254, 2.4],
       ['lightcav', 'Pilaji Jadhav\'s horse', 962, 314, 2.4],
       ['horsearcher', 'Pilaji Jadhav\'s horse archers', 1034, 314, 2.4],
       ['lightcav', 'Pilaji Jadhav\'s horse', 1034, 371, 2.4],
       ['shiledar', 'Pilaji Jadhav\'s horse', 1146, 357, 2.4],
       ['lightcav', 'Pilaji Jadhav\'s horse', 1194, 385, 2.4],
-      ['lightcav', 'Pilaji Jadhav\'s horse', 1253, 428, 2.4],
+      ['horsearcher', 'Pilaji Jadhav\'s horse archers', 1253, 428, 2.4],
       ['shiledar', 'the Peshwa\'s shiledars', 1290, 492, WEST],
-      ['lightcav', 'bargirs of the Peshwa\'s paga', 1358, 520, WEST],
+      ['horsearcher', 'the Peshwa\'s horse archers', 1358, 520, WEST],
       ['huzurat', 'the Peshwa\'s household horse', 1294, 541, WEST],
       ['huzurat', 'the Peshwa\'s own paga', 1296, 598, WEST],
       ['horsearcher', 'the Peshwa\'s horse archers', 1276, 683, WEST],
@@ -86,12 +88,13 @@ export const SCENARIOS: Scenario[] = [
       ['lightcav', 'Davalji Somvanshi\'s horse', 1034, 808, -2.2],
       ['horsearcher', 'Davalji Somvanshi\'s horse archers', 948, 839, -2.2],
       ['lightcav', 'Davalji Somvanshi\'s horse', 870, 879, -2.2],
-      ['lightcav', 'Davalji Somvanshi\'s horse', 798, 910, -2.2],
-      ['lightcav', 'Malharrao Holkar\'s horse', 210, 477, EAST],
+      ['horsearcher', 'Davalji Somvanshi\'s horse archers', 798, 910, -2.2],
+      ['horsearcher', 'Malharrao Holkar\'s horse archers', 210, 477, EAST],
       ['lightcav', 'Malharrao Holkar\'s horse', 173, 555, EAST],
       ['shiledar', 'Malharrao Holkar\'s horse', 173, 619, EAST],
       ['lightcav', 'Malharrao Holkar\'s horse', 208, 697, EAST],
-      ['lightcav', 'Malharrao Holkar\'s horse', 275, 747, EAST],
+      ['horsearcher', 'Malharrao Holkar\'s horse archers', 275, 747, EAST],
+      ['horsearcher', 'the Peshwa\'s horse archers', 1360, 640, WEST],
     ],
     theirs: [
       ['heavycav', 'Mughal sowars facing Pilaji', 767, 357, -0.785],
@@ -146,6 +149,8 @@ export const SCENARIOS: Scenario[] = [
     },
     generals: [10, 4],
     thirst: [0, 0.1],
+    // Weeks of Bajirao's horse burning their forage and cutting their convoys: the Nizam's men are hungry and losing heart.
+    morale: [1, 0.72],
     history: 'At Palkhed the Nizam, cut off from food and water and surrounded by horse he could not bring to battle, gave in without a great fight. On 6 March 1728 he signed the Treaty of Mungi Shevgaon: he recognised Shahu as the Chhatrapati, gave up the cause of Sambhaji of Kolhapur, and granted the Marathas the right to collect chauth and sardeshmukhi in the Deccan. Jadunath Sarkar called the campaign a classic example of what light horse led by a genius could achieve.',
   },
   {
