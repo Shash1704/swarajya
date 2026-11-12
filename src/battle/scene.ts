@@ -49,7 +49,8 @@ export interface BattleSetup {
   doneLabel?: string;
   /** draw: night fell with neither side broken. */
   /** surrendered: the enemy commander gave himself up (the player accepted his surrender). */
-  onDone(playerWon: boolean, draw?: boolean, generalLost?: [boolean, boolean], surrendered?: boolean): void;
+  /** enemyGeneral: his certain fate, when the battle decided it (slain on the field, or taken when his army was destroyed or surrendered). */
+  onDone(playerWon: boolean, draw?: boolean, generalLost?: [boolean, boolean], surrendered?: boolean, enemyGeneral?: 'killed' | 'captured'): void;
 }
 
 const STEP = 1 / 60;
@@ -243,6 +244,11 @@ export class BattleScene implements Scene {
     else if (siege && won) text = s.playerAttacks ? 'The defenders break. The settlement is yours to take.' : 'The assault is thrown back from the walls!';
     else if (siege) text = s.playerAttacks ? 'The assault fails beneath the walls.' : 'The enemy is inside the walls. The settlement falls.';
     else if (this.b.brokeOut) text = `${s.enemyGeneral ?? 'The enemy commander'} has broken out of the ring with his household. The trap has failed.`;
+    else if (this.b.destroyed) {
+      const who = s.enemyGeneral ?? 'Their commander';
+      text = (this.b.ringed ? `Hemmed in on every side, the ${s.enemyFaction.short} are cut down where they stand. None escape.` : `The broken ${s.enemyFaction.short} are ridden down as they run. Few escape.`)
+        + (this.b.enemyGeneralFate === 'killed' ? ` ${who} dies among his men.` : this.b.enemyGeneralFate === 'captured' ? ` ${who} is dragged from the press and made your prisoner.` : '');
+    } else if (won && this.b.generalSlain[1]) text = `${s.enemyGeneral ?? 'Their commander'} lies slain on the field, and the ${s.enemyFaction.short} break and flee.`;
     else if (this.b.surrenderAccepted) text = `${s.enemyGeneral ?? 'The enemy commander'} surrenders. His men lay down their arms and are sent home; he is your prisoner.`;
     else text = won ? `The ${s.enemyFaction.short} break and flee the field.` : 'Your lines break and scatter.';
     showModal(draw ? 'Nightfall' : won ? 'Victory!' : 'Defeat', h('div', {},
@@ -251,19 +257,30 @@ export class BattleScene implements Scene {
         h('div', { class: 'card' }, h('h3', {}, swatch(s.playerFaction.color), 'Your losses'), h('div', {}, `${Math.round(before[0] - after[0])} of ${Math.round(before[0])} men`)),
         h('div', { class: 'card' }, h('h3', {}, swatch(s.enemyFaction.color), 'Enemy losses'), h('div', {}, `${Math.round(before[1] - after[1])} of ${Math.round(before[1])} men`)),
       ),
-    ), [{ label: s.doneLabel ?? 'Return to the campaign map', primary: true, onClick: () => { hideModal(); s.onDone(won, draw, [this.b.generalLost[0], this.b.generalLost[1] || this.b.surrenderAccepted], this.b.surrenderAccepted); } }]);
+    ), [{ label: s.doneLabel ?? 'Return to the campaign map', primary: true, onClick: () => { hideModal(); s.onDone(won, draw, [this.b.generalLost[0], this.b.generalLost[1] || this.b.surrenderAccepted], this.b.surrenderAccepted,
+      this.b.generalSlain[1] ? 'killed' : this.b.enemyGeneralFate ?? (this.b.surrenderAccepted ? 'captured' : undefined)); } }]);
   }
 
   /** The enemy's army has broken and its commander asks for terms: accept, or ride them down. */
   private askSurrender() {
     const s = this.s;
     const who = s.enemyGeneral ?? `the ${s.enemyFaction.short} commander`;
-    showModal(`The ${s.enemyFaction.short} ask for terms`, h('div', {},
-      h('p', {}, `The battle has turned against them past bearing. Their army breaks, and ${who} sends his standard down to you asking for quarter.`),
-      h('p', { class: 'muted' }, 'Accept, and the battle ends: his men lay down their arms and are sent home, and he is yours to hold. Or ride them down while they run: more of them fall, but some escape, and so may he.'),
+    const ringed = this.b.ringed;
+    const slain = this.b.generalSlain[1];
+    const asker = slain ? 'his captains, their general slain,' : who;
+    showModal(ringed ? 'Surrounded! Their army breaks' : 'Their army breaks', h('div', {},
+      h('p', {}, ringed
+        ? `Hemmed in on every side with no way out, the nerve of the ${s.enemyFaction.short} breaks. ${slain ? 'With their general slain, his captains' : `${who}`} send${slain ? '' : 's'} to you asking for quarter.`
+        : `The battle has turned against them past bearing. Their army breaks, and ${asker} ask${slain ? '' : 's'} you for quarter.`),
+      h('ul', { class: 'help' },
+        h('li', {}, h('b', {}, 'Accept the surrender: '), 'the battle ends; his men lay down their arms and are sent home, and their commander is your prisoner.'),
+        h('li', {}, h('b', {}, 'Destroy the army: '), ringed ? 'no quarter. Surrounded, they are cut down to the last man, and their commander most likely dies with them.' : 'no quarter. Most are cut down as they run; a few escape, and their commander may die or be taken.'),
+        h('li', {}, h('b', {}, 'Ride them down yourself: '), 'fight the pursuit out on the field.'),
+      ),
     ), [
-      { label: '🗡 Ride them down', onClick: () => { hideModal(); this.b.pursue(); this.say('No quarter: ride them down!'); this.renderUI(); } },
-      { label: '🏳 Accept the surrender', primary: true, onClick: () => { hideModal(); this.b.acceptSurrender(); this.finish(true); } },
+      { label: '🗡 Ride them down yourself', onClick: () => { hideModal(); this.b.pursue(); this.say('No quarter: ride them down!'); this.renderUI(); } },
+      { label: '⚔ Destroy the army', primary: ringed, onClick: () => { hideModal(); this.b.destroyArmy(); this.finish(true); } },
+      { label: '🏳 Accept the surrender', primary: !ringed, onClick: () => { hideModal(); this.b.acceptSurrender(); this.finish(true); } },
     ]);
   }
 

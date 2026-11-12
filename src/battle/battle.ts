@@ -265,6 +265,14 @@ export class Battle {
   private pursuitEnd = 0;
   /** The player accepted the enemy's surrender. */
   surrenderAccepted = false;
+  /** The player chose to destroy the broken army where it stood. */
+  destroyed = false;
+  /** The enemy army was surrounded when it broke (no way out for it). */
+  ringed = false;
+  /** Each side's commander was slain (not just his regiment broken). */
+  generalSlain: [boolean, boolean] = [false, false];
+  /** What became of the enemy commander when his army was destroyed. */
+  enemyGeneralFate: 'killed' | 'captured' | null = null;
   /** Encirclement: how far the ringed army has starved (0..1), whether relief has come, whether it broke out. */
   hunger = 0;
   private starveFrom = 0;
@@ -1178,6 +1186,7 @@ export class Battle {
     this.floaters = this.floaters.filter((f) => f.t < 1.6);
 
     if (this.winner < 0) {
+      this.riskGeneral(dt);
       this.updateArrivals();
       this.updateRing();
       if (this.winner >= 0) return;
@@ -1457,11 +1466,28 @@ export class Battle {
   }
 
   /** When the commander's regiment breaks or is destroyed, the whole army's nerve goes with it. */
+  /** A commander in the thick of it may be cut down or shot: the more his regiment suffers, the likelier. */
+  private riskGeneral(dt: number) {
+    for (const side of [0, 1] as const) {
+      if (this.generalLost[side]) continue;
+      const g = this.get(this.generalIds[side]);
+      if (!g || g.state !== 'ok' || (!g.fighting && g.dmgMissile <= 0)) continue;
+      // The player's own commander is you: wounded, perhaps, but not slain.
+      if (side === 0) continue;
+      const hurt = 1 - g.men / Math.max(1, g.startMen);
+      if (this.rng.next() < dt * 0.006 * (1 + 4 * hurt) * (g.fighting ? 1 : 0.5)) {
+        this.generalSlain[side] = true;
+        this.float(g.x, g.y - 30, 'Their general is slain!', '#ffe08a');
+        this.checkGeneral(g);
+      }
+    }
+  }
+
   private checkGeneral(u: BUnit) {
     const side = u.side;
     if (this.generalIds[side] !== u.id || this.generalLost[side]) return;
     this.generalLost[side] = true;
-    this.float(u.x, u.y - 24, 'The general has fallen!', '#ff6b5b');
+    if (!this.generalSlain[side]) this.float(u.x, u.y - 24, 'The general has fallen!', '#ff6b5b');
     for (const v of this.units) {
       if (v.side !== side || v.state !== 'ok') continue;
       v.morale -= Math.max(25, v.maxMorale * 0.4);
@@ -1731,7 +1757,10 @@ export class Battle {
     this.balance += (raw - this.balance) * Math.min(1, dt * 1.5);
     if (this.surrenderOffered || this.pursuit || this.time < 15 || this.walls) return;
     const starved = this.opts.encircled?.side === 1 && this.hunger >= 1;
-    if (1 - this.balance < Battle.SURRENDER || starved) {
+    // Surrounded with the day going against it, an army's nerve breaks long before it is beaten.
+    const ringed = this.balance >= 0.6 && this.surrounded(1);
+    if (1 - this.balance < Battle.SURRENDER || starved || ringed) {
+      this.ringed = this.surrounded(1);
       // The enemy's nerve is gone: every regiment breaks, and the commander sends to ask for terms.
       this.surrenderOffered = true;
       for (const u of this.units) {
@@ -1742,8 +1771,56 @@ export class Battle {
         u.order = { kind: 'hold' };
       }
       const g = this.get(this.generalIds[1]);
-      if (g) this.float(g.x, g.y - 24, 'The army breaks! Their commander asks for terms', '#ffe08a');
+      if (g) this.float(g.x, g.y - 24, this.ringed ? 'Surrounded, the army breaks!' : 'The army breaks! Their commander asks for terms', '#ffe08a');
     }
+  }
+
+  /**
+   * Is this side's army hemmed in? The other side's regiments stand round it on (nearly) every
+   * side: no gap of more than about 120 degrees for it to get away through.
+   */
+  surrounded(side: 0 | 1): boolean {
+    const mine = this.units.filter((u) => u.side === side && (u.state === 'ok' || u.state === 'routing'));
+    const foes = this.units.filter((u) => u.side !== side && u.state === 'ok');
+    if (!mine.length || foes.length < 3) return false;
+    const cx = mine.reduce((s, u) => s + u.x, 0) / mine.length;
+    const cy = mine.reduce((s, u) => s + u.y, 0) / mine.length;
+    const ang = foes.filter((f) => Math.hypot(f.x - cx, f.y - cy) < 520).map((f) => Math.atan2(f.y - cy, f.x - cx)).sort((a, b) => a - b);
+    if (ang.length < 3) return false;
+    let gap = ang[0] + Math.PI * 2 - ang[ang.length - 1];
+    for (let i = 1; i < ang.length; i++) gap = Math.max(gap, ang[i] - ang[i - 1]);
+    return gap < (Math.PI * 2) / 3;
+  }
+
+  /**
+   * The broken army is destroyed where it stands. Ringed in, it is cut down to the last man and its
+   * commander most likely dies with it; in the open, most fall and a few escape. Killing costs a little.
+   */
+  destroyArmy() {
+    const ringed = this.ringed;
+    for (const u of this.units) {
+      if (u.side === 0) {
+        if (u.state === 'ok') u.men *= 0.97;
+        continue;
+      }
+      if (u.state === 'dead' || u.state === 'fled') continue;
+      if (ringed) {
+        u.men = 0;
+        u.state = 'dead';
+      } else {
+        u.men *= 0.5;
+        u.state = 'fled';
+      }
+    }
+    // The commander shares his army's fate: slain already, or killed or taken now.
+    this.generalLost[1] = true;
+    if (this.generalSlain[1]) this.enemyGeneralFate = 'killed';
+    else {
+      this.enemyGeneralFate = this.rng.next() < (ringed ? 0.7 : 0.4) ? 'killed' : 'captured';
+      if (this.enemyGeneralFate === 'killed') this.generalSlain[1] = true;
+    }
+    this.destroyed = true;
+    this.winner = 0;
   }
 
   /** The player rides the broken army down: the battle goes on until it has fled or for two minutes. */

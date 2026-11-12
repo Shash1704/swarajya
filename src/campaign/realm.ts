@@ -235,16 +235,16 @@ export function unrestMonthly(s: GameState) {
 // ---------------------------------------------------------------- commanders
 
 /** After a defeat, or when his regiment falls: is the commander killed, taken, or does he get away? */
-/** `surrendered`: he gave himself up on the field, so he is taken alive. */
-export function generalFate(s: GameState, a: Army, captor: number, chance = 1, surrendered = false): string | null {
-  if (!surrendered && !s.rng.chance(chance)) return null;
+/** `force`: the battle already decided it: he was slain on the field, or taken alive. */
+export function generalFate(s: GameState, a: Army, captor: number, chance = 1, force?: 'killed' | 'captured'): string | null {
+  if (!force && !s.rng.chance(chance)) return null;
   const g = a.general;
   // You always live to fight another day (your army may not).
   if (g.isPlayer) {
     log(s, 'You are wounded in the rout, but your men carry you clear.', true);
     return null;
   }
-  const r = surrendered ? 0.5 : s.rng.next();
+  const r = force === 'killed' ? 0 : force === 'captured' ? 0.5 : s.rng.next();
   const f = s.factions;
   let text: string;
   if (r < 0.35) {
