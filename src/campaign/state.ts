@@ -262,7 +262,10 @@ export interface GameState {
   nextArmyId: number;
   log: LogEntry[];
   rng: RNG;
+  /** The campaign is over (only if Swarajya falls: a victory is celebrated, and the world runs on). */
   over: null | 'won' | 'lost';
+  /** Delhi taken (or half of India): the triumph is announced once ('pending'), then play goes on ('shown'). */
+  triumph?: 'pending' | 'shown';
   /** -100..100 goodwill between realms. */
   relations: number[][];
   /** Hostages exchanged: no war until this day. */
@@ -881,7 +884,8 @@ export function checkOver(state: GameState) {
   if (!state.factions[PLAYER].alive) state.over = 'lost';
   else {
     const delhi = state.provinces.find((p) => p.key === 'delhi')!;
-    if (delhi.owner === PLAYER || provincesOf(state, PLAYER).length >= VICTORY_PROVINCES) state.over = 'won';
+    // Victory is celebrated, not the end: the world runs on, and so may your conquests.
+    if (!state.triumph && (delhi.owner === PLAYER || provincesOf(state, PLAYER).length >= VICTORY_PROVINCES)) state.triumph = 'pending';
   }
 }
 

@@ -174,6 +174,7 @@ export class CampaignScene implements Scene {
     for (const f of this.live) f();
     this.renderUI();
     if (s.over && !this.overShown && !modalOpen()) this.showOver();
+    if (s.triumph === 'pending' && !modalOpen()) this.showTriumph();
   }
 
   private setPaused(p: boolean) {
@@ -929,6 +930,23 @@ export class CampaignScene implements Scene {
         { label: yes, primary: true, onClick: () => { hideModal(); resolve(true); } },
       ]);
     });
+  }
+
+  /** Delhi taken (or half of India held): a moment of triumph, then the campaign goes on. */
+  private showTriumph() {
+    const s = this.state;
+    s.triumph = 'shown';
+    this.setPaused(true);
+    const delhi = s.provinces.find((p) => p.key === 'delhi');
+    showModal('Hindavi Swarajya!', h('div', {},
+      h('p', {}, delhi?.owner === PLAYER
+        ? `By ${dateLabel(s.day)} the Maratha banner flies over Delhi, and over ${provincesOf(s, PLAYER).length} provinces. The empire bends; the people are free.`
+        : `By ${dateLabel(s.day)} the Maratha banner flies over ${provincesOf(s, PLAYER).length} provinces. The empire bends; the people are free.`),
+      h('p', { class: 'muted' }, 'The war is not over: the Mughals and the rest will try to take back what they lost. Play on as long as you like.'),
+    ), [
+      { label: 'New campaign', onClick: () => { hideModal(); app.setScene(new CampaignScene(newGame(Math.floor(Math.random() * 1e9)))); } },
+      { label: 'Continue the campaign', primary: true, onClick: () => { hideModal(); this.renderUI(true); } },
+    ]);
   }
 
   private showOver() {
