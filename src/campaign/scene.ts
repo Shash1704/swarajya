@@ -24,7 +24,6 @@ import {
 import { BattleScene } from '../battle/scene';
 import { canvas3d, hasWebGL, setWant3D, want3D } from '../pref3d';
 import type { Map3D } from './map3d';
-import type { Traveller } from './mapLife';
 import { openAISettings, openTalk } from './talk';
 import { hail, liegeTitle, meName, parleyPartner, renown, rulerOf } from './characters';
 import { llmSettings } from '../llm';
@@ -70,8 +69,6 @@ export class CampaignScene implements Scene {
   private v3: Map3D | null = null;
   /** Seconds the 3D map's sun has run (it turns only while the world runs). */
   private hourT = 0;
-  /** Caravans and villagers on the roads of the 3D map, for their nameplates. */
-  private travellers: Traveller[] = [];
   private use3D = want3D() && hasWebGL();
   private loading3D = false;
   private skinKey = '';
@@ -297,32 +294,6 @@ export class CampaignScene implements Scene {
   }
 
   /** The 3D map: repaint its skin when realms or the selection change, then render it. */
-  /** Nameplates over the caravans and villagers on the roads, when the camera is close enough to see them. */
-  private drawTravellers(ctx: CanvasRenderingContext2D) {
-    if (!this.v3 || this.cam.z < 3.2) return;
-    // Only the dozen nearest the middle of the view, so the map doesn't fill with labels.
-    const near = this.travellers
-      .map((tr) => ({ tr, s: this.v3!.project(tr.x, tr.y, 9) }))
-      .filter(({ s }) => s[0] > -50 && s[1] > -50 && s[0] < VIEW_W + 50 && s[1] < VIEW_H + 50)
-      .sort((a, b) => Math.hypot(a.s[0] - VIEW_W / 2, a.s[1] - VIEW_H / 2) - Math.hypot(b.s[0] - VIEW_W / 2, b.s[1] - VIEW_H / 2))
-      .slice(0, 12);
-    ctx.save();
-    ctx.font = '600 10px Georgia, serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    for (const { tr, s } of near) {
-      const [sx, sy] = s;
-      const w = ctx.measureText(tr.label).width + 10;
-      ctx.fillStyle = 'rgba(28,20,12,0.72)';
-      ctx.beginPath();
-      ctx.roundRect(sx - w / 2, sy - 8, w, 16, 6);
-      ctx.fill();
-      ctx.fillStyle = tr.kind === 'caravan' ? '#f2d38a' : '#e8e0cc';
-      ctx.fillText(tr.label, sx, sy);
-    }
-    ctx.restore();
-  }
-
   private draw3D(ctx: CanvasRenderingContext2D) {
     const v = this.v3!;
     const os = this.state.provinces.map((p) => `${p.owner}${p.siege ? 's' : ''}`).join(',');
@@ -337,7 +308,7 @@ export class CampaignScene implements Scene {
       v.paint((g, scale) => this.map.draw(g, this.state, { x: 0, y: 0, z: scale }, this.selProv, new Set(), false, true));
     }
     const s = this.state;
-    this.travellers = v.render(this.t, s.day, (0.32 + this.hourT / 150) % 1, s,
+    v.render(this.t, (0.32 + this.hourT / 150) % 1, s,
       (o) => [s.factions[o].rgb[0] / 255, s.factions[o].rgb[1] / 255, s.factions[o].rgb[2] / 255],
       (a) => a.units.length > 0 && a.units.every((u) => UNIT_STATS[u.type].cls === 'cavalry'));
     ctx.clearRect(0, 0, VIEW_W, VIEW_H);
@@ -407,7 +378,6 @@ export class CampaignScene implements Scene {
     }
 
     this.drawVillages(ctx);
-    this.drawTravellers(ctx);
     for (const c of this.world.clashes) this.drawClash(ctx, c.x, c.y);
     for (const fl of s.fleets) this.drawFleet(ctx, fl);
     const order = [...s.armies].sort((a, b) => (a === this.selArmy ? 1 : 0) - (b === this.selArmy ? 1 : 0));

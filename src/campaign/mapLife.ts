@@ -1,8 +1,7 @@
 /**
  * The life of the 3D campaign map, as in Bannerlord's world map: forests of single
  * trees, walled towns, hill forts and villages in detail, each with its owner's flag;
- * caravans and villagers on the move between them; lamps in the towns at night;
- * clouds drifting over the land; and the light of the day turning to dusk and night.
+ * lamps in the towns at night; clouds drifting over the land; and the light of the day turning to dusk and night.
  */
 import type { Scene } from '@babylonjs/core/scene';
 import { Matrix, Quaternion, Vector3 } from '@babylonjs/core/Maths/math.vector';
@@ -356,130 +355,6 @@ export function buildSettlements(scene: Scene, state: GameState, ground: Height,
       cloth.end();
       lampMesh.visibility = Math.max(0, Math.min(1, (night - 0.25) * 2));
       lampMesh.isVisible = night > 0.25;
-    },
-  };
-}
-
-// ---------------------------------------------------------------- people on the roads
-
-export interface Traveller {
-  x: number;
-  y: number;
-  label: string;
-  kind: 'caravan' | 'villagers';
-}
-
-export interface Roads {
-  /** Moves every caravan and band of villagers along its road; returns where they are, for their nameplates. */
-  update(day: number, t: number, color: (prov: number) => RGB): Traveller[];
-}
-
-/**
- * Villagers taking their produce to the town of their province and back, and caravans of camels
- * plying between neighbouring towns, each going at its own pace along its own road.
- */
-export function buildRoads(scene: Scene, state: GameState, ground: Height, waterY: number): Roads {
-  const { prov } = state.map;
-  const land = (x: number, y: number) => {
-    const cx = Math.floor(x / CELL);
-    const cy = Math.floor(y / CELL);
-    return cx >= 0 && cy >= 0 && cx < MW && cy < MH && prov[cy * MW + cx] !== SEA;
-  };
-  const overLand = (a: { x: number; y: number }, b: { x: number; y: number }) => {
-    for (let k = 1; k < 16; k++) if (!land(a.x + ((b.x - a.x) * k) / 16, a.y + ((b.y - a.y) * k) / 16)) return false;
-    return true;
-  };
-  const rand = stream(99);
-  interface Route { a: { x: number; y: number }; b: { x: number; y: number }; len: number; speed: number; phase: number; kind: Traveller['kind']; label: string; prov: number }
-  const routes: Route[] = [];
-  for (const v of state.villages) {
-    if (rand() < 0.45) continue;
-    const p = state.provinces[v.prov];
-    if (!overLand(v, p)) continue;
-    const len = Math.hypot(p.x - v.x, p.y - v.y);
-    routes.push({ a: v, b: p, len, speed: 9 + rand() * 6, phase: rand() * 2, kind: 'villagers', label: `Villagers of ${v.name}`, prov: v.prov });
-  }
-  for (const p of state.provinces) {
-    for (const qi of p.neighbors) {
-      if (qi <= p.id || rand() < 0.45) continue;
-      const q = state.provinces[qi];
-      const len = Math.hypot(q.x - p.x, q.y - p.y);
-      if (len > 140 || !overLand(p, q)) continue;
-      routes.push({ a: p, b: q, len, speed: 14 + rand() * 8, phase: rand() * 2, kind: 'caravan', label: `Caravan to ${q.town}`, prov: p.id });
-    }
-  }
-  const tinted = material(scene, 'rTint', [1, 1, 1]);
-  const mk = (mesh: Mesh) => {
-    mesh.material = tinted;
-    return new Many(mesh, true);
-  };
-  const person = mk(CreateCylinder('rPerson', { height: 1, diameterTop: 0.6, diameterBottom: 0.9, tessellation: 5 }, scene));
-  const beastBody = mk(CreateBox('rBeast', { size: 1 }, scene));
-  const hump = mk(CreateSphere('rHump', { diameter: 1, segments: 3 }, scene));
-  const neck = mk(CreateBox('rNeck', { size: 1 }, scene));
-  const cart = mk(CreateBox('rCart', { size: 1 }, scene));
-  const wheel = mk(CreateCylinder('rWheel', { height: 1, diameter: 1, tessellation: 8 }, scene));
-  const all = [person, beastBody, hump, neck, cart, wheel];
-  const CAMEL: RGB = [0.72, 0.58, 0.4];
-  const OX: RGB = [0.82, 0.8, 0.74];
-  const CLOTH: RGB[] = [[0.9, 0.86, 0.76], [0.8, 0.5, 0.3], [0.6, 0.62, 0.7]];
-  const WOOD: RGB = [0.46, 0.33, 0.2];
-
-  return {
-    update(day, t, color) {
-      for (const m of all) m.begin();
-      const out: Traveller[] = [];
-      for (const r of routes) {
-        const pp = state.provinces[r.prov];
-        if (pp.siege) continue; // nobody takes the road to a town under siege
-        // Out to the far end and back again, then a rest in town.
-        let u = ((day * r.speed) / r.len + r.phase) % 2.4;
-        if (u > 2) continue;
-        const back = u > 1;
-        if (back) u = 2 - u;
-        const from = back ? r.b : r.a;
-        const to = back ? r.a : r.b;
-        const s = back ? 1 - u : u;
-        const x = r.a.x + (r.b.x - r.a.x) * (back ? 1 - s : s);
-        const y = r.a.y + (r.b.y - r.a.y) * (back ? 1 - s : s);
-        const yaw = Math.atan2(to.x - from.x, -(to.y - from.y));
-        const fx = Math.sin(yaw);
-        const fz = Math.cos(yaw);
-        const bob = (k: number) => Math.abs(Math.sin(t * 7 + k)) * 0.15;
-        const at = (k: number, side = 0) => {
-          // k: places back along the line of march; side: to the right.
-          const px = toX(x) - fx * k * 2.2 + fz * side;
-          const pz = toZ(y) - fz * k * 2.2 - fx * side;
-          return [px, Math.max(waterY, ground(px + WW / 2, WH / 2 - pz)), pz] as const;
-        };
-        if (r.kind === 'caravan') {
-          const guard = color(r.prov);
-          for (let k = 0; k < 3; k++) {
-            const [px, py, pz] = at(k);
-            beastBody.add(px, py + 1.5 + bob(k), pz, yaw, [0.8, 0.9, 2], CAMEL);
-            hump.add(px, py + 2.1 + bob(k), pz, yaw, [0.7, 0.6, 0.8], CAMEL);
-            neck.add(px + fx * 1.1, py + 2 + bob(k), pz + fz * 1.1, yaw, [0.35, 1.2, 0.35], CAMEL, -0.4);
-            for (const leg of [-0.6, 0.6]) beastBody.add(px + fx * leg, py + 0.55, pz + fz * leg, yaw, [0.25, 1.1, 0.25], CAMEL);
-          }
-          for (const side of [-1.4, 1.4]) {
-            const [px, py, pz] = at(1, side);
-            person.add(px, py + 0.85 + bob(side), pz, yaw, [0.8, 1.7, 0.8], guard);
-          }
-        } else {
-          const [cx, cy, cz] = at(0.6);
-          cart.add(cx, cy + 1, cz, yaw, [1.4, 0.7, 2], WOOD);
-          for (const side of [-0.8, 0.8]) wheel.add(cx + fz * side, cy + 0.6, cz - fx * side, yaw + Math.PI / 2, [1.1, 0.15, 1.1], WOOD, Math.PI / 2);
-          const [ox, oy, oz] = at(-0.4);
-          beastBody.add(ox, oy + 0.9 + bob(1), oz, yaw, [0.8, 0.8, 1.8], OX);
-          for (let k = 0; k < 2; k++) {
-            const [px, py, pz] = at(1.4, k ? 0.8 : -0.8);
-            person.add(px, py + 0.8 + bob(k), pz, yaw, [0.75, 1.6, 0.75], CLOTH[(r.prov + k) % CLOTH.length]);
-          }
-        }
-        out.push({ x, y, label: r.label, kind: r.kind });
-      }
-      for (const m of all) m.end();
-      return out;
     },
   };
 }

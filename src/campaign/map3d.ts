@@ -21,7 +21,7 @@ import { CELL, MH, MW, WH, WW } from '../geo';
 import { engineFor } from '../three/engine';
 import { groundGrain, plasterTexture, stoneTexture, waterRipples } from '../three/textures';
 import type { Army, GameState } from './state';
-import { buildClouds, buildForests, buildRoads, buildSettlements, daylight, Many, type Roads, type Settlements, type Sky, toX, toZ, type Traveller } from './mapLife';
+import { buildClouds, buildForests, buildSettlements, daylight, Many, type Settlements, type Sky, toX, toZ } from './mapLife';
 
 /**
  * The campaign map in 3D (Babylon.js): India in relief from the map's own
@@ -51,7 +51,6 @@ export class Map3D {
   private water: Mesh;
   private troops: { body: Many; head: Many; horse: Many; flag: Many; pole: Many };
   private towns: Settlements;
-  private roads: Roads;
   private sky: Sky;
   private sun: DirectionalLight;
   private hemi: HemisphericLight;
@@ -101,7 +100,6 @@ export class Map3D {
     const ground = (x: number, y: number) => this.groundY(x, y);
     this.towns = buildSettlements(scene, state, ground, WATER, { stone: stoneTexture(scene), plaster: plasterTexture(scene) });
     buildForests(scene, state, ground);
-    this.roads = buildRoads(scene, state, ground, WATER);
     this.sky = buildClouds(scene);
     const body = CreateCylinder('tBody', { height: 2.6, diameterTop: 0.8, diameterBottom: 1.2, tessellation: 6 }, scene);
     body.bakeTransformIntoVertices(Matrix.Translation(0, 1.3, 0));
@@ -248,10 +246,9 @@ export class Map3D {
   }
 
   /**
-   * t: real seconds (for motion); day: the game day (for travellers); hour: 0..1 through the day of
-   * the light (noon at 0.5). Returns the caravans and villagers on the roads, for their nameplates.
+   * t: real seconds (for motion); hour: 0..1 through the day of the light (noon at 0.5).
    */
-  render(t: number, day: number, hour: number, state: GameState, color: (owner: number) => [number, number, number], cavalry: (a: Army) => boolean): Traveller[] {
+  render(t: number, hour: number, state: GameState, color: (owner: number) => [number, number, number], cavalry: (a: Army) => boolean) {
     const armies = state.armies;
     // The camera looks at the ground under its target (the hills are high now), and never sinks into a hillside.
     const cam = this.camera;
@@ -280,7 +277,6 @@ export class Map3D {
     const glow = 0.12 + 0.18 * L.day;
     this.landMat.emissiveColor.set(glow, glow * 0.97, glow * 0.92 + 0.03 * L.night);
     this.towns.update(t, (p) => color(state.provinces[p].owner), L.night);
-    const travellers = this.roads.update(day, t, (p) => color(state.provinces[p].owner));
     this.sky.update(t, this.camera.radius);
     // A company of men under each banner, facing its line of march, with its standard.
     const { body, head, horse, flag, pole } = this.troops;
@@ -335,7 +331,6 @@ export class Map3D {
     this.engine.beginFrame();
     this.scene.render();
     this.engine.endFrame();
-    return travellers;
   }
 
   // ---------------------------------------------------------------- picking, projection, camera
