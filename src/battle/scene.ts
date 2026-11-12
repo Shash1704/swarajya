@@ -284,6 +284,20 @@ export class BattleScene implements Scene {
     ]);
   }
 
+  /** The cheat: every enemy regiment falls where it stands, and the battle is won. */
+  private cheatWin() {
+    const b = this.b;
+    for (const u of b.units) {
+      if (u.side !== 1 || u.state === 'dead' || u.state === 'fled') continue;
+      b.float(u.x, u.y, 'Struck down!', '#ffe08a');
+      u.men = 0;
+      u.state = 'dead';
+    }
+    b.winner = 0;
+    this.say('Cheat: the whole enemy force is struck down.');
+    this.finish(true);
+  }
+
   private say(msg: string) {
     this.notice = msg;
     this.noticeT = 2.5;
@@ -459,6 +473,12 @@ export class BattleScene implements Scene {
   keyDown(e: KeyboardEvent) {
     if (modalOpen()) return;
     const k = e.key.toLowerCase();
+    // Cheat: Command+Shift (Ctrl+Shift elsewhere) on its own strikes down the whole enemy force.
+    if ((e.metaKey || e.ctrlKey) && e.shiftKey && ['meta', 'shift', 'control'].includes(k) && this.phase !== 'done') {
+      e.preventDefault();
+      this.cheatWin();
+      return;
+    }
     if ((['arrowleft', 'arrowright', 'arrowup', 'arrowdown', 'w', 'a', 's', 'd'].includes(k) || (this.v3 && (k === 'z' || k === 'c'))) && !e.metaKey && !e.ctrlKey) {
       e.preventDefault();
       this.keys.add(k);

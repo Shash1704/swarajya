@@ -857,7 +857,7 @@ export class Battle {
     return this.isOpen((a.x + b.x) / 2);
   }
 
-  private float(x: number, y: number, text: string, color: string) {
+  float(x: number, y: number, text: string, color: string) {
     this.floaters.push({ x, y: y - 30, text, color, t: 0 });
   }
 
