@@ -1,5 +1,6 @@
 import { isLarge, UNIT_STATS } from '../data';
 import { type Battle, type BUnit, FIELD_H, FIELD_W } from './battle';
+import { Script } from './script';
 
 const dist = (a: { x: number; y: number }, b: { x: number; y: number }) => Math.hypot(a.x - b.x, a.y - b.y);
 
@@ -21,7 +22,9 @@ const strength = (list: BUnit[]) => list.reduce((s, u) => s + u.men * UNIT_STATS
 
 /** Re-plans orders for one side. Called every second or two of battle time. */
 export function planSide(b: Battle, side: 0 | 1) {
-  const mine = b.units.filter((u) => u.side === side && u.state === 'ok' && !u.climbing);
+  // Historical battles: regiments still following how their side really fought are left to the script.
+  const held = side === 1 ? scriptOf(b)?.run(b) : undefined;
+  const mine = b.units.filter((u) => u.side === side && u.state === 'ok' && !u.climbing && !held?.has(u.id));
   // The AI knows only what its scouts can see.
   const foes = b.units.filter((u) => u.side !== side && u.state === 'ok' && b.sees(side, u));
   if (!mine.length) return;
@@ -35,6 +38,15 @@ export function planSide(b: Battle, side: 0 | 1) {
     planField(b, side, mine, foes);
   }
   if (!b.walls) afterPlan(b, side, mine, foes);
+}
+
+const scripts = new WeakMap<Battle, Script>();
+/** The battle's script for the computer's side, made the first time it is asked for. */
+export function scriptOf(b: Battle): Script | undefined {
+  if (!b.opts.script?.length) return undefined;
+  let s = scripts.get(b);
+  if (!s) scripts.set(b, (s = new Script(b, 1, b.opts.script)));
+  return s;
 }
 
 /** Cheap repeatable dice for the planner: the same unit rolls the same for ten seconds at a time. */

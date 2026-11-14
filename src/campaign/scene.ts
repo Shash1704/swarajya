@@ -28,7 +28,7 @@ import { openAISettings, openTalk } from './talk';
 import { hail, liegeTitle, meName, parleyPartner, renown, rulerOf } from './characters';
 import { llmSettings } from '../llm';
 import { byYear, CHRON_ICON, chronicle, deeds } from './chronicle';
-import type { Spot, Terrain } from '../battle/battle';
+import { FIELD_H, FIELD_W, type Spot, type Terrain } from '../battle/battle';
 
 const MAX_ZOOM = 3;
 /** Game days that pass per real second at 1x speed. */
@@ -1049,8 +1049,8 @@ export class CampaignScene implements Scene {
     for (let i = 1; i < sorted.length; i++) gap = Math.max(gap, sorted[i] - sorted[i - 1]);
     // All from one direction is no ring: they must come from sides at least 90 degrees apart.
     if (Math.PI * 2 - gap < Math.PI / 2) return null;
-    const W = 1620;
-    const H = 1080;
+    const W = FIELD_W;
+    const H = FIELD_H;
     const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
     const mine: Spot[] = [];
     side.forEach((a, k) => {

@@ -2,8 +2,10 @@
  * The historical battles' data: armies, regiments, commanders and formations (no DOM, so
  * it can be tested headless). See historical.ts for the menu and how they are fought.
  */
-import type { BattleMap, LeaderMods, Terrain } from './battle/battle';
+import { type BattleMap, FIELD_H, FIELD_W, type LeaderMods, type Spot, type Terrain } from './battle/battle';
+import type { Pt2, Tactic } from './battle/script';
 import type { UnitType } from './data';
+import { type CUnit, newUnit } from './campaign/state';
 
 const UP = -Math.PI / 2;
 const DOWN = Math.PI / 2;
@@ -32,7 +34,7 @@ export interface Scenario {
   leaders: [LeaderMods, LeaderMods];
   leaderNotes: [string, string];
   playerAttacks: boolean;
-  /** Regiments with their historical places (field 1620 x 1080; the Marathas start at the bottom). */
+  /** Regiments with their historical places (drawn on a 1620 x 1080 field, centred on the real one when loaded; the first side starts at the bottom). */
   mine: Reg[];
   theirs: Reg[];
   zone0?: [number, number];
@@ -58,6 +60,8 @@ export interface Scenario {
   winner: 0 | 1;
   /** The look of the ground (default plains). */
   terrain?: Terrain;
+  /** How each side really fought ([first side, second side]): the computer's side follows its own. */
+  tactics?: [Tactic[], Tactic[]];
 }
 
 const BAJIRAO: LeaderMods = { morale: 1.15, melee: 1.05, charge: 1.2, horse: 1.15, defense: 1, fatigue: 0.85 };
@@ -132,6 +136,19 @@ export const SCENARIOS: Scenario[] = [
     ],
     generals: [11, 10],
     terrain: 'desert',
+    tactics: [[
+      { regs: [9, 10, 11, 12, 13], note: 'Alexander leads the Companions and the hypaspists forward and to the right, drawing the Persian left after him; once the lines are locked and a gap opens, he wheels in and drives at Darius himself',
+        shout: 'Alexander drives at Darius!', posts: [[1060, 700], [1140, 700], [1240, 705], [1320, 705], [1400, 705]], reach: 160,
+        until: [{ engaged: 4 }, { time: 25 }], then: { route: [[1120, 470]], strike: 'general' } },
+      { regs: [0, 1, 2], note: 'Parmenion holds the left against Mazaeus for as long as he must', reach: 220, until: [{ time: 60 }, { winning: 0.1 }], then: 'free' },
+      { regs: [17, 18, 19], note: 'the second line stands ready to face about against horse in the rear', reach: 220, until: [{ engaged: 10 }, { time: 40 }, { losing: 0.05 }], then: 'free' },
+    ], [
+      { regs: [15, 16, 17], note: 'the scythed chariots charge first, across the ground levelled for them', shout: 'The scythed chariots charge!', until: [{ time: 3 }], then: 'charge' },
+      { regs: [18, 19, 20, 21, 22, 23], note: 'Bessus takes the Bactrian and Scythian horse out to the Persian left to get round Alexander\'s flank', shout: 'Bessus rides round the Macedonian right!',
+        until: [{ time: 8 }], then: { route: [[1640, 430], [1720, 790]], strike: 'nearest' } },
+      { regs: [0, 1, 2, 3], note: 'Mazaeus throws the Persian right against Parmenion', until: [{ time: 12 }], then: 'charge' },
+      { regs: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14], note: 'Darius keeps the centre on his chosen ground and lets the Macedonians come to him', reach: 170, until: [{ time: 150 }, { losing: 0.2 }], then: 'free' },
+    ]],
     map: {
       rivers: [{ pts: [[-40, 70], [400, 60], [800, 80], [1200, 55], [1660, 70]], w: 30, fords: [], shallow: true }],
       hills: [{ x: 1480, y: 1000, r: 160, h: 0.35 }],
@@ -175,8 +192,8 @@ export const SCENARIOS: Scenario[] = [
       ['archer', 'Abdullah ibn Jubayr\'s archers, on the hill', 430, 725, UP],
     ],
     theirs: [
-      ['heavycav', 'Khalid ibn al-Walid\'s horse', 250, 300, DOWN],
-      ['heavycav', 'Khalid ibn al-Walid\'s horse', 320, 330, DOWN],
+      ['heavycav', 'Khalid ibn al-Walid\'s horse, behind the hills', -170, 300, 1.1],
+      ['heavycav', 'Khalid ibn al-Walid\'s horse, behind the hills', -120, 370, 1.1],
       ['spear', 'Quraysh foot', 580, 320, DOWN],
       ['spear', 'Quraysh foot', 660, 320, DOWN],
       ['spear', 'Quraysh foot', 740, 320, DOWN],
@@ -194,8 +211,21 @@ export const SCENARIOS: Scenario[] = [
     ],
     generals: [2, 5],
     terrain: 'desert',
+    tactics: [[
+      { regs: [8, 9], note: 'Abdullah ibn Jubayr\'s archers keep their hill as ordered, shooting down any horse that comes near, until the battle seems won; only then do they leave it for the Quraysh camp',
+        shout: 'The archers leave their hill for the spoils!', until: [{ time: 240 }, { time: 60, winning: 0.15 }], then: { loot: [810, 130] } },
+      { regs: [0, 1, 2, 3, 4, 5, 6, 7], note: 'the Muslim line waits at the foot of Uhud for the champions\' duels, then charges the Quraysh centre', reach: 160, until: [{ time: 10 }, { near: 170 }], then: 'charge' },
+    ], [
+      { regs: [0, 1], note: 'Khalid ibn al-Walid\'s horse waits behind the hills on the Quraysh right, out of the archers\' sight, until the archers\' hill is empty; then it rides round the hill and falls on the Muslims from behind',
+        shout: 'Khalid\'s horse rides round the archers\' hill!', reach: 110,
+        until: [{ empty: { x: 380, y: 720, r: 170 } }, { time: 240 }], then: { route: [[-130, 690], [40, 960], [430, 930]], strike: 'nearest' } },
+      { regs: [14, 15], note: 'Ikrimah\'s horse holds the Quraysh left until Khalid strikes, then charges', reach: 150, until: [{ after: 0 }], then: 'charge' },
+    ]],
     map: {
-      hills: [{ x: 760, y: 1080, r: 330, h: 0.95 }, { x: 1180, y: 1080, r: 280, h: 0.85 }, { x: 380, y: 720, r: 115, h: 0.7 }],
+      hills: [{ x: 760, y: 1080, r: 330, h: 0.95 }, { x: 1180, y: 1080, r: 280, h: 0.85 }, { x: 380, y: 720, r: 115, h: 0.7 },
+        { x: 300, y: 1130, r: 260, h: 0.8 },
+        // Low hills on the Quraysh right, with Khalid's horse out of sight behind them.
+        { x: -40, y: 430, r: 140, h: 0.75 }, { x: 70, y: 330, r: 115, h: 0.65 }, { x: -150, y: 520, r: 120, h: 0.6 }],
       rivers: [{ pts: [[-40, 520], [400, 545], [800, 520], [1200, 548], [1660, 525]], w: 26, fords: [], shallow: true }],
       labels: [
         { x: 960, y: 1040, text: 'Mount Uhud', size: 28 },
@@ -269,6 +299,15 @@ export const SCENARIOS: Scenario[] = [
     ],
     generals: [14, 16],
     terrain: 'plains',
+    tactics: [[
+      { regs: [1, 2, 4, 5, 7, 8, 10, 11], note: 'the Muslim corps stand and take the Byzantine attacks, bending but holding', reach: 200, until: [{ engaged: 25 }, { time: 60 }, { winning: 0.08 }], then: 'free' },
+      { regs: [14, 15, 16, 17], note: 'Khalid keeps the mobile guard behind the centre; once the lines are locked he leads it round the Byzantine left and drives their cavalry off the field',
+        shout: 'Khalid\'s mobile guard rides round the flank!', reach: 130, until: [{ engaged: 8 }, { losing: 0.05 }, { time: 40 }], then: { route: [[1580, 640], [1570, 300]], strike: 'cavalry' } },
+      { regs: [0, 13], note: 'the light horse guards the wings', reach: 200, until: [{ engaged: 10 }], then: 'free' },
+    ], [
+      { regs: [0, 1, 3, 4, 6, 7, 9, 10], note: 'the four Byzantine armies press the Muslim line together, again and again', until: [{ time: 5 }], then: 'charge' },
+      { regs: [12, 13, 14, 15], note: 'the Byzantine cavalry waits behind its infantry, slow to support it', reach: 150, until: [{ engaged: 20 }, { time: 90 }], then: 'free' },
+    ]],
     map: {
       // The ravine behind the Byzantines, crossed by one bridge; the Yarmouk gorge to the south.
       rivers: [
@@ -367,6 +406,14 @@ export const SCENARIOS: Scenario[] = [
     ],
     // The Marathas ring the Nizam: they may take post anywhere on the field.
     zone0: [20, 1060],
+    tactics: [[
+      { regs: [20, 21, 22, 23], note: 'Holkar watches the road from Puntamba and falls on the guns coming up it', reach: 330, evade: true, until: [{ winning: 0.12 }], then: 'free' },
+      { regs: [0, 1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 18, 19], note: 'the Maratha horse holds the ring out of reach of the Nizam\'s matchlocks, falls on whatever comes out of it, and lets hunger do the work',
+        reach: 230, evade: true, until: [{ winning: 0.12 }], then: 'free' },
+    ], [
+      { regs: [2, 3, 4, 5, 8, 9, 10, 13, 14, 15, 16, 17, 18, 26, 27, 28, 29, 30, 31], note: 'the Nizam\'s foot and guns stay in their crescent round Palkhed, waiting for the great guns to come up', reach: 120, until: [{ hunger: 0.7 }], then: 'free' },
+      { regs: [0, 1, 6, 7, 11, 12, 19, 20, 25], note: 'his sowars and Maratha allies sally against any horse that rides close, then fall back to the crescent', reach: 260, until: [{ hunger: 0.7 }], then: 'free' },
+    ]],
     // Drawn after the period map of the battle: the ridge to the north, the Shiv nadi to the east
     // (the Nizam's water, held by Bajirao), the Godavari to the south-west with Puntamba ford,
     // where the Nizam's heavy guns were left behind.
@@ -480,6 +527,13 @@ export const SCENARIOS: Scenario[] = [
       ],
     },
     generals: [12, 5],
+    tactics: [[
+      { regs: [4, 5, 6, 7, 8, 9, 10, 11], note: 'the Maratha wings lie back on the flanks while the screen draws the Mughal horse in, then close on its flanks', shout: 'The Maratha wings close in!',
+        reach: 160, until: [{ engaged: 2 }, { near: 260 }, { time: 20 }], then: 'charge' },
+      { regs: [12, 13], note: 'the Peshwa keeps his household horse in reserve until the Mughals are committed, then leads it in himself', reach: 160, until: [{ engaged: 6 }, { losing: 0.05 }], then: 'charge' },
+    ], [
+      { regs: [1, 2, 3, 4, 6, 7, 8, 9, 10], note: 'Mir Hasan Khan Koka\'s household horse rides straight out at the Maratha camp', shout: 'The household horse charges!', until: [{ time: 2 }], then: 'charge' },
+    ]],
     winner: 0,
     history: 'At Rikabganj the Marathas routed the force that came out of Delhi, and Mir Hasan Khan Koka was carried from the field wounded. Bajirao did not storm the city: hearing that the Vizier Qamar-ud-din Khan was hurrying back with the main army, he drew off rather than be caught between them, skirmished with it at Badshahpur in failing light, and rode away by Narnaul. The raid showed all Hindustan that the Mughal capital lay open to the Maratha horse. Accounts of the numbers on each side differ widely.',
   },
@@ -546,6 +600,13 @@ export const SCENARIOS: Scenario[] = [
     ],
     zone0: [20, 1060],
     generals: [0, 11],
+    tactics: [[
+      { regs: [0, 1, 2, 3, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16], note: 'the Maratha horse keeps clear of the guns and holds the ring, taking anything that comes out', reach: 220, evade: true, until: [{ winning: 0.12 }], then: 'free' },
+    ], [
+      { regs: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 16, 17, 18, 19, 20, 21], note: 'the Nizam\'s army stays in its entrenched camp behind the guns', reach: 140, until: [{ hunger: 0.6 }], then: 'free' },
+      { regs: [11, 12, 13, 14, 15], note: 'starving, the Nizam marches out for Sironj with his sowars, under cover of the guns', shout: 'The Nizam marches out for Sironj!',
+        until: [{ hunger: 0.6 }], then: { route: [[1100, 560], [1640, 600]], strike: 'nearest' } },
+    ]],
     morale: [1, 0.9],
     thirst: [0, 0.05],
     // The ring: the camp starves while it holds; if the Nizam's own regiment reaches the edge of the field he has broken out.
@@ -567,3 +628,103 @@ export const SCENARIOS: Scenario[] = [
     history: 'The Nizam\'s guns kept the Marathas from his camp, but their horse took every convoy and burnt the country round Bhopal. With his army starving, the Nizam tried to march away under the cover of his artillery, and was harassed every step. On 7 January 1738, at Doraha near Sironj, he signed a convention giving the Marathas all of Malwa, promising to win the Emperor\'s sanction for it, and fifty lakh rupees for their costs. It was Bajirao\'s last great campaign against him.',
   },
 ];
+
+// ---------------------------------------------------------------- placing the drawn battles on the field
+
+/** The battles were drawn on a 1620 x 1080 field; they are centred on the larger one, with open country round them. */
+const OX = (FIELD_W - 1620) / 2;
+const OY = (FIELD_H - 1080) / 2;
+
+function centre(sc: Scenario) {
+  const pt = <T extends { x: number; y: number }>(p: T) => { p.x += OX; p.y += OY; };
+  const p2 = (p: Pt2) => { p[0] += OX; p[1] += OY; };
+  for (const r of [...sc.mine, ...sc.theirs, ...(sc.arrivals ?? []).flatMap((a) => a.regs)]) { r[2] += OX; r[3] += OY; }
+  if (sc.zone0) sc.zone0 = sc.zone0[0] <= 20 && sc.zone0[1] >= 1060 ? [20, FIELD_H - 20] : [sc.zone0[0] + OY, sc.zone0[1] + OY];
+  const m = sc.map;
+  for (const list of [m.forests, m.hills, m.marshes, m.villages, m.labels]) list?.forEach(pt);
+  for (const r of m.rivers ?? []) {
+    // Rivers and lakes that ran off the old field are carried on to the edge of the new one.
+    const nearEdge = ([x, y]: Pt2) => x <= 150 || x >= 1470 || y <= 150 || y >= 930;
+    const out = (p: Pt2, q: Pt2): Pt2 => {
+      const L = Math.hypot(p[0] - q[0], p[1] - q[1]) || 1;
+      return [p[0] + (p[0] - q[0]) / L * 450, p[1] + (p[1] - q[1]) / L * 450];
+    };
+    const n = r.pts.length;
+    const pts = [...r.pts];
+    if (n >= 2 && nearEdge(r.pts[0])) pts.unshift(out(r.pts[0], r.pts[1]));
+    if (n >= 2 && nearEdge(r.pts[n - 1])) pts.push(out(r.pts[n - 1], r.pts[n - 2]));
+    r.pts = pts.map(([x, y]) => [x + OX, y + OY] as Pt2);
+    r.fords.forEach(pt);
+  }
+  for (const side of sc.tactics ?? []) {
+    for (const t of side) {
+      t.posts?.forEach(p2);
+      for (const c of t.until ?? []) if (c.empty) pt(c.empty);
+      const then = t.then;
+      if (typeof then === 'object') {
+        if ('route' in then) then.route.forEach(p2);
+        else p2(then.loot);
+      }
+    }
+  }
+}
+SCENARIOS.forEach(centre);
+
+// ---------------------------------------------------------------- one battle, from either side
+
+/** Turns the field round (for fighting the other side): your army always starts at the bottom. */
+const turnSpot = (s: Spot): Spot => ({ x: FIELD_W - s.x, y: FIELD_H - s.y, face: s.face === undefined ? undefined : s.face + Math.PI });
+const turnPt = <T extends { x: number; y: number }>(p: T): T => ({ ...p, x: FIELD_W - p.x, y: FIELD_H - p.y });
+const turnP2 = ([x, y]: Pt2): Pt2 => [FIELD_W - x, FIELD_H - y];
+function turnMap(m: BattleMap): BattleMap {
+  return {
+    forests: m.forests?.map(turnPt),
+    hills: m.hills?.map(turnPt),
+    marshes: m.marshes?.map(turnPt),
+    villages: m.villages?.map(turnPt),
+    rivers: m.rivers?.map((r) => ({ ...r, pts: r.pts.map(turnP2), fords: r.fords.map(turnPt) })),
+    labels: m.labels?.map(turnPt),
+  };
+}
+function turnTactic(t: Tactic): Tactic {
+  const then = t.then;
+  return {
+    ...t,
+    posts: t.posts?.map(turnP2),
+    until: t.until?.map((c) => (c.empty ? { ...c, empty: turnPt(c.empty) } : c)),
+    then: typeof then === 'object' ? ('route' in then ? { ...then, route: then.route.map(turnP2) } : { loot: turnP2(then.loot) }) : then,
+  };
+}
+const swap = <T>(p: [T, T] | undefined): [T, T] | undefined => (p ? [p[1], p[0]] : undefined);
+
+function units(regs: Reg[]): { units: CUnit[]; spots: Spot[] } {
+  return {
+    units: regs.map(([type, label]) => ({ ...newUnit(type), label })),
+    spots: regs.map(([, , x, y, face]) => ({ x, y, face })),
+  };
+}
+
+/** Everything the battle needs to fight `sc` as side 0 (the first) or 1 (the second); the computer fights the other side as it really fought. */
+export function historicalSetup(sc: Scenario, side: 0 | 1) {
+  const flip = side === 1;
+  const a = units(sc.mine);
+  const b = units(sc.theirs);
+  const [mine, theirs] = flip ? [b, a] : [a, b];
+  const spots = (x: Spot[]) => (flip ? x.map(turnSpot) : x);
+  const tactics = sc.tactics?.[flip ? 0 : 1];
+  return {
+    playerUnits: mine.units, enemyUnits: theirs.units,
+    playerAttacks: flip ? !sc.playerAttacks : sc.playerAttacks,
+    leaders: flip ? swap(sc.leaders) : sc.leaders, leaderNotes: flip ? swap(sc.leaderNotes) : sc.leaderNotes,
+    placement: [spots(mine.spots), spots(theirs.spots)] as [Spot[], Spot[]],
+    zone0: sc.zone0 && (flip ? [FIELD_H - sc.zone0[1], FIELD_H - sc.zone0[0]] as [number, number] : sc.zone0),
+    thirst: flip ? swap(sc.thirst) : sc.thirst, morale: flip ? swap(sc.morale) : sc.morale,
+    generals: flip ? swap(sc.generals) : sc.generals, map: flip ? turnMap(sc.map) : sc.map,
+    encircled: sc.encircled && { ...sc.encircled, side: (flip ? 1 - sc.encircled.side : sc.encircled.side) as 0 | 1 },
+    arrivals: sc.arrivals?.map((x) => {
+      const u = units(x.regs);
+      return { side: (flip ? 0 : 1) as 0 | 1, at: x.at, who: x.who, units: u.units, spots: spots(u.spots) };
+    }),
+    script: tactics && (flip ? tactics.map(turnTactic) : tactics),
+  };
+}

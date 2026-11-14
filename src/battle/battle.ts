@@ -1,10 +1,11 @@
 import { ammoFor, type Formation, formationsFor, isLarge, UNIT_STATS, type UnitType, vetRank } from '../data';
 import type { CUnit } from '../campaign/state';
 import { RNG } from '../rng';
+import type { Tactic } from './script';
 
 /** Battlefield size in world pixels (the battle camera zooms and pans over it). */
-export const FIELD_W = 1620;
-export const FIELD_H = 1080;
+export const FIELD_W = 2160;
+export const FIELD_H = 1440;
 /** Centre distance at which two regiments are locked in melee. */
 export const CONTACT = 50;
 /** Men killed per attacking man per second at melee 1.0 against defense 1.0. */
@@ -52,6 +53,8 @@ export interface BattleOptions {
   encircled?: { side: 0 | 1; starveSeconds: number; relief?: number[] };
   /** Thirst or hunger: each side's regiments never rest below this fatigue. */
   thirst?: [number, number];
+  /** Historical battles: how the computer's side (side 1) fought, regiment by regiment (see script.ts). */
+  script?: Tactic[];
 }
 
 /** An army that reaches the field `at` seconds into the battle, where `spots` say. */
@@ -630,7 +633,7 @@ export class Battle {
     }
 
     const cap = Math.floor((FIELD_W - 420) / gap); // leave room for the cavalry wings
-    const front = FIELD_H * (top ? 0.28 : 0.72);
+    const front = FIELD_H * (top ? 0.31 : 0.69);
     const foot = of('infantry', 'elephant');
     const missile = of('missile');
     const firstLine = foot.length ? foot : missile;
@@ -1785,7 +1788,11 @@ export class Battle {
     if (!mine.length || foes.length < 3) return false;
     const cx = mine.reduce((s, u) => s + u.x, 0) / mine.length;
     const cy = mine.reduce((s, u) => s + u.y, 0) / mine.length;
-    const ang = foes.filter((f) => Math.hypot(f.x - cx, f.y - cy) < 520).map((f) => Math.atan2(f.y - cy, f.x - cx)).sort((a, b) => a - b);
+    const close = foes.filter((f) => Math.hypot(f.x - cx, f.y - cy) < 520);
+    // An army that is itself the ring (spread round the foe in its middle) is not hemmed in.
+    const spread = (list: BUnit[]) => list.reduce((s, u) => s + Math.hypot(u.x - cx, u.y - cy), 0) / Math.max(1, list.length);
+    if (close.length && spread(mine) > spread(close) * 1.15) return false;
+    const ang = close.map((f) => Math.atan2(f.y - cy, f.x - cx)).sort((a, b) => a - b);
     if (ang.length < 3) return false;
     let gap = ang[0] + Math.PI * 2 - ang[ang.length - 1];
     for (let i = 1; i < ang.length; i++) gap = Math.max(gap, ang[i] - ang[i - 1]);

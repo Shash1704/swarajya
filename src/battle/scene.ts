@@ -45,6 +45,7 @@ export interface BattleSetup {
   morale?: [number, number];
   encircled?: BattleOptions['encircled'];
   arrivals?: BattleOptions['arrivals'];
+  script?: BattleOptions['script'];
   /** The button that ends the battle (default: back to the campaign map). */
   doneLabel?: string;
   /** draw: night fell with neither side broken. */
@@ -114,6 +115,7 @@ export class BattleScene implements Scene {
       rain: setup.rain, walls: setup.walls, ladders: setup.ladders, ram: setup.ram, river: setup.river, marsh: setup.marsh,
       fog: setup.fog, dusk: setup.dusk, leaders: setup.leaders,
       placement: setup.placement, zone0: setup.zone0, thirst: setup.thirst, generals: setup.generals, map: setup.map, morale: setup.morale, encircled: setup.encircled, arrivals: setup.arrivals,
+      script: setup.script,
     });
     this.bg = renderBattlefield(this.b, setup);
     if (this.use3D) this.load3D();

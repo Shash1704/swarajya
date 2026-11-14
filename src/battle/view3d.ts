@@ -142,14 +142,14 @@ export class View3D {
     scene.ambientColor = new Color3(0.35, 0.33, 0.3);
 
     // Camera: looking up the field from behind the player's lines.
-    const cam = new ArcRotateCamera('cam', -Math.PI / 2, 0.98, 1150, new Vector3(0, 0, -40), scene);
+    const cam = new ArcRotateCamera('cam', -Math.PI / 2, 0.98, 1450, new Vector3(0, 0, -60), scene);
     cam.minZ = 4;
     cam.maxZ = 9000;
     cam.fov = 0.75;
     cam.lowerBetaLimit = 0.25;
     cam.upperBetaLimit = 1.32;
     cam.lowerRadiusLimit = 160;
-    cam.upperRadiusLimit = 1900;
+    cam.upperRadiusLimit = 2500;
     this.camera = cam;
 
     this.sky = new HemisphericLight('sky', new Vector3(0.2, 1, -0.3), scene);
@@ -530,7 +530,7 @@ export class View3D {
     this.scene.clearColor.set(sky[0], sky[1], sky[2], 1);
     // Always a little haze, so the far country fades into the sky; thicker in mist and rain.
     this.scene.fogMode = Scene.FOGMODE_EXP2;
-    this.scene.fogDensity = 0.00028 + mist * 0.0011 + (b.opts.rain ? 0.0003 : 0);
+    this.scene.fogDensity = 0.00021 + mist * 0.0011 + (b.opts.rain ? 0.0003 : 0);
     this.scene.fogColor.set(sky[0], sky[1], sky[2]);
 
     for (const u of b.units) {
