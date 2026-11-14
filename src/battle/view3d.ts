@@ -54,6 +54,8 @@ export interface FrameState {
 }
 
 /** Converts a battle position to Babylon world space (y up; the player's edge nearest the camera). */
+/** How far past the field's edges the camera may wander. */
+const PAN_MARGIN = 420;
 const toX = (x: number) => x - FIELD_W / 2;
 const toZ = (y: number) => FIELD_H / 2 - y;
 
@@ -149,7 +151,7 @@ export class View3D {
     cam.lowerBetaLimit = 0.25;
     cam.upperBetaLimit = 1.32;
     cam.lowerRadiusLimit = 160;
-    cam.upperRadiusLimit = 2500;
+    cam.upperRadiusLimit = 4200;
     this.camera = cam;
 
     this.sky = new HemisphericLight('sky', new Vector3(0.2, 1, -0.3), scene);
@@ -530,7 +532,9 @@ export class View3D {
     this.scene.clearColor.set(sky[0], sky[1], sky[2], 1);
     // Always a little haze, so the far country fades into the sky; thicker in mist and rain.
     this.scene.fogMode = Scene.FOGMODE_EXP2;
-    this.scene.fogDensity = 0.00021 + mist * 0.0011 + (b.opts.rain ? 0.0003 : 0);
+    // Thinner when the camera pulls back, so the whole field can be seen from high up.
+    const far = Math.max(0.3, Math.min(1, 1500 / this.camera.radius));
+    this.scene.fogDensity = (0.00021 + mist * 0.0011 + (b.opts.rain ? 0.0003 : 0)) * far;
     this.scene.fogColor.set(sky[0], sky[1], sky[2]);
 
     for (const u of b.units) {
@@ -752,8 +756,33 @@ export class View3D {
     const rz = -fx;
     // Move the target in place (assigning a new one would change the zoom).
     const t = c.target;
-    t.set(Math.max(-FIELD_W / 2, Math.min(FIELD_W / 2, t.x + rx * right + fx * fwd)), t.y,
-      Math.max(-FIELD_H / 2, Math.min(FIELD_H / 2, t.z + rz * right + fz * fwd)));
+    const M = PAN_MARGIN;
+    t.set(Math.max(-FIELD_W / 2 - M, Math.min(FIELD_W / 2 + M, t.x + rx * right + fx * fwd)), t.y,
+      Math.max(-FIELD_H / 2 - M, Math.min(FIELD_H / 2 + M, t.z + rz * right + fz * fwd)));
+  }
+
+  /** Puts the camera's target over a battle position (keeping zoom and angle). */
+  centerOn(x: number, y: number) {
+    this.camera.target.set(toX(x), this.camera.target.y, toZ(y));
+  }
+
+  /** Pulls the camera back to show the whole field. */
+  overview() {
+    this.centerOn(FIELD_W / 2, FIELD_H / 2 + 60);
+    this.camera.radius = 2700;
+    this.camera.beta = 0.85;
+  }
+
+  /** The battle positions under the view's four corners (for the minimap's view frame). */
+  viewQuad(): { x: number; y: number }[] {
+    const out: { x: number; y: number }[] = [];
+    for (const [sx, sy0] of [[0, 0], [VIEW_W, 0], [VIEW_W, VIEW_H], [0, VIEW_H]] as const) {
+      // A corner that looks at the sky: step down the screen until it meets the ground.
+      let p: { x: number; y: number } | null = null;
+      for (let sy = sy0; !p && sy <= VIEW_H; sy += VIEW_H / 12) p = this.pick(sx, sy);
+      if (p) out.push(p);
+    }
+    return out;
   }
 
   rotate(da: number) {

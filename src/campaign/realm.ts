@@ -1,3 +1,4 @@
+import { characterDied } from './sovereign';
 import { UNIT_STATS } from '../data';
 import type { LeaderMods } from '../battle/battle';
 import { chronicle } from './chronicle';
@@ -207,6 +208,11 @@ export function unrestCauses(s: GameState, p: Province): UnrestNote[] {
   const key = keyFort(s, p.region);
   if (key && key !== p && hostile(s, key.owner, p.owner)) out.push({ label: `${key.town} in enemy hands`, v: 1 });
   if (p.jagir) out.push({ label: 'Jagirdar keeps order', v: -1 });
+  // The kind of realm the founder made.
+  if (s.realm && p.owner === s.realm.faction) {
+    if (s.realm.type === 'kingdom' && gap === 0) out.push({ label: 'A king of their own faith', v: -1 });
+    if (s.realm.type === 'sultanate' && p.culture !== p.owner) out.push({ label: 'Grasping amirs', v: 1 });
+  }
   return out;
 }
 
@@ -249,6 +255,7 @@ export function generalFate(s: GameState, a: Army, captor: number, chance = 1, f
   let text: string;
   if (r < 0.35) {
     text = `${g.name} has been killed in battle.`;
+    characterDied(s, g, a.owner, 'battle');
   } else if (r < 0.7 && captor !== IND) {
     s.captives.push({ gen: g, owner: a.owner, by: captor, day: s.day });
     text = `${g.name} has been taken prisoner by the ${f[captor].short}.`;
@@ -758,7 +765,8 @@ const hinduRealm = (s: GameState, f: number) => courtFaith(s, f) === 'hindu' && 
 export function pickEvent(s: GameState): GameEvent | null {
   const F = s.factions;
   const mar = PLAYER;
-  const once = (k: string) => !s.eventsDone.includes(k);
+  // The Raje's own affairs are no longer yours once you rule a realm of your own.
+  const once = (k: string) => !s.eventsDone.includes(k) && !(s.realm && (k === 'coronation' || k === 'agra' || k === 'ramdas'));
   const done = (k: string) => s.eventsDone.push(k);
   const year = yearOf(s.day);
   const month = monthOf(s.day);

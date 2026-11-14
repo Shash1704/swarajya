@@ -7,6 +7,9 @@ import {
 import { supplied, warBlocked } from './realm';
 import { armySpeed, FRONT_RANGE, isYours, type Province, villageBurnt, villageOwner } from './state';
 
+/** The Raje's commanders (and yours, once you rule) fight the Maratha way. */
+const marathaWay = (s: GameState, owner: number) => owner === PLAYER || s.factions[owner].key === 'mar';
+
 /** Is this point on the army's own front (armies without a front go anywhere)? */
 const onFront = (s: GameState, a: Army, p: { x: number; y: number }) => a.front === undefined || dist(s.provinces[a.front], p) < FRONT_RANGE;
 
@@ -76,7 +79,7 @@ export function thinkArmy(w: WorldLike, a: Army) {
   // The Maratha way with a stronger army: don't fight it, shadow it. All-horse armies of the Raje's
   // commanders hang on a nearby enemy host, take its convoys and burn its forage until it starves.
   const allHorse = a.units.length > 0 && a.units.every((u) => UNIT_STATS[u.type].cls === 'cavalry');
-  if (a.owner === PLAYER && !isMonsoon(s.day)) {
+  if (marathaWay(s, a.owner) && !isMonsoon(s.day)) {
     if (a.goal?.kind === 'harass' && stillValid(s, a, a.goal)) return;
     const quarry = enemies
       .filter((e) => e.owner !== IND && dist(a, e) < 220 && onFront(s, a, e) && e.siegeOf < 0 && armyStrength(e) > str * 0.9
@@ -94,7 +97,8 @@ export function thinkArmy(w: WorldLike, a: Army) {
   if (a.light && a.goal?.kind !== 'harass') a.light = false; // back with the baggage for any other work
   // Run from anything much stronger that is close.
   // Maratha armies are quick on their feet: they give way only to a much stronger host close by.
-  const threat = enemies.find((e) => dist(a, e) < (a.owner === PLAYER ? 80 : 110) && armyStrength(e) > str * (a.owner === PLAYER ? 1.6 : 1.25));
+  const mw = marathaWay(s, a.owner);
+  const threat = enemies.find((e) => dist(a, e) < (mw ? 80 : 110) && armyStrength(e) > str * (mw ? 1.6 : 1.25));
   if (threat) {
     const home = nearestOwned(s, a);
     if (home >= 0 && townAt(s, a) !== home && !(a.goal?.kind === 'go' && a.goal.prov === home)) {
@@ -132,7 +136,7 @@ export function thinkArmy(w: WorldLike, a: Army) {
   const reach = fac.ai === 'major' ? 260 : 150;
   const mayHitPlayer = pressureOk(s, a);
   // The Raje's commanders fight the Maratha way: they pick their fights and raid rather than storm.
-  const maratha = a.owner === PLAYER;
+  const maratha = marathaWay(s, a.owner);
   const odds = maratha ? 1.8 : 1.4;
   const prey = enemies
     .filter((e) => dist(a, e) < reach && str > armyStrength(e) * odds && s.day >= e.safeUntil && onFront(s, a, e)

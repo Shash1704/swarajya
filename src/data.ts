@@ -254,7 +254,7 @@ const F = (
   incomeMult: number, capital: string, roster: UnitType[], garrison: UnitType[],
 ): FactionDef => ({ key, name, short, color, rgb: rgb(color), ai, aggression, incomeMult, capital, roster, garrison });
 
-/** Index 0 is the player. The last entry is the independent chiefs. */
+/** Index 0 is the Marathas, whom the player serves at the start. The last entry is the independent chiefs. */
 export const FACTION_DEFS: FactionDef[] = [
   F('mar', 'Maratha Swarajya', 'Marathas', '#e8821e', 'major', 0, 1, 'raigad',
     ['mavala', 'spear', 'archer', 'musket', 'rocket', 'lightcav', 'shiledar', 'huzurat'], ['mavala', 'musket', 'archer']),
@@ -291,6 +291,16 @@ export const FACTION_DEFS: FactionDef[] = [
     ['spear', 'archer', 'musket', 'elephant', 'cannon'], ['spear', 'musket', 'archer']),
   F('voc', 'Dutch East India Company', 'Dutch', '#304c8a', 'minor', 0.1, 1, 'malacca',
     ['spear', 'musket', 'firangi', 'cannon'], ['firangi', 'musket', 'spear']),
+  // Realms that do not exist in 1670. The successor states rise only if the Mughal throne falls empty
+  // in battle; the last is the realm you may found yourself.
+  F('dec', 'Nawabs of the Deccan', 'Deccan', '#6b8f2e', 'major', 0.45, 0.8, 'aurangabad',
+    ['spear', 'archer', 'musket', 'heavycav', 'horsearcher', 'elephant', 'cannon'], ['spear', 'musket', 'archer']),
+  F('ben', 'Nawabs of Bengal', 'Bengal', '#3a9c8c', 'minor', 0.3, 0.9, 'dhaka',
+    ['paik', 'spear', 'archer', 'musket', 'heavycav', 'elephant', 'cannon'], ['spear', 'musket', 'archer']),
+  F('awd', 'Nawabs of Awadh', 'Awadh', '#a77b3c', 'minor', 0.35, 0.85, 'awadh',
+    ['spear', 'archer', 'musket', 'heavycav', 'rajput', 'elephant'], ['spear', 'musket', 'archer']),
+  F('own', 'Your realm', 'Your realm', '#d9b64a', 'major', 0, 1, '',
+    ['mavala', 'spear', 'archer', 'musket', 'lightcav', 'shiledar'], ['mavala', 'musket', 'archer']),
   F('ind', 'Independent Chiefs', 'Independents', '#8f897c', 'none', 0, 1, '',
     ['paik', 'spear', 'archer', 'lightcav'], ['paik', 'archer', 'spear']),
 ];
@@ -330,5 +340,9 @@ export const GENERALS: Record<Owner, [string, string][]> = {
   dvt: [['Trinh Tac', 'Trinh'], ['Dao Quang Nhieu', 'Trinh']],
   ace: [['Panglima Polem', 'Aceh'], ['Teuku Lam', 'Aceh']],
   voc: [['Balthasar Bort', 'Company'], ['Rijckloff van Goens', 'Company']],
+  dec: [['Zulfiqar Khan', 'Nusrat Jang'], ['Daud Khan', 'Panni'], ['Chin Qilich Khan', 'Turani']],
+  ben: [['Murshid Quli Khan', 'Nasiri'], ['Ibrahim Khan', 'Fath Jang']],
+  awd: [['Saadat Khan', 'Burhan-ul-Mulk'], ['Safdar Jang', 'Nishapuri']],
+  own: [],
   ind: [['Local', 'Chieftain']],
 };

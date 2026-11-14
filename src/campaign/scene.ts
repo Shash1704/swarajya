@@ -7,6 +7,7 @@ import { drawSymbol, inkFor, symbolEl, tierBadge } from '../symbols';
 import { MapRenderer } from './mapRender';
 import { type BattleInfo, type BattleResult, type Hooks, World } from './world';
 import {
+  COURT_FAITHS, type CourtFaith, type Policy, REALM_TYPES, type RealmType,
   acceptsPeace, type Army, armyAtTown, armyById, armySpeed, autoResolve, autoResolveSiege, buildMarket, buildWalls,
   canBuild, type CUnit, dateLabel, declareWar, dist, eliteBlock, factionStrength, type GameState, grossIncome,
   hostile, IND, isMonsoon, log, makePeace, marketCost, MAX_UNITS, maxSupplies, maxWalls, maxWealth, netIncome,
@@ -27,6 +28,7 @@ import type { Map3D } from './map3d';
 import { openAISettings, openTalk } from './talk';
 import { hail, liegeTitle, meName, parleyPartner, renown, rulerOf } from './characters';
 import { llmSettings } from '../llm';
+import { FOUND_MEN, foundingOptions, foundRealm, REALM_COLORS, sovereignTitle } from './sovereign';
 import { byYear, CHRON_ICON, chronicle, deeds } from './chronicle';
 import { FIELD_H, FIELD_W, type Spot, type Terrain } from '../battle/battle';
 
@@ -175,6 +177,70 @@ export class CampaignScene implements Scene {
     this.renderUI();
     if (s.over && !this.overShown && !modalOpen()) this.showOver();
     if (s.triumph === 'pending' && !modalOpen()) this.showTriumph();
+    // A sovereign dead, an empire broken: the world stops to hear it.
+    if (s.news?.length && !modalOpen() && app.scene === this && !this.world.waiting) {
+      const n = s.news.shift()!;
+      this.setPaused(true);
+      showModal(`👑 ${n.title}`, h('div', {}, h('p', {}, n.text)), [{ label: 'Go on', primary: true, onClick: () => { hideModal(); this.renderUI(true); } }]);
+    }
+  }
+
+  // ---------------------------------------------------------------- your own realm
+
+  /** Raise your own banner: name the realm and choose its kind, faith and policies. */
+  private openFounding() {
+    const s = this.state;
+    const opt = foundingOptions(s);
+    if (!opt.ok) {
+      showModal('Your own realm', h('div', {}, h('p', {}, opt.why),
+        h('p', { class: 'muted' }, `To found a realm you need renown (Commander rank or higher) and at least ${FOUND_MEN} men under your banner. Rise in revolt at one of the Raje's towns (you take it as your seat, and his realm goes to war with you), or take leave of him in peace and carve your seat out of someone else's land.`)),
+        [{ label: 'Close', primary: true, onClick: hideModal }]);
+      return;
+    }
+    const nameIn = h('input', { type: 'text', class: 'talk-input', value: `Swarajya of ${s.player.gen.name}`, maxlength: '36', 'aria-label': 'Name of your realm' }) as HTMLInputElement;
+    let type: RealmType = 'kingdom';
+    let faith: CourtFaith = 'hindu';
+    let tax: Policy['tax'] = 'normal';
+    let zeal: Policy['faith'] = 'tolerant';
+    let color = REALM_COLORS[0];
+    let how: 'revolt' | 'leave' = opt.revoltAt ? 'revolt' : 'leave';
+    const box = h('div', { class: 'stack' });
+    const pick = <T extends string>(label: string, list: [T, string, string?][], cur: () => T, set: (v: T) => void) => h('div', {},
+      h('div', { class: 'muted', style: 'margin-top:6px' }, label),
+      h('div', { class: 'btns' }, ...list.map(([v, l, help]) => h('button', {
+        class: `small ${cur() === v ? 'primary' : ''}`, title: help ?? '', onclick: () => { set(v); draw(); },
+      }, l))));
+    const draw = () => {
+      const T = REALM_TYPES[type];
+      box.replaceChildren(
+        h('div', { class: 'muted' }, 'Name of your realm:'), nameIn,
+        pick('What kind of realm:', (Object.keys(REALM_TYPES) as RealmType[]).map((k) => [k, REALM_TYPES[k].label, REALM_TYPES[k].blurb]), () => type, (v) => { type = v; }),
+        h('div', { class: 'card' }, h('b', {}, `${T.title} ${s.player.gen.name}`), h('div', { class: 'muted' }, T.blurb), h('div', {}, T.effect),
+          h('div', { class: 'muted' }, `Raises: ${T.roster.map((u) => UNIT_STATS[u].short).join(', ')}`)),
+        pick('Faith of your court (provinces of another faith are restless under you; courts of your faith warm to you):',
+          (Object.keys(COURT_FAITHS) as CourtFaith[]).map((k) => [k, COURT_FAITHS[k]]), () => faith, (v) => { faith = v; }),
+        pick('Taxes:', [['light', 'Light', '−20% revenue, calmer provinces'], ['normal', 'Normal'], ['heavy', 'Heavy', '+30% revenue, more unrest']], () => tax, (v) => { tax = v; }),
+        pick('Toward other faiths:', [['tolerant', 'Tolerant', 'Other faiths are barely troubled by your rule'], ['zealous', 'Zealous', 'Jizya-style dues: more revenue, but other faiths seethe']], () => zeal, (v) => { zeal = v; }),
+        h('div', { class: 'muted', style: 'margin-top:6px' }, 'Your colours:'),
+        h('div', { class: 'btns' }, ...REALM_COLORS.map((c) => h('button', {
+          class: `small ${c === color ? 'primary' : ''}`, 'aria-label': `Colour ${c}`, onclick: () => { color = c; draw(); },
+        }, swatch(c)))),
+        pick('How you break away:', [
+          ...(opt.revoltAt ? [['revolt', `Rise in revolt at ${opt.revoltAt.town}`, 'Take the town as your seat. The Raje goes to war with you, your honour suffers, and discontented commanders may come over with their armies.'] as ['revolt', string, string]] : []),
+          ['leave', 'Take leave of the Raje', 'Part in peace with a year\'s truce. You start with no land: the first town you take becomes your seat.'],
+        ], () => how, (v) => { how = v; }),
+        h('p', { class: 'muted' }, opt.revoltAt ? `Your army stands at ${opt.revoltAt.town}.` : 'To rise in revolt instead, stand at one of the Raje\'s towns (not Raigad) with your army.'),
+      );
+    };
+    draw();
+    showModal('👑 Raise your own banner', box, [
+      { label: 'Not yet', onClick: hideModal },
+      { label: 'Proclaim the realm', primary: true, onClick: () => {
+        foundRealm(s, { name: nameIn.value, color, type, faith, policy: { tax, faith: zeal }, how });
+        hideModal();
+        this.renderUI(true);
+      } },
+    ], { wide: true });
   }
 
   private setPaused(p: boolean) {
@@ -185,7 +251,8 @@ export class CampaignScene implements Scene {
   // ---------------------------------------------------------------- camera
 
   private minZoom() {
-    return Math.min(VIEW_W / WW, VIEW_H / WH);
+    // Far enough out to see the whole map with sea around it.
+    return Math.min(VIEW_W / WW, VIEW_H / WH) * 0.8;
   }
 
   private clampCam() {
@@ -193,8 +260,10 @@ export class CampaignScene implements Scene {
     c.z = Math.max(this.minZoom(), Math.min(MAX_ZOOM, c.z));
     const vw = VIEW_W / c.z;
     const vh = VIEW_H / c.z;
-    c.x = vw >= WW ? (WW - vw) / 2 : Math.max(0, Math.min(WW - vw, c.x));
-    c.y = vh >= WH ? (WH - vh) / 2 : Math.max(0, Math.min(WH - vh, c.y));
+    const mx = WW * 0.08;
+    const my = WH * 0.08;
+    c.x = vw >= WW + 2 * mx ? (WW - vw) / 2 : Math.max(-mx, Math.min(WW + mx - vw, c.x));
+    c.y = vh >= WH + 2 * my ? (WH - vh) / 2 : Math.max(-my, Math.min(WH + my - vh, c.y));
   }
 
   private toScreen(wx: number, wy: number): [number, number] {
@@ -917,7 +986,7 @@ export class CampaignScene implements Scene {
       'Declare war');
     if (ok) {
       declareWar(s, PLAYER, other);
-      chronicle(s, 'diplomacy', `Swarajya declared war on the ${s.factions[other].name}.`);
+      chronicle(s, 'diplomacy', `The ${s.factions[PLAYER].short} declared war on the ${s.factions[other].name}.`);
       this.renderUI(true);
     }
     return ok;
@@ -1340,11 +1409,15 @@ export class CampaignScene implements Scene {
     const held = s.captives.map((c, i) => ({ c, i }));
     const raje = rulerOf(s, PLAYER);
     showModal('The court', h('div', { class: 'stack' },
-      raje ? h('div', { class: 'btns' }, h('button', {
+      s.realm ? null : h('div', { class: 'btns' }, h('button', {
+        class: 'small', title: 'Found a realm of your own, with you as its sovereign.',
+        onclick: () => { hideModal(); this.openFounding(); },
+      }, '👑 Raise your own banner')),
+      raje && !s.realm ? h('div', { class: 'btns' }, h('button', {
         class: 'primary', title: 'Go before the Raje: report your deeds, ask for men, or hear his counsel.',
         onclick: () => { hideModal(); void openTalk(s, 'liege', raje, PLAYER, null, null, () => this.renderUI(true)); },
       }, `🗣 Go before ${liegeTitle(s)}`)) : null,
-      h('p', { class: 'muted' }, 'The Raje\'s commanders (and you) win renown in battle, and each has a gift. Their loyalty to the Raje falls if the treasury runs dry or they are refused land; one below 15 may defect with his army. Talk to them to win them over, or to ask them to join forces with you.'),
+      h('p', { class: 'muted' }, s.realm ? 'Your commanders win renown in battle, and each has a gift. Their loyalty falls if the treasury runs dry or they are refused land; one below 15 may defect with his army.' : 'The Raje\'s commanders (and you) win renown in battle, and each has a gift. Their loyalty to the Raje falls if the treasury runs dry or they are refused land; one below 15 may defect with his army. Talk to them to win them over, or to ask them to join forces with you.'),
       ...gens.map(({ g, army }) => row(g, g.isPlayer ? 'you' : army ? `leads ${fmt(unitsMen(army.units))} men` : 'at court', g.isPlayer ? null : gift(g, army))),
       held.length ? h('h3', {}, 'Prisoners') : null,
       ...held.map(({ c, i }) => {
@@ -1593,6 +1666,7 @@ export class CampaignScene implements Scene {
         h('li', {}, 'Watch unrest (!): foreign rule, another faith, heavy taxes and plunder breed revolt. Temples, garrisons and tolerance calm it. Hold a region\'s key fort for more revenue there.'),
         h('li', {}, 'Court: your commanders gain rank and have gifts; keep them loyal. Navy: raid, blockade and patrol the coast. Diplomacy: alliances, marriages, hostages and bought wars.'),
         h('li', {}, `You are ${meName(this.state)}, a nobody in the service of Shivaji. Win battles to make your name. Every commander and ruler is a character with a temper, an opinion of you and a memory: parley with armies near yours (even before a battle), seek audiences with rulers, go before the Raje at Court, and talk to his commanders. Set up a local AI (🗣 AI) and they answer in their own words.`),
+        h('li', {}, 'Make a name, then make a realm: with renown and 250 men you can raise your own banner (👑 on the realm card), choosing its kind, faith and policies. When sovereigns and great commanders die, their realms are shaken; if Aurangzeb falls, the empire breaks apart.'),
         h('li', {}, `Win by holding ${VICTORY_PROVINCES} provinces or taking Delhi.`),
       ),
     );
@@ -1942,9 +2016,16 @@ export class CampaignScene implements Scene {
       h('h3', {}, 'You'),
       h('div', { title: 'You. Go before the Raje (Court), talk with his commanders, seek audiences with rulers (Diplomacy), and parley with armies near yours.' },
         h('b', {}, meName(s)), h('span', { class: 'muted' }, ` · ${ORIGINS[s.player.origin].label} · ${generalLine(me)}`)),
-      h('div', { class: 'muted', style: 'font-size:12.5px' }, `In the service of ${liegeTitle(s)}. Renown grows with every battle won.`),
-      yours ? h('div', { class: 'btns' }, h('button', { class: 'small primary', onclick: () => { this.select(yours, -1); this.centerOn(yours); } }, `Your army · ${fmt(unitsMen(yours.units))} men`)) : null,
-      h('h3', { style: 'margin-top:10px' }, 'Swarajya'),
+      h('div', { class: 'muted', style: 'font-size:12.5px' }, s.realm
+        ? `${sovereignTitle(s)}, sovereign of the ${s.factions[PLAYER].name}: a ${REALM_TYPES[s.realm.type].label.toLowerCase()} with a ${COURT_FAITHS[s.realm.faith]} court. ${REALM_TYPES[s.realm.type].effect}`
+        : `In the service of ${liegeTitle(s)}. Renown grows with every battle won.`),
+      h('div', { class: 'btns' },
+        yours ? h('button', { class: 'small primary', onclick: () => { this.select(yours, -1); this.centerOn(yours); } }, `Your army · ${fmt(unitsMen(yours.units))} men`) : null,
+        s.realm ? null : h('button', {
+          class: `small ${foundingOptions(s).ok ? 'primary' : ''}`, title: foundingOptions(s).ok ? 'Found a realm of your own' : foundingOptions(s).why,
+          onclick: () => this.openFounding(),
+        }, '👑 Own realm')),
+      h('h3', { style: 'margin-top:10px' }, s.factions[PLAYER].name),
       h('div', { class: 'row muted' }, h('span', {}, 'Honour (keeping your word)'), h('span', {}, `${Math.round(s.honour)}`)),
       bar(s.honour / 100, s.honour > 45 ? 'var(--gold)' : 'var(--neg)'),
       h('div', { class: 'row muted' }, h('span', {}, 'Revenue'), h('span', {}, `+${grossIncome(s, PLAYER)}/month`)),
@@ -1963,7 +2044,7 @@ export class CampaignScene implements Scene {
       h('div', { class: 'btns' }, ...(['tolerant', 'zealous'] as const).map((t) => h('button', {
         class: `small ${s.policy[PLAYER].faith === t ? 'primary' : ''}`, onclick: () => { s.policy[PLAYER].faith = t; this.renderUI(true); },
       }, t[0].toUpperCase() + t.slice(1)))),
-      armies.filter((a) => !isYours(s, a)).length ? h('div', { class: 'muted' }, 'The Raje\'s other armies:') : null,
+      armies.filter((a) => !isYours(s, a)).length ? h('div', { class: 'muted' }, s.realm ? 'Your realm\'s other armies:' : 'The Raje\'s other armies:') : null,
       h('div', { class: 'btns' }, ...armies.filter((a) => !isYours(s, a)).map((a) =>
         h('button', { class: 'small', onclick: () => { this.select(a, -1); this.centerOn(a); } },
           `${a.general.name} · ${fmt(unitsMen(a.units))} · ${s.provinces[provinceUnder(s, a, a.node)].name}`))),

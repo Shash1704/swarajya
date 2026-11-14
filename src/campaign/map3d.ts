@@ -72,7 +72,7 @@ export class Map3D {
     cam.lowerBetaLimit = 0.15;
     cam.upperBetaLimit = 1.32;
     cam.lowerRadiusLimit = 32;
-    cam.upperRadiusLimit = 5200;
+    cam.upperRadiusLimit = 7200;
     this.camera = cam;
 
     const sky = new HemisphericLight('mapSky', new Vector3(0.1, 1, -0.2), scene);
@@ -275,6 +275,8 @@ export class Map3D {
     const skyC = mix([0.62, 0.74, 0.82], [0.86, 0.6, 0.45], [0.16, 0.2, 0.32]);
     this.scene.clearColor.set(skyC[0], skyC[1], skyC[2], 1);
     this.scene.fogColor.set(skyC[0], skyC[1], skyC[2]);
+    // The haze thins as the camera climbs, so the whole of Asia can be taken in at once.
+    this.scene.fogDensity = 0.00024 * Math.max(0.25, Math.min(1, 1600 / cam.radius));
     const glow = 0.12 + 0.18 * L.day;
     this.landMat.emissiveColor.set(glow, glow * 0.97, glow * 0.92 + 0.03 * L.night);
     this.towns.update(t, (p) => color(state.provinces[p].owner), L.night);
@@ -403,7 +405,10 @@ export class Map3D {
     const t = c.target;
     const x = t.x + fz * right + fx * fwd;
     const z = t.z - fx * right + fz * fwd;
-    c.target.set(Math.max(-WW / 2, Math.min(WW / 2, x)), c.target.y, Math.max(-WH / 2, Math.min(WH / 2, z)));
+    // A little past the map's edges, so the coasts and borders can be brought to the middle of the view.
+    const mx = WW * 0.12;
+    const mz = WH * 0.12;
+    c.target.set(Math.max(-WW / 2 - mx, Math.min(WW / 2 + mx, x)), c.target.y, Math.max(-WH / 2 - mz, Math.min(WH / 2 + mz, z)));
   }
 
   panScreen(dx: number, dy: number) {

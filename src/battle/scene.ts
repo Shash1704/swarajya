@@ -87,6 +87,10 @@ export class BattleScene implements Scene {
   private cam = { x: 0, y: 0, z: VIEW_W / FIELD_W };
   private keys = new Set<string>();
   private panDrag: { x: number; y: number } | null = null;
+  /** Dragging the view frame across the minimap. */
+  private miniDrag = false;
+  /** The battle minimap (M toggles it). */
+  private showMini = true;
   private bg: HTMLCanvasElement;
   private listEl: HTMLElement | null = null;
   private statusEl: HTMLElement | null = null;
@@ -308,14 +312,53 @@ export class BattleScene implements Scene {
   // ---------------------------------------------------------------- input
 
   private minZoom() {
-    return Math.min(VIEW_W / FIELD_W, VIEW_H / FIELD_H);
+    // Out past the whole field, with country to spare around it.
+    return Math.min(VIEW_W / FIELD_W, VIEW_H / FIELD_H) * 0.7;
   }
 
   private clampCam() {
     const c = this.cam;
     c.z = Math.max(this.minZoom(), Math.min(2.5, c.z));
-    c.x = Math.max(0, Math.min(FIELD_W - VIEW_W / c.z, c.x));
-    c.y = Math.max(0, Math.min(FIELD_H - VIEW_H / c.z, c.y));
+    const M = 260;
+    const vw = VIEW_W / c.z;
+    const vh = VIEW_H / c.z;
+    c.x = vw >= FIELD_W + 2 * M ? (FIELD_W - vw) / 2 : Math.max(-M, Math.min(FIELD_W + M - vw, c.x));
+    c.y = vh >= FIELD_H + 2 * M ? (FIELD_H - vh) / 2 : Math.max(-M, Math.min(FIELD_H + M - vh, c.y));
+  }
+
+  /** Centres the view on a battle position. */
+  private centerOn(x: number, y: number) {
+    if (this.v3) {
+      this.v3.centerOn(x, y);
+      return;
+    }
+    this.cam.x = x - VIEW_W / 2 / this.cam.z;
+    this.cam.y = y - VIEW_H / 2 / this.cam.z;
+    this.clampCam();
+  }
+
+  /** Centres the view on the selected regiments (or the commander, or the whole army). */
+  private centerOnSelection() {
+    const mine = this.b.units.filter((u) => u.side === 0 && (u.state === 'ok' || u.state === 'routing'));
+    let pick = mine.filter((u) => this.selected.has(u.id));
+    if (!pick.length) pick = mine.filter((u) => u.id === this.b.generalIds[0]);
+    if (!pick.length) pick = mine;
+    if (!pick.length) return;
+    this.centerOn(pick.reduce((n, u) => n + u.x, 0) / pick.length, pick.reduce((n, u) => n + u.y, 0) / pick.length);
+  }
+
+  /** Screen rectangle of the battle minimap. */
+  private miniRect() {
+    const w = 216;
+    const h = Math.round((w * FIELD_H) / FIELD_W);
+    return { x: VIEW_W - w - 12, y: VIEW_H - h - 12, w, h };
+  }
+
+  /** The battle position under a minimap point, or null if the point is off the minimap. */
+  private miniPoint(sx: number, sy: number): { x: number; y: number } | null {
+    const r = this.miniRect();
+    if (!this.showMini || sx < r.x || sy < r.y || sx > r.x + r.w || sy > r.y + r.h) return null;
+    return { x: ((sx - r.x) / r.w) * FIELD_W, y: ((sy - r.y) / r.h) * FIELD_H };
   }
 
   private toW(sx: number, sy: number): [number, number] {
@@ -323,7 +366,8 @@ export class BattleScene implements Scene {
       const p = this.v3.pick(sx, sy);
       return p ? [p.x, p.y] : [this.mouseW.x, this.mouseW.y];
     }
-    return [this.cam.x + sx / this.cam.z, this.cam.y + sy / this.cam.z];
+    // The view may wander past the field's edge, but orders stay on the field.
+    return [Math.max(0, Math.min(FIELD_W, this.cam.x + sx / this.cam.z)), Math.max(0, Math.min(FIELD_H, this.cam.y + sy / this.cam.z))];
   }
 
   wheel(x: number, y: number, dy: number) {
@@ -331,7 +375,8 @@ export class BattleScene implements Scene {
       this.v3.zoom(dy);
       return;
     }
-    const [wx, wy] = this.toW(x, y);
+    const wx = this.cam.x + x / this.cam.z;
+    const wy = this.cam.y + y / this.cam.z;
     this.cam.z *= Math.exp(-dy * 0.0015);
     this.clampCam();
     this.cam.x = wx - x / this.cam.z;
@@ -365,6 +410,15 @@ export class BattleScene implements Scene {
 
   pointerDown(sx: number, sy: number, button: number, e: PointerEvent) {
     if (this.phase === 'done' || modalOpen()) return;
+    const mp = this.miniPoint(sx, sy);
+    if (mp) {
+      // Left-click the minimap to look there; right-click it to send the selected regiments there.
+      if (button === 0) {
+        this.miniDrag = true;
+        this.centerOn(mp.x, mp.y);
+      } else if (button === 2 && this.mySelected().length) this.issueOrder(mp.x, mp.y);
+      return;
+    }
     if (button === 1) {
       this.panDrag = { x: sx, y: sy };
       // In 3D, Shift/Alt + middle-drag turns and tilts the view instead of panning.
@@ -397,6 +451,11 @@ export class BattleScene implements Scene {
 
   pointerMove(sx: number, sy: number) {
     this.mouse = { x: sx, y: sy };
+    if (this.miniDrag) {
+      const r = this.miniRect();
+      this.centerOn(Math.max(0, Math.min(1, (sx - r.x) / r.w)) * FIELD_W, Math.max(0, Math.min(1, (sy - r.y) / r.h)) * FIELD_H);
+      return;
+    }
     const [x, y] = this.toW(sx, sy);
     this.mouseW = { x, y };
     if (this.panDrag && this.v3) {
@@ -433,6 +492,10 @@ export class BattleScene implements Scene {
 
   pointerUp(sx = 0, sy = 0, button = 0) {
     this.panDrag = null;
+    if (this.miniDrag) {
+      this.miniDrag = false;
+      return;
+    }
     if (this.sketch) {
       const pts = this.sketch;
       this.sketch = null;
@@ -508,6 +571,17 @@ export class BattleScene implements Scene {
       this.say(this.lineMode ? 'Line mode: right-drag to draw a battle line.' : 'Path mode: right-drag to draw a march path.');
       this.ordersSig = '';
       this.refreshOrders();
+    } else if (k === 'v') {
+      this.centerOnSelection();
+    } else if (k === 'home') {
+      e.preventDefault();
+      if (this.v3) this.v3.overview();
+      else {
+        this.cam.z = this.minZoom() / 0.7;
+        this.centerOn(FIELD_W / 2, FIELD_H / 2);
+      }
+    } else if (k === 'm') {
+      this.showMini = !this.showMini;
     } else if (this.phase === 'live' && k === 'f') {
       this.feignSelected();
     } else if (this.phase === 'live' && k === 'r') {
@@ -748,7 +822,9 @@ export class BattleScene implements Scene {
       ctx.clearRect(0, 0, VIEW_W, VIEW_H);
       this.v3.render({ t: this.t, selected: this.selected, visible: (u) => this.b.sees(0, u), paused: this.paused || this.phase !== 'live' });
       this.drawOverlay3D(ctx);
+      this.drawOffscreen(ctx);
       this.drawBanner(ctx);
+      this.drawMinimap(ctx);
       this.drawTooltip(ctx);
       return;
     }
@@ -988,8 +1064,125 @@ export class BattleScene implements Scene {
     }
 
     ctx.restore();
+    this.drawOffscreen(ctx);
     this.drawBanner(ctx);
+    this.drawMinimap(ctx);
     this.drawTooltip(ctx);
+  }
+
+  /** Where a battle position falls on the screen (null if behind the camera). */
+  private screenOf(x: number, y: number): [number, number] | null {
+    if (this.v3) return this.v3.project(x, y, 10);
+    return [(x - this.cam.x) * this.cam.z, (y - this.cam.y) * this.cam.z];
+  }
+
+  /** Arrows at the screen's edge pointing to your regiments out of view. */
+  private drawOffscreen(ctx: CanvasRenderingContext2D) {
+    const cx = VIEW_W / 2;
+    const cy = VIEW_H / 2;
+    const pad = 18;
+    ctx.save();
+    for (const u of this.b.units) {
+      if (u.side !== 0 || (u.state !== 'ok' && u.state !== 'routing')) continue;
+      let p = this.screenOf(u.x, u.y);
+      if (p && p[0] >= 0 && p[1] >= 0 && p[0] <= VIEW_W && p[1] <= VIEW_H) continue;
+      if (!p && this.v3) {
+        // Behind the camera: point the way it lies on the ground, relative to the view's centre.
+        const c = this.v3.pick(cx, cy) ?? { x: FIELD_W / 2, y: FIELD_H / 2 };
+        p = [cx + (u.x - c.x) * 4, cy + (u.y - c.y) * 4];
+      }
+      if (!p) continue;
+      const dx = p[0] - cx;
+      const dy = p[1] - cy;
+      const k = Math.min((cx - pad) / Math.max(1e-6, Math.abs(dx)), (cy - pad) / Math.max(1e-6, Math.abs(dy)));
+      const ex = cx + dx * k;
+      const ey = cy + dy * k;
+      const ang = Math.atan2(dy, dx);
+      const sel = this.selected.has(u.id);
+      ctx.save();
+      ctx.translate(ex, ey);
+      ctx.rotate(ang);
+      ctx.globalAlpha = u.state === 'routing' ? 0.45 + 0.3 * Math.sin(this.t * 10) : sel ? 1 : 0.75;
+      ctx.fillStyle = this.s.playerFaction.color;
+      ctx.strokeStyle = sel ? '#fff4d6' : 'rgba(20,15,10,0.85)';
+      ctx.lineWidth = sel ? 2 : 1.2;
+      ctx.beginPath();
+      ctx.moveTo(10, 0);
+      ctx.lineTo(-7, -7);
+      ctx.lineTo(-3, 0);
+      ctx.lineTo(-7, 7);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+
+  /** The whole field in the corner: both armies, your view, and the ground. Click to look, right-click to send. */
+  private drawMinimap(ctx: CanvasRenderingContext2D) {
+    if (!this.showMini) return;
+    const r = this.miniRect();
+    const b = this.b;
+    const kx = r.w / FIELD_W;
+    const ky = r.h / FIELD_H;
+    ctx.save();
+    ctx.fillStyle = 'rgba(20,15,10,0.82)';
+    ctx.beginPath();
+    ctx.roundRect(r.x - 5, r.y - 5, r.w + 10, r.h + 10, 8);
+    ctx.fill();
+    ctx.globalAlpha = 0.9;
+    ctx.drawImage(this.bg, r.x, r.y, r.w, r.h);
+    ctx.globalAlpha = 1;
+    ctx.beginPath();
+    ctx.rect(r.x, r.y, r.w, r.h);
+    ctx.clip();
+    if (b.fogOn && this.phase !== 'deploy' && !this.v3 && this.shroud.width > 0) {
+      ctx.globalAlpha = 0.45;
+      ctx.drawImage(this.shroud, r.x, r.y, r.w, r.h);
+      ctx.globalAlpha = 1;
+    }
+    for (const u of b.units) {
+      if (u.state !== 'ok' && u.state !== 'routing') continue;
+      if (u.side === 1 && !b.sees(0, u)) continue;
+      const f = u.side === 0 ? this.s.playerFaction : this.s.enemyFaction;
+      const x = r.x + u.x * kx;
+      const y = r.y + u.y * ky;
+      const big = UNIT_STATS[u.type].cls === 'cavalry' || UNIT_STATS[u.type].cls === 'elephant';
+      ctx.globalAlpha = u.state === 'routing' ? 0.4 + 0.3 * Math.sin(this.t * 10) : 1;
+      ctx.fillStyle = f.color;
+      ctx.strokeStyle = this.selected.has(u.id) ? '#fff4d6' : 'rgba(10,8,5,0.9)';
+      ctx.lineWidth = this.selected.has(u.id) ? 1.6 : 0.8;
+      ctx.beginPath();
+      if (big) ctx.arc(x, y, 3.4, 0, Math.PI * 2);
+      else ctx.rect(x - 3, y - 2.4, 6, 4.8);
+      ctx.fill();
+      ctx.stroke();
+      if (u.id === b.generalIds[u.side]) {
+        ctx.fillStyle = '#fff4d6';
+        ctx.fillRect(x - 0.8, y - 7, 1.6, 5);
+      }
+    }
+    ctx.globalAlpha = 1;
+    // What the camera sees.
+    ctx.strokeStyle = 'rgba(255,244,214,0.9)';
+    ctx.lineWidth = 1.3;
+    ctx.beginPath();
+    if (this.v3) {
+      const q = this.v3.viewQuad();
+      q.forEach((p, i) => (i ? ctx.lineTo(r.x + p.x * kx, r.y + p.y * ky) : ctx.moveTo(r.x + p.x * kx, r.y + p.y * ky)));
+      if (q.length) ctx.closePath();
+    } else {
+      ctx.rect(r.x + this.cam.x * kx, r.y + this.cam.y * ky, (VIEW_W / this.cam.z) * kx, (VIEW_H / this.cam.z) * ky);
+    }
+    ctx.stroke();
+    ctx.restore();
+    ctx.save();
+    ctx.font = '10px Georgia, serif';
+    ctx.fillStyle = 'rgba(244,227,181,0.75)';
+    ctx.textAlign = 'right';
+    ctx.fillText('M hides · V finds your men · Home shows all', r.x + r.w, r.y - 9);
+    ctx.restore();
   }
 
   /**
@@ -1903,7 +2096,7 @@ export class BattleScene implements Scene {
           h('li', {}, 'Formations: N open, T tight block, L loose order, B spear hedge, G cavalry wedge.'),
           h('li', {}, 'Men tire from marching, running and fighting. Rest them before the clash. Archers and gunners run short and must go back to the baggage at your edge to refill.'),
           h('li', {}, 'R: the commander rallies the army around his standard. Routed regiments near him come back sooner. Elephants panic under rockets and shot and can run amok through your own lines.'),
-          h('li', {}, 'Scroll or pinch to zoom; WASD, arrow keys or middle-drag to pan.'),
+          h('li', {}, 'Scroll or pinch to zoom; WASD, arrow keys or middle-drag to pan. The minimap (bottom right) shows the whole field: click it to look there, right-click it to send the selected regiments. Arrows at the screen\'s edge point to regiments out of view. V centres on your selection (double-click a regiment in the list does too), Home shows the whole field, M hides the minimap.'),
           h('li', {}, '3D view: Z and C (or the ⟲ ⟳ buttons) turn the camera; Shift+middle-drag turns and tilts it. The 3D/2D button switches to the flat map.'),
         ),
       ),
@@ -1986,6 +2179,7 @@ export class BattleScene implements Scene {
             } else this.selected = new Set([u.id]);
             this.refreshList();
           },
+          ondblclick: () => { if (alive) this.centerOn(u.x, u.y); },
         },
         h('div', { class: 'row' },
           h('span', { class: 'uname' }, symbolEl(u.type, this.s.playerFaction.color, 22), st.short, tierBadge(st.tier)),

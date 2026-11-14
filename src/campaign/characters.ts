@@ -1,4 +1,5 @@
 import type { ChatMessage } from '../llm';
+import { sovereignTitle } from './sovereign';
 import { cessionFor, peaceTerms, propose, roughMen } from './realm';
 import { chronicle, deeds, reputationLines } from './chronicle';
 import { agenda } from './dialogue';
@@ -142,6 +143,7 @@ export const liegeTitle = (s: GameState) => (s.eventsDone.includes('coronation')
 /** Who you are, for the characters: a nobody risen by the sword in Shivaji's service. */
 export function playerTitle(s: GameState): string {
   const o = ORIGINS[s.player.origin];
+  if (s.realm) return `${sovereignTitle(s)}, ${o.blurb}, who has made himself sovereign of the ${s.factions[PLAYER].name}`;
   return `${meName(s)}, ${o.blurb}, now a ${RANK_NAMES[renown(s)].toLowerCase()} in the service of ${liegeTitle(s)}`;
 }
 
@@ -174,16 +176,17 @@ export function systemPrompt(s: GameState, t: Talk): string {
   const att = attitude(s, t);
   const me = meName(s);
   const role = t.kind === 'liege' ? `raja of the ${f.name}` : t.kind === 'audience' ? `sovereign of the ${f.name}` : t.faction === PLAYER
-    ? `a commander in the service of ${liegeTitle(s)}` : `a commander of the ${f.name}`;
-  const war = t.faction === PLAYER ? '' : s.war[PLAYER][t.faction] ? 'Your realm is AT WAR with the Marathas.'
-    : s.ally[PLAYER][t.faction] ? 'Your realm is allied with the Marathas.' : 'Your realm is at peace with the Marathas.';
+    ? `a commander in the service of ${s.realm ? sovereignTitle(s) : liegeTitle(s)}` : `a commander of the ${f.name}`;
+  const us = s.realm ? `the ${s.factions[PLAYER].short}` : 'the Marathas';
+  const war = t.faction === PLAYER ? '' : s.war[PLAYER][t.faction] ? `Your realm is AT WAR with ${us}.`
+    : s.ally[PLAYER][t.faction] ? `Your realm is allied with ${us}.` : `Your realm is at peace with ${us}.`;
   const ties = t.faction === PLAYER ? '' : [
     s.marriage[PLAYER][t.faction] ? 'Your houses are joined by marriage.' : '',
     s.truceUntil[PLAYER][t.faction] > s.day ? 'Hostages have been exchanged; a truce is sworn.' : '',
   ].join(' ').trim();
   const strength = t.faction === PLAYER ? '' : (() => {
     const r = (factionStrength(s, t.faction) + 1) / (factionStrength(s, PLAYER) + 1);
-    return `Your realm's armies are ${r > 2 ? 'far stronger than' : r > 1.2 ? 'stronger than' : r > 0.8 ? 'about equal to' : 'weaker than'} the Marathas'. Its fighting men are ${manpowerLabel(manpowerRatio(s, t.faction)).toLowerCase()}.`;
+    return `Your realm's armies are ${r > 2 ? 'far stronger than' : r > 1.2 ? 'stronger than' : r > 0.8 ? 'about equal to' : 'weaker than'} those of ${us}. Its fighting men are ${manpowerLabel(manpowerRatio(s, t.faction)).toLowerCase()}.`;
   })();
   const field = t.army ? `You lead ${Math.round(unitsMen(t.army.units))} men near ${s.provinces[provinceUnder(s, t.army, t.army.node)].name}.` : '';
   const facing = t.mine && t.army ? `${me}'s army of about ${roughMen(t.mine).replace('~', '')} men stands before yours.` : '';
@@ -193,7 +196,7 @@ export function systemPrompt(s: GameState, t: Talk): string {
     `You are ${g.name} of the house of ${g.house}, ${role}, in India in ${yearOf(s.day)}.`,
     historyNote(g),
     `Your temperament: ${personaWords(g)}. As a soldier you are known as ${TRAITS[g.trait].name.toLowerCase()} (${RANK_NAMES[generalRank(g)].toLowerCase()}).`,
-    `You are speaking with ${playerTitle(s)}${t.kind === 'parley' ? ', face to face between your armies' : t.kind === 'audience' ? `, who comes as envoy of the Marathas to your court` : t.kind === 'liege' ? ', who has come to your durbar at Raigad' : ', in camp'}. ${me} is a nobody risen by the sword, not a king; address him accordingly.`,
+    `You are speaking with ${playerTitle(s)}${t.kind === 'parley' ? ', face to face between your armies' : t.kind === 'audience' ? `, who comes ${s.realm ? 'as sovereign of his own realm' : 'as envoy of the Marathas'} to your court` : t.kind === 'liege' ? ', who has come to your durbar at Raigad' : ', in camp'}. ${s.realm ? `${me} rose from nothing by the sword and now rules his own realm; address him as an upstart ruler, as your temper and your realm's interest dictate.` : `${me} is a nobody risen by the sword, not a king; address him accordingly.`}`,
     war, ties, strength, field, facing,
     `${me}'s reputation for keeping his word is ${s.honour > 70 ? 'excellent' : s.honour > 45 ? 'fair' : 'poor'}; his name as a soldier is ${renown(s) >= 2 ? 'well known' : renown(s) >= 1 ? 'growing' : 'unknown'}.`,
     `Your feeling towards ${me}: ${attitudeWord(att)}.`,
@@ -582,7 +585,7 @@ export function resolveAction(s: GameState, t: Talk, id: string): Resolution {
       t.gen.loyalty = 45 + att / 4;
       t.settled = true;
       s.relations[t.faction][PLAYER] -= 15;
-      log(s, `${t.gen.name} brings his army over to Swarajya!`, true);
+      log(s, `${t.gen.name} brings his army over to the ${s.factions[PLAYER].short}!`, true);
       return say(true, `${t.gen.name} enters your service with his army.`, `${meName(s)} has won your heart and pays well; your old master never valued you`, true);
     }
     case 'gift': {
@@ -617,7 +620,7 @@ export function resolveAction(s: GameState, t: Talk, id: string): Resolution {
     }
     case 'war':
       declareWar(s, PLAYER, t.faction);
-      return { accepted: true, text: `War is declared on the ${f.name}.`, brief: `The Marathas have just declared war on your realm. Answer with cold fury.`, ends: true };
+      return { accepted: true, text: `War is declared on the ${f.name}.`, brief: `The ${s.factions[PLAYER].short} have just declared war on your realm. Answer with cold fury.`, ends: true };
     case 'share': {
       if (s.gold[PLAYER] < 60) return say(false, '', `${meName(s)} has no gold to share`);
       s.gold[PLAYER] -= 60;

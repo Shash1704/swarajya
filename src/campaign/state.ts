@@ -6,7 +6,14 @@ import { PROVINCES, type Kind } from '../india';
 import { findPath, type Pt } from './paths';
 import type { ChronEntry } from './chronicle';
 
-export const PLAYER = 0;
+/**
+ * The player's realm. It starts as the Marathas (whom you serve); if you found your own realm it
+ * becomes that realm's slot. A live binding: every module sees the change.
+ */
+export let PLAYER = 0;
+export function setPlayerFaction(f: number) {
+  PLAYER = f;
+}
 export const IND = FACTION_DEFS.length - 1;
 export const MAX_UNITS = 20;
 /** Distance (world px) at which hostile armies clash. */
@@ -214,6 +221,50 @@ export interface Province {
 }
 
 export type Faith = 'hindu' | 'muslim' | 'mixed' | 'buddhist';
+export type CourtFaith = 'hindu' | 'muslim' | 'christian' | 'buddhist';
+export const COURT_FAITHS: Record<CourtFaith, string> = { hindu: 'Hindu', muslim: 'Muslim', buddhist: 'Buddhist', christian: 'Christian' };
+
+/** The kinds of realm a founder may make. */
+export type RealmType = 'kingdom' | 'sultanate' | 'confederacy' | 'trading';
+export const REALM_TYPES: Record<RealmType, {
+  label: string; title: string; blurb: string; effect: string;
+  roster: UnitType[]; garrison: UnitType[]; income: number; manpower: number;
+}> = {
+  kingdom: {
+    label: 'Kingdom', title: 'Raja', blurb: 'A crowned king and a court of ministers, on the old pattern of the Deccan kingdoms.',
+    effect: 'Steady rule: provinces of your own faith grow calmer (−1 unrest a month); hill infantry and horse.',
+    roster: ['mavala', 'spear', 'archer', 'musket', 'rocket', 'lightcav', 'shiledar', 'elephant'], garrison: ['mavala', 'musket', 'archer'],
+    income: 1, manpower: 1,
+  },
+  sultanate: {
+    label: 'Sultanate', title: 'Sultan', blurb: 'A Persianate court of amirs and mansabdars, rich in horse and guns.',
+    effect: '+15% revenue; armoured horse, elephants and cannon; but conquered provinces chafe (+1 unrest a month).',
+    roster: ['spear', 'habshi', 'archer', 'musket', 'heavycav', 'horsearcher', 'elephant', 'cannon'], garrison: ['spear', 'musket', 'archer'],
+    income: 1.15, manpower: 0.9,
+  },
+  confederacy: {
+    label: 'Confederacy', title: 'Sardar', blurb: 'A league of chiefs who follow you while you lead them to plunder.',
+    effect: '+30% fighting men and +25% plunder, light horse aplenty; but −10% revenue.',
+    roster: ['mavala', 'spear', 'archer', 'lightcav', 'shiledar', 'horsearcher', 'rocket'], garrison: ['mavala', 'archer', 'spear'],
+    income: 0.9, manpower: 1.3,
+  },
+  trading: {
+    label: 'Trading principality', title: 'Prince', blurb: 'A state built on ports, customs houses and hired gunners.',
+    effect: 'Ports and coastal towns yield +40%; firangi gunners and cannon; but −25% fighting men.',
+    roster: ['spear', 'archer', 'musket', 'firangi', 'cannon', 'lightcav'], garrison: ['musket', 'firangi', 'spear'],
+    income: 1, manpower: 0.75,
+  },
+};
+
+/** The realm you founded, once you have. */
+export interface PlayerRealm {
+  faction: number;
+  type: RealmType;
+  faith: CourtFaith;
+  founded: number;
+  /** How it began: rising in revolt at a town, or taking leave of the Raje. */
+  how: 'revolt' | 'leave';
+}
 export type Policy = { tax: 'light' | 'normal' | 'heavy'; faith: 'tolerant' | 'zealous' };
 
 /** A squadron of ships based at a port. */
@@ -285,6 +336,12 @@ export interface GameState {
   honour: number;
   /** The player's own character and the army they lead (every other army, Maratha ones included, moves on its own). */
   player: { gen: General; origin: Origin; armyId: number; lastAsk: number; reportedXp: number };
+  /** Your own realm, if you have founded one (you serve the Raje until then). */
+  realm?: PlayerRealm;
+  /** Successor states already raised (each rises once). */
+  risen?: string[];
+  /** Great news (a sovereign dead, an empire broken) waiting to be shown to the player. */
+  news?: { title: string; text: string }[];
   /** The chronicle of the player's deeds (see chronicle.ts). */
   chronicle: ChronEntry[];
   villages: Village[];
@@ -320,9 +377,10 @@ export function faithOf(region: string): Faith {
   return MUSLIM_REGIONS.has(region) ? 'muslim' : BUDDHIST_REGIONS.has(region) ? 'buddhist' : MIXED_REGIONS.has(region) ? 'mixed' : 'hindu';
 }
 /** The faith of a realm's court. */
-export function courtFaith(state: GameState, f: number): 'hindu' | 'muslim' | 'christian' | 'buddhist' {
+export function courtFaith(state: GameState, f: number): CourtFaith {
+  if (state.realm && f === state.realm.faction) return state.realm.faith;
   const k = state.factions[f].key;
-  return k === 'mug' || k === 'bij' || k === 'gol' || k === 'sid' || k === 'saf' || k === 'ace' ? 'muslim'
+  return k === 'mug' || k === 'bij' || k === 'gol' || k === 'sid' || k === 'saf' || k === 'ace' || k === 'dec' || k === 'ben' || k === 'awd' ? 'muslim'
     : k === 'por' || k === 'eng' || k === 'voc' ? 'christian' : k === 'ava' || k === 'aya' || k === 'dvt' ? 'buddhist' : 'hindu';
 }
 /** 0 = same faith as the ruler, 0.5 = a mixed population, 1 = wholly another faith. */
@@ -358,12 +416,16 @@ export function newUnit(type: UnitType, frac = 1): CUnit {
   return { type, men: Math.max(1, Math.round(UNIT_STATS[type].maxMen * frac)) };
 }
 
-const fid = (key: string) => FACTION_DEFS.findIndex((f) => f.key === key);
+export const fid = (key: string) => FACTION_DEFS.findIndex((f) => f.key === key);
+
+/** Realms that do not exist when the game begins. */
+export const UNBORN = new Set(['dec', 'ben', 'awd', 'own']);
 
 export function newGame(seed: number): GameState {
+  setPlayerFaction(0);
   const rng = new RNG(seed);
   const { map, shapes } = generateMap(seed);
-  const factions: Faction[] = FACTION_DEFS.map((d, i) => ({ ...d, id: i, alive: true }));
+  const factions: Faction[] = FACTION_DEFS.map((d, i) => ({ ...d, roster: [...d.roster], garrison: [...d.garrison], id: i, alive: !UNBORN.has(d.key) }));
   const provinces: Province[] = PROVINCES.map((d, i) => {
     const owner = fid(d.owner);
     const p: Province = {
@@ -634,7 +696,7 @@ function baseSpeed(state: GameState, a: Army): number {
   if (a.light && cls.length && cls.every((c) => c === 'cavalry')) v *= 1.35;
   // Hill country is slow going (mountain-bred Maratha armies least of all).
   const e = state.map.elev[Math.max(0, Math.min(MH - 1, Math.floor(a.y / CELL))) * MW + Math.max(0, Math.min(MW - 1, Math.floor(a.x / CELL)))];
-  if (e > 0.32) v *= a.owner === PLAYER ? 0.85 : 0.75;
+  if (e > 0.32) v *= a.owner === PLAYER || state.factions[a.owner].key === 'mar' ? 0.85 : 0.75;
   if (state.day < a.quarantineUntil) return 0;
   // Enemy hill forts command the passes: marching under their guns is slow going.
   if (state.provinces.some((p) => p.kind === 'fort' && p.walls >= 2 && p.garrison.length && hostile(state, a.owner, p.owner) && dist(a, p) < 25 && a.siegeOf !== p.id)) v *= 0.8;
@@ -672,6 +734,7 @@ export function provinceIncome(state: GameState, p: Province, regions = regionOw
   if (p.unrest > 50) v *= 0.5;
   if (state.day < p.famineUntil) v *= 0.5;
   if (isCoastal(p)) {
+    if (state.realm?.type === 'trading' && p.owner === state.realm.faction) v *= 1.4;
     if (blockaded(state, p)) v *= 0.4;
     else if (state.fleets.some((f) => f.owner === p.owner && f.mission === 'patrol' && dist(f, p) < 300)) v *= 1.15;
   }
@@ -891,7 +954,11 @@ export function capture(state: GameState, p: Province, owner: number) {
   const f = state.factions;
   log(state, `The ${f[owner].short} take ${p.town} (${p.name})${p.capitalOf >= 0 ? ', a royal capital!' : '.'}`,
     owner === PLAYER || prev === PLAYER);
-  if (prev !== IND && !state.provinces.some((q) => q.owner === prev)) {
+  // A realm's first town becomes its seat (the founder's, or a successor state's).
+  if (owner !== IND && !state.provinces.some((q) => q.capitalOf === owner)) p.capitalOf = owner;
+  // A founder's realm lives on in his saddle when it loses its last town.
+  const landless = state.realm && prev === state.realm.faction;
+  if (prev !== IND && !landless && !state.provinces.some((q) => q.owner === prev)) {
     f[prev].alive = false;
     state.armies = state.armies.filter((a) => a.owner !== prev);
     state.fleets = state.fleets.filter((x) => x.owner !== prev);
@@ -914,7 +981,8 @@ export const RAID_DAYS = 2;
 /** Gold carried off by a finished raid (chauth). */
 export function raidSpoils(state: GameState, army: Army, p: Province): number {
   const horse = army.units.filter((u) => UNIT_STATS[u.type].cls === 'cavalry').length / army.units.length;
-  const gold = Math.round(p.wealth * (2 + horse * 2) * (p.devastated > 0 ? 0.3 : 1));
+  const league = state.realm?.type === 'confederacy' && army.owner === state.realm.faction ? 1.25 : 1;
+  const gold = Math.round(p.wealth * (2 + horse * 2) * (p.devastated > 0 ? 0.3 : 1) * league);
   state.gold[army.owner] += gold;
   p.devastated = Math.max(p.devastated, 60);
   log(state, `The ${state.factions[army.owner].short} plunder the lands of ${p.name} and carry off ${gold} gold.`,
@@ -1067,7 +1135,9 @@ export function maxManpower(state: GameState, f: number): number {
   for (const p of state.provinces) if (p.owner === f) m += p.wealth * MEN_PER_WEALTH;
   // Every realm with land can also call on its nobles' retainers and hereditary soldiers.
   // The Marathas also draw on the Maval valleys and the Ghats: hillmen who turn out for every campaign.
-  return m > 0 ? m + (f === PLAYER ? 1400 : 400) : 0;
+  // A founder's realm: the men who follow his banner, even before it holds a single town.
+  if (state.realm && f === state.realm.faction) return Math.round((m + 600) * REALM_TYPES[state.realm.type].manpower);
+  return m > 0 ? m + (state.factions[f].key === 'mar' ? 1400 : 400) : 0;
 }
 
 /** Men who come of age (or come back from the fields) each month, from provinces not ravaged by war. */

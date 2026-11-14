@@ -172,7 +172,7 @@ export function openTalk(s: GameState, kind: TalkKind, gen: General, faction: nu
     const g = gen;
     const header = h('div', { class: 'talk-head' },
       h('div', {}, swatch(f.color), h('b', {}, `${g.name}`), h('span', { class: 'muted' }, ` of the house of ${g.house}`)),
-      h('div', { class: 'muted' }, kind === 'liege' ? `Raja of the ${f.name}, your liege` : kind === 'audience' ? `Sovereign of the ${f.name}` : faction === PLAYER ? `A commander of the Raje · ${RANK_NAMES[generalRank(g)]}${army ? ` · ${Math.round(unitsMen(army.units))} men` : ''}` : `Commander of the ${f.short}${army ? ` · ${Math.round(unitsMen(army.units))} men` : ''}`),
+      h('div', { class: 'muted' }, kind === 'liege' ? `Raja of the ${f.name}, your liege` : kind === 'audience' ? `Sovereign of the ${f.name}` : faction === PLAYER ? `${s.realm ? 'Your commander' : 'A commander of the Raje'} · ${RANK_NAMES[generalRank(g)]}${army ? ` · ${Math.round(unitsMen(army.units))} men` : ''}` : `Commander of the ${f.short}${army ? ` · ${Math.round(unitsMen(army.units))} men` : ''}`),
       h('div', { class: 'muted', style: 'font-size:12.5px' }, `${TRAITS[g.trait].name} · ${personaWords(g)}`),
       moodEl,
     );

@@ -297,7 +297,7 @@ export const FOREIGN_LABELS: { name: string; at: LL; sea?: boolean }[] = [
   { name: 'INDIAN OCEAN', at: [74.0, 7.0], sea: true },
 ];
 
-export type Owner = 'mar' | 'mug' | 'bij' | 'gol' | 'raj' | 'sid' | 'por' | 'eng' | 'nay' | 'mys' | 'aho' | 'saf' | 'ava' | 'aya' | 'dvt' | 'ace' | 'voc' | 'ind';
+export type Owner = 'mar' | 'mug' | 'bij' | 'gol' | 'raj' | 'sid' | 'por' | 'eng' | 'nay' | 'mys' | 'aho' | 'saf' | 'ava' | 'aya' | 'dvt' | 'ace' | 'voc' | 'dec' | 'ben' | 'awd' | 'own' | 'ind';
 export type Kind = 'fort' | 'city' | 'port';
 
 export interface ProvinceDef {

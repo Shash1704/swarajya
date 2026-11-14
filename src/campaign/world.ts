@@ -1,4 +1,5 @@
 import { UNIT_STATS } from '../data';
+import { mortalityMonthly } from './sovereign';
 import { aiMonthly, realmRecruit, thinkArmy } from './ai';
 import {
   type Army, armyById, armySpeed, AT_TOWN, autoResolve, autoResolveSiege, capture, cleanupArmies, CONTACT_RANGE,
@@ -127,9 +128,12 @@ export class World {
     const s = this.state;
     if (yourArmy(s) || !s.factions[PLAYER].alive) return;
     // The capital if it stands, else any town of the realm not under siege.
-    const town = s.provinces.filter((p) => p.owner === PLAYER && !p.siege).sort((p, q) => (q.capitalOf === PLAYER ? 1 : 0) - (p.capitalOf === PLAYER ? 1 : 0))[0];
+    let town = s.provinces.filter((p) => p.owner === PLAYER && !p.siege).sort((p, q) => (q.capitalOf === PLAYER ? 1 : 0) - (p.capitalOf === PLAYER ? 1 : 0))[0];
+    // A founder without a town gathers his men in friendly country, wherever he can.
+    if (!town && s.realm) town = s.provinces.filter((p) => !hostile(s, PLAYER, p.owner) && !p.siege)[0] ?? s.provinces.find((p) => p.owner === IND);
     if (!town) return;
-    const a = spawnArmy(s, PLAYER, town.id, [newUnit('mavala', 0.5), newUnit('mavala', 0.4)], s.player.gen);
+    const t0 = s.factions[PLAYER].roster[0];
+    const a = spawnArmy(s, PLAYER, town.id, [newUnit(t0, 0.5), newUnit(t0, 0.4)], s.player.gen);
     a.safeUntil = s.day + 5;
     s.player.armyId = a.id;
     log(s, `You escape the rout and gather a few men at ${town.town}. The road back begins again.`, true);
@@ -882,6 +886,7 @@ export class World {
     for (const f of s.factions) if (f.alive && f.id !== PLAYER) aiMonthly(s, f.id);
     if (s.factions[PLAYER].alive) realmRecruit(s);
     unrestMonthly(s);
+    mortalityMonthly(s);
     captivesMonthly(s);
     diplomacyMonthly(s);
     navyMonthly(s);
@@ -896,9 +901,9 @@ export class World {
     if (ev) this.ask(ev);
     cleanupArmies(s);
     const n = s.factions.length;
-    for (let a = 1; a < n; a++) {
+    for (let a = 0; a < n; a++) {
       for (let b = a + 1; b < n; b++) {
-        if (!s.war[a][b]) continue;
+        if (!s.war[a][b] || a === PLAYER || b === PLAYER) continue;
         const exhausted = Math.min(manpowerRatio(s, a), manpowerRatio(s, b)) < 0.25;
         if ((exhausted && s.rng.chance(0.25)) || (s.day - s.warSince[a][b] > 360 && s.rng.chance(0.03))) makePeace(s, a, b);
       }
