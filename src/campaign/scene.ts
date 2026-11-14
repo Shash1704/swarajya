@@ -1917,7 +1917,7 @@ export class CampaignScene implements Scene {
       h('div', { class: 'row muted' },
         h('span', { title: causes.map((c) => `${c.label} ${c.v > 0 ? '+' : ''}${c.v.toFixed(1)}`).join('\n') },
           `Unrest ${Math.round(p.unrest)} (${net >= 0 ? '+' : ''}${net.toFixed(1)}/mo)`),
-        h('span', {}, `${p.faith === 'mixed' ? 'Mixed faiths' : p.faith === 'hindu' ? 'Hindu' : 'Muslim'} · ${s.factions[p.culture]?.short ?? ''} people`)),
+        h('span', {}, `${p.faith === 'mixed' ? 'Mixed faiths' : p.faith === 'hindu' ? 'Hindu' : p.faith === 'buddhist' ? 'Buddhist' : 'Muslim'} · ${s.factions[p.culture]?.short ?? ''} people`)),
       bar(p.unrest / 100, p.unrest > 50 ? 'var(--neg)' : 'var(--gold)'),
       p.owner !== IND ? h('div', { class: 'muted', style: 'font-size:12px' }, causes.map((c) => `${c.label} ${c.v > 0 ? '+' : ''}${c.v.toFixed(1)}`).join(' · ')) : null,
       p.unrest > 50 ? h('div', { class: 'neg', style: 'font-size:12.5px' }, p.unrest >= 80 ? 'On the brink of revolt!' : 'Restless: half revenue, and over 70 no recruits.') : null,

@@ -407,7 +407,7 @@ export function buildClouds(scene: Scene): Sky {
   return {
     update(t, radius) {
       // Clouds show from high up and thin away as the camera comes down to the ground.
-      const a = Math.max(0, Math.min(1, (radius - 420) / 600)) * 0.55;
+      const a = Math.max(0, Math.min(1, (radius - 1000) / 900)) * 0.5;
       mat.alpha = a;
       for (const c of clouds) {
         c.mesh.isVisible = a > 0.01;

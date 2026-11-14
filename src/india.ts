@@ -29,8 +29,64 @@ const BURMA_COAST: LL[] = [
   [94.55, 16.1], [95.2, 15.85], [95.8, 16.0], [96.3, 16.5], [96.9, 16.8], [97.5, 16.7],
 ];
 
-/** All land on the map, including foreign (unplayable) highlands. */
-export const LAND: LL[] = [...COAST, ...BURMA_COAST, [97.5, 36.5], [66.0, 36.5]];
+/** Arabia's shore, from the mouth of the Red Sea round Oman and up the Gulf to the Shatt al-Arab. */
+const ARABIA_COAST: LL[] = [
+  [44.0, 12.75], [45.0, 12.8], [46.0, 13.4], [47.5, 13.6], [48.7, 14.0], [49.5, 14.6], [50.5, 15.0], [51.5, 15.3],
+  [52.2, 15.6], [53.3, 16.4], [54.1, 17.0], [55.2, 17.5], [55.6, 18.0], [56.6, 18.3], [57.7, 18.9], [57.8, 19.7],
+  [58.6, 20.4], [59.4, 21.3], [59.8, 22.4], [59.4, 22.9], [58.6, 23.6], [57.8, 23.8], [56.9, 24.2], [56.4, 24.9],
+  [56.35, 25.6], [56.4, 26.3], [56.1, 26.1], [55.9, 25.7], [55.3, 25.3], [54.6, 24.6], [54.0, 24.15], [52.6, 24.15],
+  [51.8, 24.0], [51.55, 24.6], [51.6, 25.3], [51.5, 25.9], [51.25, 26.1], [50.9, 25.6], [50.75, 25.0], [50.55, 25.5],
+  [50.15, 26.35], [49.6, 27.05], [48.85, 27.6], [48.45, 28.4], [48.1, 29.0], [47.95, 29.4], [48.35, 29.7], [48.6, 29.95],
+];
+
+/** Persia's shore: down the Gulf from the Shatt al-Arab, past Hormuz, along the Makran. */
+const IRAN_COAST: LL[] = [
+  [49.0, 30.05], [49.5, 30.0], [50.2, 30.05], [50.5, 29.55], [50.85, 28.95], [51.3, 28.0], [52.0, 27.8], [52.6, 27.45],
+  [53.6, 26.9], [54.9, 26.55], [55.5, 26.7], [56.3, 27.15], [57.0, 27.1], [57.1, 26.0], [57.3, 25.8], [57.8, 25.65],
+  [58.8, 25.55], [59.6, 25.4], [60.6, 25.3], [61.6, 25.1], [61.75, 25.05], [62.35, 25.1], [63.5, 25.25], [64.6, 25.2],
+  [65.4, 25.3],
+];
+
+/** From Martaban down Tenasserim and the Malay peninsula, round the Gulf of Siam and up the coast of Annam and Tonkin. */
+const SE_COAST: LL[] = [
+  [97.65, 16.45], [97.75, 15.6], [97.85, 15.0], [98.2, 14.1], [98.45, 13.2], [98.6, 12.4], [98.7, 11.3], [98.55, 10.0],
+  [98.35, 9.0], [98.3, 8.1], [98.75, 8.0], [99.3, 7.4], [99.9, 6.7], [100.3, 5.6], [100.4, 4.6], [100.8, 3.8], [101.3, 3.0],
+  [101.8, 2.5], [102.25, 2.2], [103.0, 1.7], [103.5, 1.35], [104.25, 1.4], [104.1, 2.0], [103.85, 2.6], [103.45, 3.5],
+  [103.4, 4.3], [103.25, 5.0], [102.6, 5.8], [102.25, 6.15], [101.6, 6.8], [101.0, 6.95], [100.5, 7.3], [100.2, 8.0],
+  [100.0, 8.6], [99.4, 9.2], [99.2, 10.2], [99.25, 10.9], [99.6, 11.6], [99.9, 12.4], [100.05, 13.15], [100.5, 13.5],
+  [100.95, 13.35], [100.9, 12.7], [101.4, 12.65], [102.1, 12.45], [102.6, 12.0], [103.0, 11.5], [103.5, 10.8], [104.2, 10.55],
+  [104.6, 10.3], [105.1, 9.95], [104.75, 8.65], [105.3, 8.9], [106.0, 9.3], [106.6, 9.7], [107.1, 10.35], [107.8, 10.7],
+  [108.3, 11.0], [109.0, 11.55], [109.2, 12.2], [109.25, 13.0], [109.2, 13.8], [109.0, 14.6], [108.85, 15.3], [108.4, 15.75],
+  [108.2, 16.1], [107.6, 16.55], [107.05, 17.1], [106.5, 17.7], [106.0, 18.3], [105.75, 18.8], [105.9, 19.6], [106.2, 20.0],
+  [106.6, 20.3], [106.8, 20.85], [107.4, 21.15], [108.0, 21.5], [108.6, 21.65], [109.15, 21.45], [109.6, 21.65], [110.2, 21.3],
+];
+
+/** The mainland, from Mesopotamia and Arabia to Persia, India, Burma, Siam, Annam and southern China. */
+export const LAND: LL[] = [
+  [43.5, 40.5], ...ARABIA_COAST, ...IRAN_COAST, ...COAST, ...BURMA_COAST, ...SE_COAST, [110.5, 40.5],
+];
+
+/** Islands and the Horn of Africa. */
+const HORN: LL[] = [
+  [43.5, 10.4], [45.0, 10.45], [46.5, 10.75], [48.0, 11.15], [49.2, 11.3], [50.4, 11.6], [51.3, 11.85], [51.1, 11.0],
+  [51.4, 10.4], [50.8, 9.0], [49.8, 8.0], [48.5, 5.35], [47.0, 3.4], [45.35, 2.05], [44.0, 1.2], [43.5, -3], [40, -3], [40, 10.4],
+];
+const SUMATRA: LL[] = [
+  [95.25, 5.6], [95.6, 5.65], [96.3, 5.25], [97.2, 5.2], [97.6, 4.9], [98.3, 4.2], [98.7, 3.8], [99.5, 3.2], [100.2, 2.6],
+  [100.8, 2.2], [101.4, 1.85], [102.2, 1.4], [102.9, 0.6], [103.75, 0.0], [104.5, -1.0], [104.9, -2.3], [105.8, -3.0],
+  [106.0, -4.5], [105.8, -5.8], [104.5, -5.9], [103.5, -4.8], [102.3, -3.9], [101.2, -2.6], [100.35, -0.95], [99.6, 0.0],
+  [99.0, 1.0], [98.6, 1.75], [97.7, 2.4], [97.2, 3.2], [96.4, 4.0], [96.0, 4.4], [95.5, 5.0],
+];
+const HAINAN: LL[] = [[108.6, 19.2], [108.7, 18.5], [109.5, 18.2], [110.5, 18.5], [110.5, 20.1], [109.2, 19.9], [108.65, 19.6]];
+const BORNEO: LL[] = [[109.0, 0.0], [109.0, -1.5], [110.5, -2.5], [110.5, 2.2], [109.65, 2.08], [109.0, 1.5], [109.3, 0.9]];
+const ANDAMANS: LL[] = [[92.7, 13.6], [93.0, 13.2], [92.95, 12.2], [92.75, 11.5], [92.6, 10.6], [92.4, 10.8], [92.5, 12.0], [92.6, 12.9]];
+
+/** Inland seas and lakes, cut back out of the land. */
+const CASPIAN: LL[] = [
+  [49.0, 40.6], [49.3, 39.6], [48.95, 38.9], [48.9, 38.4], [49.0, 37.9], [49.45, 37.5], [50.1, 37.35], [50.6, 37.0], [51.3, 36.75],
+  [52.1, 36.65], [53.0, 36.75], [53.9, 36.9], [54.0, 37.4], [53.85, 38.0], [53.9, 38.9], [53.2, 39.4], [53.0, 40.6],
+];
+const URMIA: LL[] = [[45.3, 38.25], [45.85, 37.95], [46.0, 37.4], [45.6, 37.1], [45.2, 37.5]];
 
 export const CEYLON: LL[] = [
   [79.92, 9.75], [80.3, 9.8], [80.8, 9.25], [81.25, 8.55], [81.75, 7.7], [81.85, 7.0], [81.55, 6.4],
@@ -49,7 +105,34 @@ const FRONTIER: LL[] = [
   [68.4, 31.6], [67.4, 31.25], [66.6, 30.95], [66.0, 30.3],
 ];
 
+/** Persia and Afghanistan: the Gulf and Makran coasts, the Ottoman and Russian frontiers, the Oxus, and India's north-west. */
+const WEST: LL[] = [
+  [66.0, 25.35], ...[...IRAN_COAST].reverse(), [48.5, 29.95],
+  [47.7, 31.0], [47.4, 32.4], [46.1, 33.0], [45.4, 34.0], [45.6, 35.0], [46.0, 35.6], [45.0, 36.6], [44.4, 37.6], [44.2, 38.4],
+  [44.4, 39.4], [44.8, 39.75], [46.5, 38.9], [47.6, 39.6], [48.3, 39.4], [48.0, 38.8], [48.9, 38.4],
+  [54.0, 37.4], [55.4, 38.0], [57.2, 38.25], [59.3, 37.5], [60.4, 36.6], [61.2, 36.6],
+  [61.3, 35.6], [62.3, 35.2], [63.1, 35.8], [64.5, 36.3], [65.6, 37.4], [66.6, 37.4], [67.8, 37.2], [68.9, 37.3], [70.2, 37.6],
+  [70.9, 38.4], [71.6, 37.9], [72.6, 37.0], [73.7, 37.2], [74.9, 37.2], [74.5, 36.9],
+  // India's frontier from the Pamirs back down the Afghan marches to Baluchistan.
+  ...FRONTIER.slice(FRONTIER.findIndex((p) => p[0] === 74.4 && p[1] === 36.5)),
+];
+
+/** Burma, Siam, Laos, Cambodia, Annam and Tonkin, and the Malay peninsula, up to the frontiers of China. */
+const SOUTHEAST: LL[] = [
+  [92.3, 20.75], ...BURMA_COAST, ...SE_COAST.slice(0, -4), [108.0, 21.5],
+  [106.7, 22.8], [105.4, 23.3], [104.5, 22.8], [103.0, 22.6], [102.1, 22.4], [101.6, 21.2], [101.1, 21.7], [100.1, 21.5],
+  [99.2, 22.1], [99.5, 23.0], [98.7, 23.9], [97.6, 23.9], [98.0, 24.9], [97.6, 25.4], [98.6, 26.2], [98.7, 27.5], [97.6, 28.4],
+  [97.2, 27.9], [96.6, 27.3], [95.9, 26.9], [95.2, 26.2], [94.7, 25.3], [94.4, 24.3], [93.9, 24.0], [93.35, 23.5], [93.1, 22.4],
+  [92.65, 21.6],
+];
+
+/** India's own playable land (the coast round to Arakan, and the frontier from Arakan to Baluchistan). */
 export const PLAYABLE: LL[] = [...COAST, ...FRONTIER];
+
+/** Every polygon of land, every sea cut back out of it, and every playable region. */
+export const LANDS: LL[][] = [LAND, HORN, SUMATRA, HAINAN, BORNEO, ANDAMANS];
+export const INLAND_SEAS: LL[][] = [CASPIAN, URMIA];
+export const PLAYABLES: LL[][] = [PLAYABLE, WEST, SOUTHEAST, SUMATRA];
 
 export interface Range { pts: LL[]; h: number; w: number }
 
@@ -70,6 +153,21 @@ export const RANGES: Range[] = [
   { h: 0.3, w: 0.45, pts: [[78.6, 13.0], [79.1, 14.4], [78.9, 15.6], [80.3, 17.2], [81.8, 18.4], [83.2, 19.3], [84.5, 20.3]] },
   { h: 0.38, w: 0.38, pts: [[90.0, 25.5], [91.0, 25.55], [92.2, 25.4]] },
   { h: 0.55, w: 0.65, pts: [[96.0, 27.2], [95.0, 26.0], [94.3, 25.0], [93.6, 23.8], [93.0, 22.5], [92.7, 21.2], [93.5, 19.8], [94.3, 18.0]] },
+  // Persia and Afghanistan: the Zagros, the Alborz over the Caspian, the Kopet Dag, the Paropamisus and the Hindu Kush,
+  // the ranges of the central plateau, the Makran hills, and the Pamirs.
+  { h: 0.72, w: 1.1, pts: [[44.6, 37.5], [46.0, 35.5], [47.6, 33.8], [49.5, 32.0], [51.5, 30.0], [53.5, 28.6], [55.8, 27.6], [57.5, 27.4]] },
+  { h: 0.88, w: 0.55, pts: [[48.4, 38.2], [49.2, 37.0], [50.6, 36.5], [52.0, 35.95], [53.5, 36.3], [55.0, 36.6], [56.5, 37.3]] },
+  { h: 0.5, w: 0.6, pts: [[56.5, 38.0], [58.5, 37.6], [60.5, 36.8]] },
+  { h: 0.78, w: 1.0, pts: [[62.0, 34.8], [64.5, 34.7], [66.5, 34.9], [67.5, 35.5]] },
+  { h: 0.4, w: 0.8, pts: [[52.5, 34.0], [54.5, 32.0], [56.5, 30.5], [58.0, 29.0]] },
+  { h: 0.4, w: 0.7, pts: [[57.5, 26.5], [60.0, 26.5], [62.5, 26.6], [65.0, 26.6]] },
+  // Burma, Siam, Indochina, Malaya and Sumatra: the Shan hills, Tenasserim, the Annamite chain, the Malay range, the Barisan.
+  { h: 0.5, w: 0.9, pts: [[97.5, 25.5], [98.5, 23.0], [99.0, 21.0], [100.5, 19.5]] },
+  { h: 0.45, w: 0.5, pts: [[98.0, 19.5], [98.6, 17.0], [98.9, 15.0], [99.2, 12.5], [99.0, 10.0], [98.8, 8.6]] },
+  { h: 0.55, w: 0.7, pts: [[103.5, 21.5], [104.8, 19.5], [106.0, 18.0], [107.2, 16.3], [108.0, 14.5], [108.4, 12.5]] },
+  { h: 0.45, w: 0.45, pts: [[101.0, 6.5], [101.4, 5.0], [101.8, 3.6], [102.6, 2.6]] },
+  { h: 0.55, w: 0.5, pts: [[95.6, 5.2], [97.0, 3.8], [98.6, 2.0], [100.0, 0.5], [101.3, -1.0], [102.5, -2.5]] },
+  { h: 0.35, w: 0.5, pts: [[102.6, 12.6], [103.6, 11.6]] },
 ];
 
 function WESTERN_GHATS(): LL[] {
@@ -90,6 +188,12 @@ export const PLATEAUS: Blob[] = [
   { c: [68.0, 34.5], r: 3.0, v: 0.4 },
   { c: [66.5, 28.5], r: 2.5, v: 0.35 },
   { c: [97.0, 22.0], r: 3.0, v: 0.35 },
+  { c: [55.0, 32.0], r: 7.0, v: 0.32 },
+  { c: [66.0, 33.5], r: 3.5, v: 0.4 },
+  { c: [44.5, 39.0], r: 2.0, v: 0.45 },
+  { c: [73.5, 38.3], r: 2.5, v: 0.75 },
+  { c: [103.0, 25.5], r: 4.0, v: 0.45 },
+  { c: [103.5, 20.5], r: 2.0, v: 0.3 },
 ];
 
 /** Rainfall: negative is desert, positive is jungle. */
@@ -108,6 +212,21 @@ export const MOISTURE: Blob[] = [
   { c: [83.0, 28.0], r: 4.0, v: 0.15 },
   { c: [95.0, 19.0], r: 3.0, v: 0.3 },
   { c: [80.6, 7.4], r: 1.2, v: 0.3 },
+  // Persia's deserts, Arabia, Mesopotamia, the Somali coast; the wet Caspian shore.
+  { c: [55.0, 32.0], r: 6.0, v: -0.55 },
+  { c: [58.5, 30.3], r: 2.5, v: -0.4 },
+  { c: [54.5, 34.6], r: 2.5, v: -0.35 },
+  { c: [64.5, 30.5], r: 3.0, v: -0.6 },
+  { c: [47.0, 24.0], r: 8.0, v: -0.85 },
+  { c: [45.5, 31.5], r: 3.0, v: -0.4 },
+  { c: [47.0, 7.0], r: 5.0, v: -0.6 },
+  { c: [51.0, 36.9], r: 1.6, v: 0.45 },
+  // The wet country of South-East Asia, and Burma's dry zone.
+  { c: [102.0, 4.0], r: 3.0, v: 0.45 },
+  { c: [99.0, 1.0], r: 4.0, v: 0.45 },
+  { c: [106.0, 15.0], r: 4.0, v: 0.3 },
+  { c: [100.5, 14.5], r: 2.5, v: 0.2 },
+  { c: [95.3, 21.0], r: 1.6, v: -0.3 },
 ];
 
 export interface River { name: string; major: boolean; pts: LL[] }
@@ -139,19 +258,46 @@ export const RIVERS: River[] = [
   { name: 'Tungabhadra', major: false, pts: [[75.5, 13.9], [75.6, 14.2], [75.9, 14.7], [76.4, 15.3], [77.0, 15.6], [77.6, 15.9], [78.25, 15.95]] },
   { name: 'Kaveri', major: true, pts: [[75.6, 12.4], [76.2, 12.45], [76.7, 12.4], [77.3, 12.2], [77.8, 11.8], [78.4, 11.0], [78.7, 10.85], [79.15, 10.95], [79.85, 11.15]] },
   { name: 'Penner', major: false, pts: [[77.6, 13.6], [78.5, 14.5], [79.3, 14.5], [80.15, 14.6]] },
+  // Persia, Afghanistan and Mesopotamia.
+  { name: 'Shatt al-Arab', major: true, pts: [[44.4, 33.3], [45.9, 32.5], [46.8, 31.5], [47.6, 30.9], [48.5, 29.95]] },
+  { name: 'Karun', major: false, pts: [[50.0, 32.0], [48.7, 31.3], [48.3, 30.4]] },
+  { name: 'Helmand', major: true, pts: [[68.0, 34.4], [66.0, 32.5], [64.4, 31.4], [62.0, 30.8], [61.6, 31.3]] },
+  { name: 'Harirud', major: false, pts: [[65.5, 34.4], [63.5, 34.4], [62.2, 34.35], [61.2, 35.6]] },
+  { name: 'Kabul', major: false, pts: [[68.6, 34.5], [69.2, 34.5], [70.45, 34.4], [71.6, 34.0], [72.2, 33.9]] },
+  { name: 'Oxus', major: true, pts: [[73.5, 37.2], [71.5, 37.6], [69.5, 37.2], [67.8, 37.2], [66.5, 37.4], [64.0, 39.0], [62.5, 40.4]] },
+  // Burma, Siam and Indochina.
+  { name: 'Irrawaddy', major: true, pts: [[97.6, 25.9], [97.2, 24.3], [96.4, 23.0], [96.08, 21.98], [95.0, 21.2], [94.9, 20.15], [95.2, 18.8], [95.4, 17.0], [95.2, 16.0]] },
+  { name: 'Chindwin', major: false, pts: [[96.0, 26.3], [95.0, 24.5], [94.8, 22.8], [95.0, 21.2]] },
+  { name: 'Salween', major: true, pts: [[98.8, 25.5], [98.8, 22.0], [97.9, 18.0], [97.6, 16.5]] },
+  { name: 'Sittaung', major: false, pts: [[96.3, 20.0], [96.4, 18.9], [96.8, 17.3], [96.9, 16.9]] },
+  { name: 'Chao Phraya', major: true, pts: [[99.0, 18.8], [100.1, 15.7], [100.57, 14.35], [100.55, 13.5]] },
+  { name: 'Mekong', major: true, pts: [[101.0, 21.5], [100.1, 20.4], [102.13, 19.89], [102.1, 18.0], [102.6, 17.97], [104.8, 16.5], [105.8, 15.1], [105.9, 13.5], [104.9, 11.6], [105.7, 10.5], [106.5, 9.6]] },
+  { name: 'Red River', major: true, pts: [[103.5, 22.7], [104.9, 21.6], [105.85, 21.03], [106.6, 20.2]] },
 ];
 
 export const FOREIGN_LABELS: { name: string; at: LL; sea?: boolean }[] = [
   { name: 'TIBET', at: [86.5, 32.6] },
-  { name: 'AFGHAN HIGHLANDS', at: [67.8, 34.4] },
-  { name: 'KINGDOM OF AVA', at: [96.0, 21.6] },
   { name: 'KANDY', at: [80.7, 7.7] },
-  { name: 'ARABIAN SEA', at: [68.5, 15.5], sea: true },
+  { name: 'OTTOMAN IRAQ', at: [45.2, 32.2] },
+  { name: 'ARABIA', at: [47.5, 23.5] },
+  { name: 'OMAN', at: [57.0, 21.5] },
+  { name: 'KHANATE OF BUKHARA', at: [63.5, 39.2] },
+  { name: 'QING CHINA', at: [104.5, 27.5] },
+  { name: 'SOMALI COAST', at: [47.0, 7.0] },
+  { name: 'ARABIAN SEA', at: [64.0, 17.0], sea: true },
+  { name: 'PERSIAN GULF', at: [51.8, 27.1], sea: true },
+  { name: 'GULF OF OMAN', at: [59.5, 24.4], sea: true },
+  { name: 'CASPIAN SEA', at: [51.3, 38.4], sea: true },
+  { name: 'GULF OF ADEN', at: [48.5, 12.4], sea: true },
+  { name: 'ANDAMAN SEA', at: [96.5, 11.5], sea: true },
+  { name: 'GULF OF SIAM', at: [101.6, 9.6], sea: true },
+  { name: 'SOUTH CHINA SEA', at: [108.0, 7.5], sea: true },
+  { name: 'STRAIT OF MALACCA', at: [99.6, 3.6], sea: true },
   { name: 'BAY OF BENGAL', at: [87.5, 15.0], sea: true },
   { name: 'INDIAN OCEAN', at: [74.0, 7.0], sea: true },
 ];
 
-export type Owner = 'mar' | 'mug' | 'bij' | 'gol' | 'raj' | 'sid' | 'por' | 'eng' | 'nay' | 'mys' | 'aho' | 'ind';
+export type Owner = 'mar' | 'mug' | 'bij' | 'gol' | 'raj' | 'sid' | 'por' | 'eng' | 'nay' | 'mys' | 'aho' | 'saf' | 'ava' | 'aya' | 'dvt' | 'ace' | 'voc' | 'ind';
 export type Kind = 'fort' | 'city' | 'port';
 
 export interface ProvinceDef {
@@ -329,4 +475,73 @@ export const PROVINCES: ProvinceDef[] = [
   P('calicut', 'Calicut', 'Calicut', 75.82, 11.28, 'port', 1, 7, 'ind', 'Malabar'),
   P('cochin', 'Cochin', 'Cochin', 76.32, 9.97, 'port', 1, 6, 'ind', 'Malabar'),
   P('venad', 'Venad', 'Padmanabhapuram', 77.05, 8.55, 'fort', 1, 5, 'ind', 'Malabar'),
+  // Persia (the Safavid Shah Suleiman) and Afghanistan (Kabul is Mughal; Kandahar and Herat are Persian since 1649)
+  P('isfahan', 'Isfahan', 'Isfahan', 51.67, 32.65, 'city', 3, 14, 'saf', 'Persia'),
+  P('kashan', 'Kashan', 'Kashan', 51.44, 33.98, 'city', 1, 6, 'saf', 'Persia'),
+  P('qazvin', 'Qazvin', 'Qazvin', 50.0, 36.27, 'city', 2, 8, 'saf', 'Persia'),
+  P('hamadan', 'Hamadan', 'Hamadan', 48.51, 34.8, 'city', 1, 6, 'saf', 'Persia'),
+  P('kermanshah', 'Kermanshah', 'Kermanshah', 47.07, 34.31, 'fort', 2, 5, 'saf', 'Persia'),
+  P('tabriz', 'Tabriz', 'Tabriz', 46.29, 38.08, 'city', 2, 10, 'saf', 'Azerbaijan & Gilan'),
+  P('ardabil', 'Ardabil', 'Ardabil', 48.29, 38.25, 'city', 1, 5, 'saf', 'Azerbaijan & Gilan'),
+  P('gilan', 'Gilan', 'Rasht', 49.58, 37.28, 'city', 1, 7, 'saf', 'Azerbaijan & Gilan'),
+  P('mazandaran', 'Mazandaran', 'Sari', 53.06, 36.56, 'city', 1, 6, 'saf', 'Azerbaijan & Gilan'),
+  P('khuzestan', 'Khuzestan', 'Shushtar', 48.85, 32.05, 'city', 1, 6, 'saf', 'Fars'),
+  P('shiraz', 'Fars', 'Shiraz', 52.53, 29.61, 'city', 2, 10, 'saf', 'Fars'),
+  P('hormuz', 'Hormuz', 'Bandar Abbas', 56.27, 27.18, 'port', 1, 9, 'saf', 'Fars'),
+  P('kerman', 'Kerman', 'Kerman', 57.08, 30.28, 'city', 2, 7, 'saf', 'Kerman & Sistan'),
+  P('yazd', 'Yazd', 'Yazd', 54.36, 31.9, 'city', 1, 6, 'saf', 'Kerman & Sistan'),
+  P('sistan', 'Sistan', 'Zaranj', 61.86, 30.96, 'fort', 1, 3, 'saf', 'Kerman & Sistan'),
+  P('makran', 'Makran', 'Kech', 63.05, 26.0, 'fort', 1, 2, 'ind', 'Kerman & Sistan'),
+  P('mashhad', 'Khorasan', 'Mashhad', 59.6, 36.3, 'city', 2, 9, 'saf', 'Khorasan'),
+  P('herat', 'Herat', 'Herat', 62.2, 34.35, 'city', 3, 8, 'saf', 'Khorasan'),
+  P('farah', 'Farah', 'Farah', 62.1, 32.37, 'fort', 1, 3, 'saf', 'Afghanistan'),
+  P('kandahar', 'Kandahar', 'Kandahar', 65.71, 31.61, 'fort', 3, 7, 'saf', 'Afghanistan'),
+  P('kabul', 'Kabul', 'Kabul', 69.18, 34.53, 'city', 2, 8, 'mug', 'Afghanistan'),
+  P('ghazni', 'Ghazni', 'Ghazni', 68.42, 33.55, 'fort', 2, 4, 'mug', 'Afghanistan'),
+  P('jalalabad', 'Nangarhar', 'Jalalabad', 70.45, 34.43, 'city', 1, 4, 'mug', 'Afghanistan'),
+  P('bamiyan', 'Hazarajat', 'Bamiyan', 67.83, 34.82, 'fort', 1, 2, 'ind', 'Afghanistan'),
+  P('balkh', 'Balkh', 'Balkh', 66.9, 36.76, 'city', 2, 6, 'ind', 'Afghanistan'),
+  P('badakhshan', 'Badakhshan', 'Faizabad', 70.58, 37.12, 'fort', 1, 3, 'ind', 'Afghanistan'),
+  // Burma (Toungoo, King Pye Min at Ava) and Arakan
+  P('ava', 'Ava', 'Ava', 95.99, 21.86, 'city', 3, 12, 'ava', 'Burma'),
+  P('toungoo', 'Toungoo', 'Toungoo', 96.43, 18.94, 'city', 2, 5, 'ava', 'Burma'),
+  P('prome', 'Prome', 'Prome', 95.22, 18.82, 'city', 2, 5, 'ava', 'Burma'),
+  P('pegu', 'Pegu', 'Pegu', 96.48, 17.33, 'city', 2, 9, 'ava', 'Burma'),
+  P('syriam', 'Syriam', 'Syriam', 96.32, 16.77, 'port', 1, 7, 'ava', 'Burma'),
+  P('martaban', 'Martaban', 'Martaban', 97.55, 16.53, 'port', 1, 5, 'ava', 'Burma'),
+  P('bhamo', 'Bhamo', 'Bhamo', 97.24, 24.26, 'fort', 1, 3, 'ava', 'Burma'),
+  P('shan', 'Shan States', 'Hsipaw', 97.3, 22.62, 'city', 1, 3, 'ind', 'Burma'),
+  P('arakan', 'Arakan', 'Mrauk U', 93.2, 20.6, 'city', 2, 7, 'ind', 'Burma'),
+  // Siam (Ayutthaya under King Narai) and Lan Na (held by Burma)
+  P('ayutthaya', 'Ayutthaya', 'Ayutthaya', 100.57, 14.35, 'city', 3, 14, 'aya', 'Siam'),
+  P('phitsanulok', 'Phitsanulok', 'Phitsanulok', 100.26, 16.82, 'city', 2, 6, 'aya', 'Siam'),
+  P('korat', 'Korat', 'Nakhon Ratchasima', 102.1, 14.97, 'city', 1, 4, 'aya', 'Siam'),
+  P('tenasserim', 'Tenasserim', 'Mergui', 98.6, 12.44, 'port', 1, 5, 'aya', 'Siam'),
+  P('ligor', 'Ligor', 'Nakhon Si Thammarat', 99.96, 8.43, 'city', 1, 5, 'aya', 'Siam'),
+  P('lanna', 'Lan Na', 'Chiang Mai', 98.99, 18.79, 'city', 2, 6, 'ava', 'Siam'),
+  // Laos, Cambodia and the far south of Annam
+  P('vientiane', 'Lan Xang', 'Vientiane', 102.6, 17.97, 'city', 2, 6, 'ind', 'Laos & Cambodia'),
+  P('luangprabang', 'Luang Prabang', 'Luang Prabang', 102.13, 19.89, 'city', 1, 4, 'ind', 'Laos & Cambodia'),
+  P('cambodia', 'Cambodia', 'Oudong', 104.75, 11.83, 'city', 1, 6, 'ind', 'Laos & Cambodia'),
+  P('preynokor', 'Prey Nokor', 'Prey Nokor', 106.7, 10.78, 'port', 1, 4, 'ind', 'Laos & Cambodia'),
+  // Dai Viet: the Trinh lords at Thang Long, the Nguyen lords in the south
+  P('thanglong', 'Dong Kinh', 'Thang Long', 105.85, 21.03, 'city', 3, 12, 'dvt', 'Dai Viet'),
+  P('thanhhoa', 'Thanh Hoa', 'Thanh Hoa', 105.78, 19.8, 'city', 1, 6, 'dvt', 'Dai Viet'),
+  P('phuxuan', 'Dang Trong', 'Phu Xuan', 107.58, 16.46, 'city', 2, 8, 'ind', 'Dai Viet'),
+  P('quangnam', 'Quang Nam', 'Hoi An', 108.33, 15.88, 'port', 1, 7, 'ind', 'Dai Viet'),
+  P('champa', 'Champa', 'Phan Rang', 108.99, 11.57, 'city', 1, 3, 'ind', 'Dai Viet'),
+  // The Malay peninsula: Dutch Malacca, Johor and the sultanates
+  P('malacca', 'Malacca', 'A Famosa', 102.25, 2.2, 'port', 2, 10, 'voc', 'Malaya', true),
+  P('johor', 'Johor', 'Johor Lama', 103.9, 1.6, 'port', 1, 6, 'ind', 'Malaya'),
+  P('pahang', 'Pahang', 'Pekan', 103.35, 3.49, 'port', 1, 4, 'ind', 'Malaya'),
+  P('perak', 'Perak', 'Kuala Kangsar', 100.93, 4.77, 'city', 1, 5, 'ind', 'Malaya'),
+  P('kedah', 'Kedah', 'Alor Setar', 100.37, 6.12, 'city', 1, 4, 'ind', 'Malaya'),
+  P('patani', 'Patani', 'Patani', 101.25, 6.87, 'port', 1, 5, 'ind', 'Malaya'),
+  // Sumatra: the Sultanate of Aceh and its neighbours
+  P('aceh', 'Aceh', 'Kutaraja', 95.32, 5.55, 'port', 2, 10, 'ace', 'Sumatra'),
+  P('pidie', 'Pidie', 'Pidie', 95.95, 5.3, 'city', 1, 4, 'ace', 'Sumatra'),
+  P('pasai', 'Pasai', 'Samudera', 97.15, 5.1, 'port', 1, 4, 'ace', 'Sumatra'),
+  P('deli', 'Deli', 'Deli', 98.68, 3.55, 'port', 1, 4, 'ind', 'Sumatra'),
+  P('siak', 'Siak', 'Siak', 102.05, 0.75, 'port', 1, 4, 'ind', 'Sumatra'),
+  P('minangkabau', 'Minangkabau', 'Pagaruyung', 100.6, -0.45, 'city', 1, 5, 'ind', 'Sumatra'),
 ];

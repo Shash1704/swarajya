@@ -132,7 +132,8 @@ class Heap {
   }
 }
 
-const gScore = new Float32Array(GW * GH);
+// Double precision: on a large map, single-precision costs round so a path can seem to improve on itself forever.
+const gScore = new Float64Array(GW * GH);
 const prev = new Int32Array(GW * GH);
 const stamp = new Uint32Array(GW * GH);
 let epoch = 0;
@@ -182,7 +183,7 @@ export function findPath(map: MapData, from: Pt, to: Pt): Pt[] | null {
         if (c <= 0) continue;
         const step = (dx && dy ? 1.414 : 1) * (c + g.cost[n]) * 0.5;
         const ng = gn + step;
-        if (stamp[m] === epoch && ng >= gScore[m]) continue;
+        if (stamp[m] === epoch && ng >= gScore[m] - 1e-9) continue;
         stamp[m] = epoch;
         gScore[m] = ng;
         prev[m] = n;

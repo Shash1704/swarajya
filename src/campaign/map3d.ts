@@ -72,7 +72,7 @@ export class Map3D {
     cam.lowerBetaLimit = 0.15;
     cam.upperBetaLimit = 1.32;
     cam.lowerRadiusLimit = 32;
-    cam.upperRadiusLimit = 3400;
+    cam.upperRadiusLimit = 5200;
     this.camera = cam;
 
     const sky = new HemisphericLight('mapSky', new Vector3(0.1, 1, -0.2), scene);
@@ -86,7 +86,8 @@ export class Map3D {
 
     // The painted map is the ground's skin: as sharp as the GPU allows, up to 2 texels per world px.
     const maxTex = this.engine.getCaps().maxTextureSize;
-    this.skinScale = Math.min(2, (maxTex * 0.98) / Math.max(WW, WH));
+    // Sharp enough to read, small enough not to eat the GPU's memory on a map this size.
+    this.skinScale = Math.min(2, (maxTex * 0.98) / Math.max(WW, WH), 4300 / Math.max(WW, WH));
     this.skin = document.createElement('canvas');
     this.skin.width = Math.round(WW * this.skinScale);
     this.skin.height = Math.round(WH * this.skinScale);

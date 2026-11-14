@@ -1,6 +1,6 @@
 import { fbm, makeNoise } from '../noise';
 import { CELL, cellToLonLat, KX, LAT0, LON0, MH, MW, PX_PER_DEG, type LL } from '../geo';
-import { CEYLON, GHATS, LAND, MOISTURE, PLATEAUS, PLAYABLE, PROVINCES, RANGES, RIVERS } from '../india';
+import { CEYLON, GHATS, INLAND_SEAS, LANDS, MOISTURE, PLATEAUS, PLAYABLES, PROVINCES, RANGES, RIVERS } from '../india';
 
 /** Cell value in MapData.prov for open sea. */
 export const SEA = -1;
@@ -167,10 +167,11 @@ export function generateMap(seed: number): { map: MapData; shapes: ProvinceShape
 
   // --- Land and playable masks, with a noise warp so coasts aren't straight lines.
   const landRaw = new Uint8Array(N);
-  fillPolygon(landRaw, LAND, 1);
+  for (const poly of LANDS) fillPolygon(landRaw, poly, 1);
   fillPolygon(landRaw, CEYLON, 1);
+  for (const poly of INLAND_SEAS) fillPolygon(landRaw, poly, 0);
   const playRaw = new Uint8Array(N);
-  fillPolygon(playRaw, PLAYABLE, 1);
+  for (const poly of PLAYABLES) fillPolygon(playRaw, poly, 1);
   const prov = new Int16Array(N);
   for (let y = 0; y < MH; y++) {
     for (let x = 0; x < MW; x++) {
@@ -187,22 +188,27 @@ export function generateMap(seed: number): { map: MapData; shapes: ProvinceShape
   // --- Elevation and moisture from ranges, plateaus and rainfall blobs.
   const elev = new Float32Array(N);
   const moist = new Float32Array(N);
+  // Every ridge segment with its box (grown by the range's width), so each row checks only those that cross it.
+  const segs = RANGES.flatMap((r) => r.pts.slice(1).map((b, k) => {
+    const a = r.pts[k];
+    return { ax: a[0], ay: a[1], bx: b[0], by: b[1], w: r.w, h: r.h,
+      x0: Math.min(a[0], b[0]) - r.w * 1.2, x1: Math.max(a[0], b[0]) + r.w * 1.2, y0: Math.min(a[1], b[1]) - r.w, y1: Math.max(a[1], b[1]) + r.w };
+  }));
   for (let y = 0; y < MH; y++) {
+    const rowLat = cellToLonLat(0.5, y + 0.5)[1];
+    const rowSegs = segs.filter((s) => rowLat >= s.y0 && rowLat <= s.y1);
     for (let x = 0; x < MW; x++) {
       const i = y * MW + x;
       const [lon, lat] = cellToLonLat(x + 0.5, y + 0.5);
       let ridge = 0;
-      for (const r of RANGES) {
-        for (let k = 1; k < r.pts.length; k++) {
-          const [ax, ay] = r.pts[k - 1];
-          const [bx, by] = r.pts[k];
-          if (Math.abs(lat - ay) > r.w + 4 && Math.abs(lat - by) > r.w + 4) continue;
-          const d = segDist(lon, lat, ax, ay, bx, by);
-          if (d < r.w) ridge = Math.max(ridge, r.h * smooth(1 - d / r.w));
-        }
+      for (const s of rowSegs) {
+        if (lon < s.x0 || lon > s.x1) continue;
+        const d = segDist(lon, lat, s.ax, s.ay, s.bx, s.by);
+        if (d < s.w) ridge = Math.max(ridge, s.h * smooth(1 - d / s.w));
       }
       let plateau = 0;
       for (const b of PLATEAUS) {
+        if (Math.abs(lat - b.c[1]) > b.r || Math.abs(lon - b.c[0]) * COS > b.r) continue;
         const d = degDist(lon, lat, b.c[0], b.c[1]);
         if (d < b.r) plateau += b.v * smooth(1 - (d / b.r) ** 2);
       }
@@ -211,6 +217,7 @@ export function generateMap(seed: number): { map: MapData; shapes: ProvinceShape
 
       let m = 0.5;
       for (const b of MOISTURE) {
+        if (Math.abs(lat - b.c[1]) > b.r || Math.abs(lon - b.c[0]) * COS > b.r) continue;
         const d = degDist(lon, lat, b.c[0], b.c[1]);
         if (d < b.r) m += b.v * smooth(1 - (d / b.r) ** 2);
       }

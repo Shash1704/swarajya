@@ -213,7 +213,7 @@ export interface Province {
   unguardedUntil: number;
 }
 
-export type Faith = 'hindu' | 'muslim' | 'mixed';
+export type Faith = 'hindu' | 'muslim' | 'mixed' | 'buddhist';
 export type Policy = { tax: 'light' | 'normal' | 'heavy'; faith: 'tolerant' | 'zealous' };
 
 /** A squadron of ships based at a port. */
@@ -313,15 +313,17 @@ export const isMonsoon = (day: number) => seasonOf(day) === 'Monsoon';
 
 // ---------------------------------------------------------------- faith
 
-const MUSLIM_REGIONS = new Set(['Sindh', 'Punjab']);
+const MUSLIM_REGIONS = new Set(['Sindh', 'Punjab', 'Persia', 'Fars', 'Khorasan', 'Azerbaijan & Gilan', 'Kerman & Sistan', 'Afghanistan', 'Sumatra', 'Malaya']);
+const BUDDHIST_REGIONS = new Set(['Burma', 'Siam', 'Laos & Cambodia', 'Dai Viet']);
 const MIXED_REGIONS = new Set(['Hindustan', 'Bengal', 'Bijapur', 'Golconda', 'Mughal Deccan', 'Gujarat', 'Awadh & Bihar', 'Malwa', 'Kashmir & Hills', 'Khandesh & Berar']);
 export function faithOf(region: string): Faith {
-  return MUSLIM_REGIONS.has(region) ? 'muslim' : MIXED_REGIONS.has(region) ? 'mixed' : 'hindu';
+  return MUSLIM_REGIONS.has(region) ? 'muslim' : BUDDHIST_REGIONS.has(region) ? 'buddhist' : MIXED_REGIONS.has(region) ? 'mixed' : 'hindu';
 }
 /** The faith of a realm's court. */
-export function courtFaith(state: GameState, f: number): 'hindu' | 'muslim' | 'christian' {
+export function courtFaith(state: GameState, f: number): 'hindu' | 'muslim' | 'christian' | 'buddhist' {
   const k = state.factions[f].key;
-  return k === 'mug' || k === 'bij' || k === 'gol' || k === 'sid' ? 'muslim' : k === 'por' || k === 'eng' ? 'christian' : 'hindu';
+  return k === 'mug' || k === 'bij' || k === 'gol' || k === 'sid' || k === 'saf' || k === 'ace' ? 'muslim'
+    : k === 'por' || k === 'eng' || k === 'voc' ? 'christian' : k === 'ava' || k === 'aya' || k === 'dvt' ? 'buddhist' : 'hindu';
 }
 /** 0 = same faith as the ruler, 0.5 = a mixed population, 1 = wholly another faith. */
 export function faithGap(state: GameState, p: Province): number {
@@ -332,8 +334,10 @@ export function faithGap(state: GameState, p: Province): number {
 
 /** Ports and sea forts: where fleets sail from and raid. */
 export const isCoastal = (p: Province) => p.kind === 'port' || p.sea;
-/** West coast or east coast (fleets stay on their own sea). */
-export const seaOf = (p: Province) => (p.region === 'Golconda' || p.region === 'Bengal' || p.region === 'Orissa' || p.region === 'Carnatic' || p.region === 'Tamil Nadu' ? 1 : 0);
+/** Which sea a coast lies on (fleets stay on their own): 0 the Arabian Sea and the Gulf, 1 the Bay of Bengal, 2 the seas of South-East Asia. */
+const EAST_SEA = new Set(['Golconda', 'Bengal', 'Orissa', 'Carnatic', 'Tamil Nadu']);
+const FAR_SEA = new Set(['Burma', 'Siam', 'Malaya', 'Sumatra', 'Laos & Cambodia', 'Dai Viet']);
+export const seaOf = (p: Province) => (EAST_SEA.has(p.region) ? 1 : FAR_SEA.has(p.region) ? 2 : 0);
 
 /**
  * The key fort of each region: whoever holds it commands the country around.
@@ -419,6 +423,8 @@ export function newGame(seed: number): GameState {
   fleet('goa', 9);
   fleet('bombay', 5);
   fleet('surat', 4);
+  fleet('malacca', 6);
+  fleet('aceh', 4);
 
   const army = (key: string, units: [UnitType, number][]) => {
     const p = provinces.find((q) => q.key === key)!;
@@ -448,6 +454,18 @@ export function newGame(seed: number): GameState {
   army('madurai', [['spear', 4], ['archer', 2], ['elephant', 1]]);
   army('garhgaon', [['spear', 4], ['archer', 3], ['musket', 2]]);
   army('kamrup', [['spear', 3], ['archer', 2], ['musket', 1]]);
+  army('kabul', [['heavycav', 2], ['horsearcher', 2], ['spear', 3], ['musket', 1]]);
+  army('isfahan', [['heavycav', 4], ['horsearcher', 2], ['musket', 3], ['spear', 3], ['cannon', 1]]);
+  army('herat', [['heavycav', 2], ['horsearcher', 2], ['spear', 2]]);
+  army('kandahar', [['heavycav', 2], ['musket', 2], ['spear', 2]]);
+  army('tabriz', [['heavycav', 3], ['spear', 2], ['musket', 2]]);
+  army('ava', [['elephant', 2], ['spear', 4], ['musket', 2], ['archer', 2], ['lightcav', 2]]);
+  army('pegu', [['spear', 3], ['archer', 2], ['musket', 1]]);
+  army('ayutthaya', [['elephant', 2], ['spear', 4], ['musket', 3], ['archer', 2], ['lightcav', 1], ['cannon', 1]]);
+  army('phitsanulok', [['spear', 3], ['archer', 2], ['elephant', 1]]);
+  army('thanglong', [['spear', 4], ['musket', 3], ['archer', 2], ['elephant', 1]]);
+  army('aceh', [['spear', 3], ['musket', 2], ['elephant', 1], ['cannon', 1]]);
+  army('malacca', [['firangi', 2], ['musket', 2], ['spear', 1]]);
 
   for (const f of factions) state.manpower[f.id] = Math.round(maxManpower(state, f.id) * 0.75);
   // The sovereigns of 1670. Where one also leads an army, the ruler and the commander are the same person.
@@ -455,6 +473,8 @@ export function newGame(seed: number): GameState {
     mar: ['Shivaji', 'Bhonsle'], mug: ['Aurangzeb', 'Timurid'], bij: ['Ali Adil Shah', 'Adil Shahi'], gol: ['Abul Hasan', 'Qutb Shahi'],
     raj: ['Raj Singh', 'Sisodia'], sid: ['Siddi Qasim', 'Janjira'], por: ['Luís de Mendonça', 'Furtado'],
     eng: ['Gerald Aungier', 'Company'], nay: ['Chokkanatha', 'Nayak'], mys: ['Chikka Devaraja', 'Wodeyar'], aho: ['Udayaditya', 'Singha'],
+    saf: ['Shah Suleiman', 'Safavid'], ava: ['Pye Min', 'Toungoo'], aya: ['Narai', 'Prasat Thong'], dvt: ['Trinh Tac', 'Trinh'],
+    ace: ['Taj ul-Alam', 'Aceh'], voc: ['Balthasar Bort', 'Company'],
   };
   state.rulers = factions.map((f) => {
     const r = RULERS[f.key];
@@ -504,7 +524,7 @@ export function releaseGeneral(state: GameState, a: Army) {
  * Deccan front (Aurangabad) faces the Marathas.
  */
 export const FRONTS: Record<string, string[]> = {
-  mug: ['aurangabad', 'chanda', 'ajmer', 'dhaka', 'lahore', 'ahmedabad', 'allahabad'],
+  mug: ['aurangabad', 'chanda', 'ajmer', 'dhaka', 'lahore', 'ahmedabad', 'allahabad', 'kabul'],
 };
 /** How far from its front's centre an army will go campaigning. */
 export const FRONT_RANGE = 260;
