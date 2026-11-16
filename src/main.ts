@@ -130,10 +130,25 @@ let last = performance.now();
 function frame(t: number) {
   const dt = Math.min(0.05, (t - last) / 1000);
   last = t;
-  app.scene?.update(dt);
-  ctx.setTransform(canvas.width / VIEW_W, 0, 0, canvas.height / VIEW_H, 0, 0);
-  app.scene?.draw(ctx);
+  // Ask for the next frame first: an error in one frame must not stop the game for good.
   requestAnimationFrame(frame);
+  try {
+    app.scene?.update(dt);
+  } catch (e) {
+    frameError(e);
+  }
+  try {
+    ctx.setTransform(canvas.width / VIEW_W, 0, 0, canvas.height / VIEW_H, 0, 0);
+    app.scene?.draw(ctx);
+  } catch (e) {
+    frameError(e);
+  }
+}
+let lastError = '';
+function frameError(e: unknown) {
+  const msg = String((e as Error)?.stack ?? e);
+  if (msg !== lastError) console.error(e);
+  lastError = msg;
 }
 
 const params = new URLSearchParams(location.search);

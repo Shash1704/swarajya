@@ -96,6 +96,8 @@ export class World {
   hooks: Hooks;
   clashes: Clash[] = [];
   private pending = 0;
+  private queue: (() => Promise<void>)[] = [];
+  private running = false;
   private lastOffer = new Map<number, number>();
   private replanAt = new Map<number, number>();
 
@@ -109,14 +111,32 @@ export class World {
     return this.pending > 0;
   }
 
-  /** Runs a player-facing interaction; the clock holds until it finishes. */
+  /**
+   * Runs a player-facing interaction; the clock holds until it finishes. Interactions wait their
+   * turn: one month can bring several (a restless province, an event, an envoy), and each puts up
+   * a dialog. Shown at once, the later dialogs would replace the earlier ones, whose answers would
+   * then never come, and the clock would stop for good.
+   */
   private run(task: () => Promise<void>) {
     this.pending++;
-    task()
+    this.queue.push(task);
+    if (!this.running) this.next();
+  }
+
+  private next() {
+    const task = this.queue.shift();
+    if (!task) {
+      this.running = false;
+      return;
+    }
+    this.running = true;
+    Promise.resolve()
+      .then(task)
       .catch((e) => console.error(e))
       .finally(() => {
         this.pending--;
         this.hooks.changed();
+        this.next();
       });
   }
 
