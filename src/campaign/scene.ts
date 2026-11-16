@@ -7,14 +7,14 @@ import { drawSymbol, inkFor, symbolEl, tierBadge } from '../symbols';
 import { MapRenderer } from './mapRender';
 import { type BattleInfo, type BattleResult, type Hooks, World } from './world';
 import {
-  COURT_FAITHS, type CourtFaith, type Policy, REALM_TYPES, type RealmType,
+  ARMY_STYLES, type ArmyStyle, COURT_FAITHS, type CourtFaith, type Policy, REALM_TYPES, type RealmType,
   acceptsPeace, type Army, armyAtTown, armyById, armySpeed, autoResolve, autoResolveSiege, buildMarket, buildWalls,
   canBuild, type CUnit, dateLabel, declareWar, dist, eliteBlock, factionStrength, type GameState, grossIncome,
   hostile, IND, isMonsoon, log, makePeace, marketCost, MAX_UNITS, maxSupplies, maxWalls, maxWealth, netIncome,
   newGame, PLAYER, type Province, provinceIncome, provincesOf, provinceUnder, RAID_DAYS, recruit, regionOwners,
   seasonOf, setGoal, siegeEquipment, townAt, unitsMen, unitsStrength, upkeep, VICTORY_PROVINCES, wallFactor,
   wallsCost, manpowerLabel, manpowerRatio, manpowerRegen, maxManpower, levyFraction,
-  generalK, generalRank, TRAITS, isCoastal, seaOf, isYours, yourArmy, ORIGINS, followersOf, leaveBanner, villageAt, villageBurnt, villageOwner, keyFort, maxFood, recruitCost, tributeShare, type General,
+  generalK, generalRank, TRAITS, isCoastal, seaOf, isYours, yourArmy, ORIGINS, followersOf, joinBanner, leaveBanner, villageAt, villageBurnt, villageOwner, keyFort, maxFood, recruitCost, tributeShare, type General,
 } from './state';
 import {
   bribe, bribeCost, build, BUILDINGS, type Building, buildShip, demandChauth, type GameEvent, generalFate, generalLine,
@@ -28,7 +28,9 @@ import type { Map3D } from './map3d';
 import { openAISettings, openTalk } from './talk';
 import { hail, liegeTitle, meName, parleyPartner, renown, rulerOf } from './characters';
 import { llmSettings } from '../llm';
-import { FOUND_MEN, foundingOptions, foundRealm, REALM_COLORS, sovereignTitle } from './sovereign';
+import {
+  armyLimit, COMMAND_COST, FOUND_MEN, foundingOptions, foundRealm, idleCommanders, raiseArmy, raiseBlock, raiseCost, realmArmies, REALM_COLORS, resupply, resupplyQuote, sovereignTitle,
+} from './sovereign';
 import { byYear, CHRON_ICON, chronicle, deeds } from './chronicle';
 import { FIELD_H, FIELD_W, type Spot, type Terrain } from '../battle/battle';
 
@@ -199,6 +201,7 @@ export class CampaignScene implements Scene {
     }
     const nameIn = h('input', { type: 'text', class: 'talk-input', value: `Swarajya of ${s.player.gen.name}`, maxlength: '36', 'aria-label': 'Name of your realm' }) as HTMLInputElement;
     let type: RealmType = 'kingdom';
+    let style: ArmyStyle = 'maratha';
     let faith: CourtFaith = 'hindu';
     let tax: Policy['tax'] = 'normal';
     let zeal: Policy['faith'] = 'tolerant';
@@ -216,7 +219,11 @@ export class CampaignScene implements Scene {
         h('div', { class: 'muted' }, 'Name of your realm:'), nameIn,
         pick('What kind of realm:', (Object.keys(REALM_TYPES) as RealmType[]).map((k) => [k, REALM_TYPES[k].label, REALM_TYPES[k].blurb]), () => type, (v) => { type = v; }),
         h('div', { class: 'card' }, h('b', {}, `${T.title} ${s.player.gen.name}`), h('div', { class: 'muted' }, T.blurb), h('div', {}, T.effect),
-          h('div', { class: 'muted' }, `Raises: ${T.roster.map((u) => UNIT_STATS[u].short).join(', ')}`)),
+        ),
+        pick('Your way of war (which regiments your towns raise):', (Object.keys(ARMY_STYLES) as ArmyStyle[]).map((k) => [k, ARMY_STYLES[k].label, ARMY_STYLES[k].blurb]), () => style, (v) => { style = v; }),
+        h('div', { class: 'card' }, h('b', {}, `${ARMY_STYLES[style].label} army`), h('div', { class: 'muted' }, ARMY_STYLES[style].blurb),
+          h('div', { class: 'muted' }, `Raises: ${ARMY_STYLES[style].roster.map((u) => UNIT_STATS[u].short).join(', ')}`),
+          h('div', { class: 'pos' }, `Two regiments of ${UNIT_STATS[ARMY_STYLES[style].signature].name} join you on the day you proclaim the realm.`)),
         pick('Faith of your court (provinces of another faith are restless under you; courts of your faith warm to you):',
           (Object.keys(COURT_FAITHS) as CourtFaith[]).map((k) => [k, COURT_FAITHS[k]]), () => faith, (v) => { faith = v; }),
         pick('Taxes:', [['light', 'Light', '−20% revenue, calmer provinces'], ['normal', 'Normal'], ['heavy', 'Heavy', '+30% revenue, more unrest']], () => tax, (v) => { tax = v; }),
@@ -236,7 +243,7 @@ export class CampaignScene implements Scene {
     showModal('👑 Raise your own banner', box, [
       { label: 'Not yet', onClick: hideModal },
       { label: 'Proclaim the realm', primary: true, onClick: () => {
-        foundRealm(s, { name: nameIn.value, color, type, faith, policy: { tax, faith: zeal }, how });
+        foundRealm(s, { name: nameIn.value, color, type, style, faith, policy: { tax, faith: zeal }, how });
         hideModal();
         this.renderUI(true);
       } },
@@ -1734,9 +1741,11 @@ export class CampaignScene implements Scene {
     const g = a.general;
     const sup = supplied(s, a);
     const parts: (HTMLElement | null)[] = [
-      h('h3', {}, swatch(f.color), mine ? 'Your army' : ours ? 'The Raje\'s army' : `${f.short} army`),
-      h('div', { title: TRAITS[g.trait].help }, h('b', {}, mine ? `${g.name} (you)` : g.name), ` · ${generalLine(g)}`, ours ? h('span', { class: g.loyalty < 30 ? 'neg' : 'muted' }, ` · loyalty to the Raje ${Math.round(g.loyalty)}`) : null),
-      ours && a.follows === undefined ? h('div', { class: 'muted', style: 'font-size:12.5px' }, 'Led by one of Shivaji\'s commanders: it campaigns on its own. Talk to him to share spoils or ask him to join forces with you.') : null,
+      h('h3', {}, swatch(f.color), mine ? 'Your army' : ours ? (s.realm ? `Army of the ${f.short}` : 'The Raje\'s army') : `${f.short} army`),
+      h('div', { title: TRAITS[g.trait].help }, h('b', {}, mine ? `${g.name} (you)` : g.name), ` · ${generalLine(g)}`, ours ? h('span', { class: g.loyalty < 30 ? 'neg' : 'muted' }, ` · loyalty to ${s.realm ? 'you' : 'the Raje'} ${Math.round(g.loyalty)}`) : null),
+      ours && a.follows === undefined ? h('div', { class: 'muted', style: 'font-size:12.5px' }, s.realm
+        ? 'One of your commanders: it campaigns on its own. Summon it to your banner, or send it supplies.'
+        : 'Led by one of Shivaji\'s commanders: it campaigns on its own. Talk to him to share spoils or ask him to join forces with you.') : null,
       a.follows !== undefined ? h('div', { class: 'pos', style: 'font-size:12.5px' }, `Marching under ${armyById(s, a.follows)?.general.name ?? 'another'}'s banner for ${Math.max(0, Math.ceil((a.followUntil ?? s.day) - s.day))} more days.`) : null,
       ...followersOf(s, a).map((x) => h('div', { class: 'row', style: 'font-size:12.5px;margin-top:4px' },
         h('span', { class: 'pos' }, `Under your banner: ${x.general.name} with ${fmt(unitsMen(x.units))} men (${Math.max(0, Math.ceil((x.followUntil ?? s.day) - s.day))} days)`),
@@ -1761,9 +1770,18 @@ export class CampaignScene implements Scene {
     // Characters: talk with a fellow commander, or parley with an army near yours.
     const partner = parleyPartner(s, a);
     if (ours) {
+      const you = yourArmy(s);
       parts.push(h('div', { class: 'btns' }, h('button', {
         class: 'small primary', onclick: () => { this.setPaused(true); void openTalk(s, 'counsel', a.general, PLAYER, a, null, () => this.renderUI(true)); },
-      }, `🗣 Talk with ${a.general.name}`)));
+      }, `🗣 Talk with ${a.general.name}`),
+      // A sovereign commands his own captains: no bargaining needed.
+      s.realm && you && a.follows === undefined ? h('button', {
+        class: 'small', title: 'He marches to join your army and fights beside you for four months.',
+        onclick: () => { joinBanner(s, a, you, 120); log(s, `${a.general.name} marches to join your banner.`, true); this.renderUI(true); },
+      }, '🚩 Summon to my banner') : null,
+      s.realm && a.follows !== undefined ? h('button', {
+        class: 'small', onclick: () => { leaveBanner(s, a); log(s, `You send ${a.general.name} back to his own war.`, true); this.renderUI(true); },
+      }, 'Send to his own war') : null));
     } else if (partner) {
       parts.push(h('div', { class: 'btns' }, h('button', {
         class: 'small primary', title: `Ride out under a flag of truce to speak with ${a.general.name}.`,
@@ -1795,6 +1813,7 @@ export class CampaignScene implements Scene {
         a.siegeOf >= 0 ? h('button', { class: 'small', disabled: s.gold[PLAYER] < SPY_COST.sabotage, onclick: () => say(sabotage(s, a)) }, `🔥 Sabotage siege works (${SPY_COST.sabotage})`) : null,
       ));
     }
+    if ((mine || ours) && s.realm) parts.push(this.resupplyButton(a));
     if (mine) {
       if (a.siegeOf >= 0) {
         parts.push(this.siegeBox(a));
@@ -1888,6 +1907,74 @@ export class CampaignScene implements Scene {
     );
   }
 
+  /** Refit an army of your realm: food, and at one of your towns, fresh men. */
+  private resupplyButton(a: Army): HTMLElement {
+    const s = this.state;
+    const q = resupplyQuote(s, a);
+    const atTown = townAt(s, a) >= 0 && q.at?.id === townAt(s, a);
+    const what = atTown ? `food${q.men ? ` and ${fmt(q.men)} men` : ''}` : 'a convoy of food';
+    return h('div', { class: 'btns' }, h('button', {
+      class: 'small', disabled: !!q.why,
+      title: q.why ?? (atTown
+        ? `Refit at ${q.at!.town}: ${q.food} days of food${q.men ? ` and ${q.men} fresh men to fill the ranks` : ''}.`
+        : `A convoy rides out from ${q.at!.town} with ${q.food} days of food.`),
+      onclick: () => { resupply(s, a); this.renderUI(true); },
+    }, q.why && q.why.startsWith('The army wants') ? '📦 Fully supplied' : `📦 Resupply: ${what} (${q.gold})`));
+  }
+
+  /** Raise a new army at one of your towns: its regiments, its commander and its orders. */
+  private openRaise(p: Province) {
+    const s = this.state;
+    const roster = s.factions[PLAYER].roster;
+    const counts = new Map<UnitType, number>();
+    const court = idleCommanders(s);
+    let general: General | null = court[0] ?? null;
+    let order: 'follow' | 'free' = yourArmy(s) ? 'follow' : 'free';
+    const box = h('div', { class: 'stack' });
+    const list = () => roster.flatMap((t) => Array<UnitType>(counts.get(t) ?? 0).fill(t));
+    const draw = () => {
+      const units = list();
+      const cost = raiseCost(p, units);
+      const men = units.reduce((n, t) => n + UNIT_STATS[t].maxMen, 0);
+      box.replaceChildren(
+        h('p', { class: 'muted' }, `Treasury ${Math.floor(s.gold[PLAYER])} gold · ${fmt(s.manpower[PLAYER])} fighting men in the realm. A commander takes ${COMMAND_COST} gold to take up his command.`),
+        h('div', { class: 'muted' }, 'Regiments:'),
+        ...roster.map((t) => {
+          const st = UNIT_STATS[t];
+          const n = counts.get(t) ?? 0;
+          const elite = eliteBlock(s, p, t);
+          return h('div', { class: 'row', style: 'align-items:center' },
+            h('span', {}, symbolEl(t, s.factions[PLAYER].color, 20), ` ${st.name} `, tierBadge(st.tier), h('span', { class: 'muted' }, ` ${recruitCost(p, t)} gold`)),
+            h('span', {},
+              h('button', { class: 'small', disabled: n <= 0, onclick: () => { counts.set(t, n - 1); draw(); } }, '−'),
+              h('b', { style: 'display:inline-block;min-width:22px;text-align:center' }, `${n}`),
+              h('button', { class: 'small', disabled: !!elite || units.length >= MAX_UNITS, title: elite ?? '', onclick: () => { counts.set(t, n + 1); draw(); } }, '+')));
+        }),
+        h('div', { class: 'muted', style: 'margin-top:6px' }, 'Commander:'),
+        h('div', { class: 'btns' },
+          ...court.map((g) => h('button', { class: `small ${general === g ? 'primary' : ''}`, title: TRAITS[g.trait].help, onclick: () => { general = g; draw(); } }, `${g.name} · ${generalLine(g)}`)),
+          h('button', { class: `small ${general === null ? 'primary' : ''}`, onclick: () => { general = null; draw(); } }, 'A new sardar')),
+        h('div', { class: 'muted', style: 'margin-top:6px' }, 'Orders:'),
+        h('div', { class: 'btns' },
+          ...(yourArmy(s) ? [h('button', { class: `small ${order === 'follow' ? 'primary' : ''}`, onclick: () => { order = 'follow'; draw(); } }, '🚩 March to join me')] : []),
+          h('button', { class: `small ${order === 'free' ? 'primary' : ''}`, onclick: () => { order = 'free'; draw(); } }, '⚔ Make war on his own')),
+        h('p', { class: s.gold[PLAYER] < cost ? 'neg' : '' }, `${units.length} regiments, about ${fmt(men)} men: ${cost} gold.`),
+        ...(men > s.manpower[PLAYER] ? [h('p', { class: 'neg' }, 'Your realm has too few fighting men to fill every regiment.')] : []),
+      );
+    };
+    draw();
+    showModal(`⚔ Raise an army at ${p.town}`, box, [
+      { label: 'Cancel', onClick: hideModal },
+      { label: 'Raise the army', primary: true, onClick: () => {
+        const r = raiseArmy(s, p, { units: list(), general, order });
+        if (typeof r === 'string') { log(s, r, true); this.renderUI(true); return; }
+        hideModal();
+        this.selArmy = r;
+        this.renderUI(true);
+      } },
+    ], { wide: true });
+  }
+
   private recruitButtons(p: Province): HTMLElement {
     const s = this.state;
     const occ = armyAtTown(s, p, PLAYER);
@@ -1950,6 +2037,14 @@ export class CampaignScene implements Scene {
       }, `🕵 Incite unrest (${SPY_COST.incite})`)));
     }
     if (mine && !p.siege) {
+      if (s.realm) {
+        const block = raiseBlock(s, p);
+        parts.push(h('div', { class: 'btns', style: 'margin-top:10px' }, h('button', {
+          class: 'small primary', disabled: !!block,
+          title: block ?? `Raise a new army at ${p.town} under a commander of your court. It marches to join you or makes war on its own.`,
+          onclick: () => this.openRaise(p),
+        }, `⚔ Raise a new army (${realmArmies(s).length}/${armyLimit(s)})`)));
+      }
       parts.push(this.recruitButtons(p));
       const err = canBuild(s, p);
       parts.push(h('div', { style: 'margin-top:10px' },
@@ -2017,7 +2112,7 @@ export class CampaignScene implements Scene {
       h('div', { title: 'You. Go before the Raje (Court), talk with his commanders, seek audiences with rulers (Diplomacy), and parley with armies near yours.' },
         h('b', {}, meName(s)), h('span', { class: 'muted' }, ` · ${ORIGINS[s.player.origin].label} · ${generalLine(me)}`)),
       h('div', { class: 'muted', style: 'font-size:12.5px' }, s.realm
-        ? `${sovereignTitle(s)}, sovereign of the ${s.factions[PLAYER].name}: a ${REALM_TYPES[s.realm.type].label.toLowerCase()} with a ${COURT_FAITHS[s.realm.faith]} court. ${REALM_TYPES[s.realm.type].effect}`
+        ? `${sovereignTitle(s)}, sovereign of the ${s.factions[PLAYER].name}: a ${REALM_TYPES[s.realm.type].label.toLowerCase()} with a ${COURT_FAITHS[s.realm.faith]} court and a ${ARMY_STYLES[s.realm.style].label} army. ${REALM_TYPES[s.realm.type].effect}`
         : `In the service of ${liegeTitle(s)}. Renown grows with every battle won.`),
       h('div', { class: 'btns' },
         yours ? h('button', { class: 'small primary', onclick: () => { this.select(yours, -1); this.centerOn(yours); } }, `Your army · ${fmt(unitsMen(yours.units))} men`) : null,

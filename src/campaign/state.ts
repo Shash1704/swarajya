@@ -228,31 +228,70 @@ export const COURT_FAITHS: Record<CourtFaith, string> = { hindu: 'Hindu', muslim
 export type RealmType = 'kingdom' | 'sultanate' | 'confederacy' | 'trading';
 export const REALM_TYPES: Record<RealmType, {
   label: string; title: string; blurb: string; effect: string;
-  roster: UnitType[]; garrison: UnitType[]; income: number; manpower: number;
+  income: number; manpower: number;
 }> = {
   kingdom: {
     label: 'Kingdom', title: 'Raja', blurb: 'A crowned king and a court of ministers, on the old pattern of the Deccan kingdoms.',
-    effect: 'Steady rule: provinces of your own faith grow calmer (−1 unrest a month); hill infantry and horse.',
-    roster: ['mavala', 'spear', 'archer', 'musket', 'rocket', 'lightcav', 'shiledar', 'elephant'], garrison: ['mavala', 'musket', 'archer'],
+    effect: 'Steady rule: provinces of your own faith grow calmer (−1 unrest a month).',
     income: 1, manpower: 1,
   },
   sultanate: {
     label: 'Sultanate', title: 'Sultan', blurb: 'A Persianate court of amirs and mansabdars, rich in horse and guns.',
-    effect: '+15% revenue; armoured horse, elephants and cannon; but conquered provinces chafe (+1 unrest a month).',
-    roster: ['spear', 'habshi', 'archer', 'musket', 'heavycav', 'horsearcher', 'elephant', 'cannon'], garrison: ['spear', 'musket', 'archer'],
+    effect: '+15% revenue; but conquered provinces chafe (+1 unrest a month).',
     income: 1.15, manpower: 0.9,
   },
   confederacy: {
     label: 'Confederacy', title: 'Sardar', blurb: 'A league of chiefs who follow you while you lead them to plunder.',
-    effect: '+30% fighting men and +25% plunder, light horse aplenty; but −10% revenue.',
-    roster: ['mavala', 'spear', 'archer', 'lightcav', 'shiledar', 'horsearcher', 'rocket'], garrison: ['mavala', 'archer', 'spear'],
+    effect: '+30% fighting men and +25% plunder; but −10% revenue.',
     income: 0.9, manpower: 1.3,
   },
   trading: {
     label: 'Trading principality', title: 'Prince', blurb: 'A state built on ports, customs houses and hired gunners.',
-    effect: 'Ports and coastal towns yield +40%; firangi gunners and cannon; but −25% fighting men.',
-    roster: ['spear', 'archer', 'musket', 'firangi', 'cannon', 'lightcav'], garrison: ['musket', 'firangi', 'spear'],
+    effect: 'Ports and coastal towns yield +40%; but −25% fighting men.',
     income: 1, manpower: 0.75,
+  },
+};
+
+/**
+ * The way your realm makes war, chosen when you raise your banner: it decides which regiments
+ * your towns can raise and what stands in their garrisons. The first regiments of the realm's
+ * signature arm join your army on the day you proclaim it.
+ */
+export type ArmyStyle = 'maratha' | 'mughal' | 'rajput' | 'turkic' | 'deccani' | 'afghan' | 'southern' | 'firangi';
+export const ARMY_STYLES: Record<ArmyStyle, {
+  label: string; blurb: string; roster: UnitType[]; garrison: UnitType[]; signature: UnitType;
+}> = {
+  maratha: {
+    label: 'Maratha', blurb: 'Hill infantry and swift bargir horse that raid and vanish: the way of the Raje. Household cavalry at the capital.',
+    roster: ['mavala', 'spear', 'archer', 'musket', 'rocket', 'lightcav', 'shiledar', 'huzurat'], garrison: ['mavala', 'musket', 'archer'], signature: 'shiledar',
+  },
+  mughal: {
+    label: 'Mughal', blurb: 'The imperial host: armoured sowars, Turani horse archers, elephants and a great train of guns, with Ahadi troopers at the capital.',
+    roster: ['paik', 'spear', 'archer', 'musket', 'rocket', 'horsearcher', 'heavycav', 'ahadi', 'elephant', 'cannon'], garrison: ['spear', 'musket', 'archer'], signature: 'heavycav',
+  },
+  rajput: {
+    label: 'Rajput', blurb: 'Clan horsemen sworn never to turn back, the fiercest charge in Hindustan, with levies and elephants behind them.',
+    roster: ['paik', 'spear', 'archer', 'musket', 'lightcav', 'rajput', 'elephant'], garrison: ['spear', 'archer', 'paik'], signature: 'rajput',
+  },
+  turkic: {
+    label: 'Turkic', blurb: 'The war of the steppe: horse archers who shoot on the move, armoured lancers to finish the work, and guns for the walls.',
+    roster: ['spear', 'archer', 'musket', 'lightcav', 'horsearcher', 'heavycav', 'cannon'], garrison: ['spear', 'archer', 'musket'], signature: 'horsearcher',
+  },
+  deccani: {
+    label: 'Deccani', blurb: 'The way of the Deccan sultanates: Habshi guards, matchlocks, heavy horse, elephants and great bronze guns.',
+    roster: ['spear', 'habshi', 'archer', 'musket', 'lightcav', 'heavycav', 'elephant', 'cannon'], garrison: ['spear', 'musket', 'habshi'], signature: 'habshi',
+  },
+  afghan: {
+    label: 'Afghan', blurb: 'Pathan war-bands: matchlock men and hard-riding horse, quick to the charge and quick to plunder.',
+    roster: ['spear', 'archer', 'musket', 'rocket', 'lightcav', 'heavycav', 'horsearcher'], garrison: ['musket', 'spear', 'archer'], signature: 'heavycav',
+  },
+  southern: {
+    label: 'Southern', blurb: 'The armies of the Nayaks and Mysore: levies in their thousands, rocket corps and war elephants.',
+    roster: ['paik', 'spear', 'archer', 'musket', 'rocket', 'lightcav', 'elephant'], garrison: ['spear', 'rocket', 'archer'], signature: 'rocket',
+  },
+  firangi: {
+    label: 'Firangi-drilled', blurb: 'Hired European gunners and drilled musketeers who stand and volley, with cannon to break walls.',
+    roster: ['spear', 'archer', 'musket', 'firangi', 'cannon', 'lightcav'], garrison: ['musket', 'firangi', 'spear'], signature: 'firangi',
   },
 };
 
@@ -260,6 +299,7 @@ export const REALM_TYPES: Record<RealmType, {
 export interface PlayerRealm {
   faction: number;
   type: RealmType;
+  style: ArmyStyle;
   faith: CourtFaith;
   founded: number;
   /** How it began: rising in revolt at a town, or taking leave of the Raje. */
@@ -564,7 +604,7 @@ export function makeGeneral(rng: RNG, name: string, house: string, xp = 0): Gene
 }
 
 /** The next commander of a realm not already leading an army. */
-function nextGeneral(state: GameState, owner: number): General {
+export function nextGeneral(state: GameState, owner: number): General {
   const pool = state.officers[owner];
   if (pool?.length) return pool.shift()!;
   const busy = new Set([...state.armies.filter((a) => a.owner === owner).map((a) => a.general.name),
