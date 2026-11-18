@@ -484,6 +484,49 @@ export function cessionFor(s: GameState, f: number): Province | null {
   return border.sort((a, b) => b.wealth - a.wealth)[0] ?? null;
 }
 
+/**
+ * How many provinces a beaten realm will cede to you for peace: the more of its fighting men you
+ * have bled away, the more (one when it first runs short, up to five more when it is bled white),
+ * and a great empire has more to give. It always keeps its capital.
+ */
+export function claimBudget(s: GameState, f: number): number {
+  const lost = 1 - manpowerRatio(s, f);
+  const base = Math.floor((lost - 0.75) / 0.06) + 1;
+  if (base <= 0) return 0;
+  const theirs = provincesOf(s, f).length;
+  return Math.max(0, Math.min(base + Math.floor(theirs / 15), theirs - 1));
+}
+
+/** Provinces of f you may still claim: one bordering your land (or a claim already made), or one your army besieges. */
+export function claimable(s: GameState, f: number, chosen: number[]): Province[] {
+  const set = new Set(chosen);
+  const anchored = chosen.length > 0 || provincesOf(s, PLAYER).length > 0;
+  return provincesOf(s, f).filter((p) => p.capitalOf !== f && !set.has(p.id) && (!anchored
+    || (p.siege && armyById(s, p.siege.army)?.owner === PLAYER)
+    || p.neighbors.some((n) => s.provinces[n].owner === PLAYER || set.has(n))));
+}
+
+/** Keeps only claims that still hang together (each one claimable given those before it). */
+export function validClaims(s: GameState, f: number, chosen: number[], budget: number): number[] {
+  const out: number[] = [];
+  for (const id of chosen) {
+    if (out.length >= budget) break;
+    if (claimable(s, f, out).some((p) => p.id === id)) out.push(id);
+  }
+  return out;
+}
+
+/** The richest lands within reach, for when the computer chooses. */
+export function autoClaims(s: GameState, f: number, budget: number): number[] {
+  const out: number[] = [];
+  while (out.length < budget) {
+    const next = claimable(s, f, out).sort((a, b) => b.wealth - a.wealth)[0];
+    if (!next) break;
+    out.push(next.id);
+  }
+  return out;
+}
+
 /** AI courts: goodwill drifts, allies are drawn into wars, alliances form and break. */
 export function diplomacyMonthly(s: GameState) {
   const F = s.factions;

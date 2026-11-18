@@ -10,7 +10,7 @@ import {
   type Village, villageOwner, villageBurnt, maxFood,
 } from './state';
 import {
-  aiSpiesMonthly, battleRenown, captivesMonthly, cessionFor, demandChauth, diplomacyMonthly, fleetsMove, type GameEvent,
+  aiSpiesMonthly, battleRenown, captivesMonthly, autoClaims, claimBudget, cessionFor, demandChauth, validClaims, diplomacyMonthly, fleetsMove, type GameEvent,
   generalFate, grantChauth, landEvent, loyaltyMonthly, navyMonthly, pickEvent, siegeRate, sortiesDaily, supplyDaily, unrestMonthly,
 } from './realm';
 import { chronicle } from './chronicle';
@@ -42,7 +42,8 @@ export interface Hooks {
   arrival(army: Army, p: Province): Promise<'siege' | 'raid' | 'leave'>;
   chooseSack(p: Province): Promise<boolean>;
   /** An exhausted AI realm sues the player for peace, offering tribute (and perhaps a province, or -1). */
-  peaceOffer(f: number, tribute: number, cede: number): Promise<boolean>;
+  /** A beaten realm sues for peace: answer null to refuse, or the provinces you claim (up to `claims`). */
+  peaceOffer(f: number, tribute: number, claims: number): Promise<number[] | null>;
   /** Something happens in the realm: the player picks one of its choices. */
   event(ev: GameEvent): Promise<number>;
   /** An enemy army before one of the player's towns demands chauth. True = pay. */
@@ -58,7 +59,7 @@ export const autoHooks = (s: GameState): Hooks => ({
     (b.mode === 'siege' ? autoResolveSiege(s, b.attUnits, b.p, b.defUnits, generalK(b.att, true)) : autoResolve(s, b.attUnits, b.defUnits, generalK(b.att), generalK(b.def))) ? 'att' : 'def',
   arrival: async () => 'siege',
   chooseSack: async (p) => p.wealth >= 8,
-  peaceOffer: async () => true,
+  peaceOffer: async (f, _t, claims) => autoClaims(s, f, claims),
   event: async () => 0,
   chauthDemand: async () => false,
   terms: async () => true,
@@ -935,17 +936,25 @@ export class World {
       if (s.day - (this.lastOffer.get(f.id) ?? -999) < 90 || !s.rng.chance(0.4)) continue;
       this.lastOffer.set(f.id, s.day);
       const tribute = Math.round(s.gold[f.id] * 0.3 + 40);
-      // Bled white, they offer land as well.
-      const cede = manpowerRatio(s, f.id) < 0.15 ? cessionFor(s, f.id)?.id ?? -1 : -1;
       this.run(async () => {
         if (!s.war[PLAYER][f.id]) return;
-        if (await this.hooks.peaceOffer(f.id, tribute, cede)) {
+        // The harder you have bled them, the more land they will give up: you choose where.
+        const claims = claimBudget(s, f.id);
+        const chosen = await this.hooks.peaceOffer(f.id, tribute, claims);
+        if (chosen) {
           const paid = Math.min(tribute, s.gold[f.id]);
           s.gold[f.id] -= paid;
           s.gold[PLAYER] += paid;
+          const ceded: string[] = [];
+          for (const id of validClaims(s, f.id, chosen, claims)) {
+            const p = s.provinces[id];
+            if (p.owner !== f.id || p.capitalOf === f.id) continue;
+            captureProv(s, p, PLAYER);
+            ceded.push(p.name);
+          }
           makePeace(s, PLAYER, f.id);
-          if (cede >= 0 && s.provinces[cede].owner === f.id) captureProv(s, s.provinces[cede], PLAYER);
-          log(s, `The ${f.name} pays ${paid} gold in tribute.`, true);
+          log(s, `The ${f.name} pays ${paid} gold in tribute${ceded.length ? ` and cedes ${ceded.join(', ')}` : ''}.`, true);
+          if (ceded.length) chronicle(s, 'diplomacy', `The ${f.name}, bled of fighting men, ceded ${ceded.join(', ')} for peace.`);
         } else log(s, `You send the ${f.name}'s envoys away. The war goes on.`, true);
       });
     }

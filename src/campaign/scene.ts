@@ -20,7 +20,7 @@ import {
   bribe, bribeCost, build, BUILDINGS, type Building, buildShip, demandChauth, type GameEvent, generalFate, generalLine,
   giftGeneral, incite, intelOn, leaderMods, MAX_SHIPS, orderFleet, payRansom, peaceTerms, playerGenerals, propose,
   ransomPrice, roughMen, sabotage, scout, sellCaptive, SHIP_COST, sortie, SPY_COST, subsidise, SUBSIDY, supplied,
-  unrestCauses, fleetTargets, cessionFor, fightingMen, roughNumber,
+  unrestCauses, fleetTargets, autoClaims, claimable, validClaims, cessionFor, fightingMen, roughNumber,
 } from './realm';
 import { BattleScene } from '../battle/scene';
 import { canvas3d, hasWebGL, setWant3D, want3D } from '../pref3d';
@@ -1097,16 +1097,7 @@ export class CampaignScene implements Scene {
           { label: 'Pay chauth', primary: true, onClick: () => { hideModal(); resolve(true); } },
         ]);
       }),
-      peaceOffer: (f, tribute, cede) => new Promise((resolve) => {
-        const fac = this.state.factions[f];
-        showModal(`The ${fac.short} sue for peace`, h('div', {},
-          h('p', {}, `Envoys of the ${fac.name} arrive under a white flag. Their realm has run short of fighting men (${manpowerLabel(manpowerRatio(this.state, f)).toLowerCase()}), and they offer ${tribute} gold in tribute for peace${cede >= 0 ? `, and to cede ${this.state.provinces[cede].name}` : ''}.`),
-          h('p', { class: 'muted' }, 'Accept, and the war ends: sieges against them are lifted and armies in their land go home. Refuse, and you can keep bleeding them.'),
-        ), [
-          { label: 'Refuse', onClick: () => { hideModal(); resolve(false); } },
-          { label: `Accept (+${tribute} gold${cede >= 0 ? `, ${this.state.provinces[cede].name}` : ''})`, primary: true, onClick: () => { hideModal(); resolve(true); } },
-        ]);
-      }),
+      peaceOffer: (f, tribute, claims) => this.peacePrompt(f, tribute, claims),
       changed: () => {
         this.dirty = true;
       },
@@ -1150,6 +1141,115 @@ export class CampaignScene implements Scene {
       theirs.push({ x: W / 2 + c * 62, y: H / 2 + (r - (Math.ceil(foeUnits / cols) - 1) / 2) * 60, face: ang[0] });
     }
     return [mine, theirs];
+  }
+
+  /**
+   * A beaten realm sues for peace. The worse you have bled it, the more provinces you may claim:
+   * pick them on a map of its lands, each bordering your own or another claim.
+   */
+  private peacePrompt(f: number, tribute: number, claims: number): Promise<number[] | null> {
+    const s = this.state;
+    const fac = s.factions[f];
+    this.setPaused(true);
+    return new Promise((resolve) => {
+      let chosen: number[] = claims > 0 ? autoClaims(s, f, Math.min(1, claims)) : [];
+      const W = 560;
+      const H = 360;
+      const dpr = Math.min(2, window.devicePixelRatio || 1);
+      const cv = h('canvas', { width: String(W * dpr), height: String(H * dpr), class: 'claim-map', style: `width:100%;max-width:${W}px;aspect-ratio:${W}/${H};cursor:pointer;border-radius:6px;display:block` }) as HTMLCanvasElement;
+      // Frame the lands within reach of your claims, and your own that border them.
+      const theirs = provincesOf(s, f);
+      const reach = new Set(claimable(s, f, []).map((p) => p.id));
+      for (let d = 1; d < Math.min(claims, 2); d++) {
+        for (const id of [...reach]) for (const n of s.provinces[id].neighbors) {
+          const q = s.provinces[n];
+          if (q.owner === f && q.capitalOf !== f) reach.add(n);
+        }
+      }
+      const near = s.provinces.filter((p) => p.owner === PLAYER && p.neighbors.some((n) => reach.has(n)));
+      const pts = [...[...reach].map((id) => s.provinces[id]), ...near];
+      if (!pts.length) pts.push(...theirs);
+      let x0 = Math.min(...pts.map((p) => p.x)) - 130;
+      let x1 = Math.max(...pts.map((p) => p.x)) + 130;
+      let y0 = Math.min(...pts.map((p) => p.y)) - 130;
+      let y1 = Math.max(...pts.map((p) => p.y)) + 130;
+      const z = Math.min(W / (x1 - x0), H / (y1 - y0));
+      const cx = (x0 + x1) / 2;
+      const cy = (y0 + y1) / 2;
+      x0 = cx - W / z / 2;
+      y0 = cy - H / z / 2;
+      x1 = cx + W / z / 2;
+      y1 = cy + H / z / 2;
+      const info = h('div', {});
+      const draw = () => {
+        const g = cv.getContext('2d')!;
+        g.setTransform(dpr, 0, 0, dpr, 0, 0);
+        this.map.draw(g, s, { x: x0, y: y0, z }, -1, new Set(), false);
+        g.save();
+        g.transform(z, 0, 0, z, -x0 * z, -y0 * z);
+        g.lineJoin = 'round';
+        const open = new Set(claimable(s, f, chosen).map((p) => p.id));
+        for (const p of theirs) {
+          const path = this.map.pathOf(p.id);
+          if (!path) continue;
+          if (chosen.includes(p.id)) {
+            g.fillStyle = 'rgba(255,214,90,0.55)';
+            g.fill(path, 'evenodd');
+            g.strokeStyle = '#fff3c0';
+            g.lineWidth = 3 / z;
+            g.stroke(path);
+          } else if (open.has(p.id) && chosen.length < claims) {
+            g.strokeStyle = 'rgba(255,230,140,0.95)';
+            g.lineWidth = 2.5 / z;
+            g.setLineDash([7 / z, 4 / z]);
+            g.stroke(path);
+            g.setLineDash([]);
+          }
+        }
+        // Town names of what you could claim, and their capital.
+        g.font = `${12 / z}px Georgia, serif`;
+        g.textAlign = 'center';
+        for (const p of theirs) {
+          const sel = chosen.includes(p.id);
+          if (!sel && !open.has(p.id) && p.capitalOf !== f) continue;
+          g.fillStyle = 'rgba(20,14,8,0.75)';
+          g.fillText(p.capitalOf === f ? `♛ ${p.name}` : p.name, p.x + 1 / z, p.y + 1 / z);
+          g.fillStyle = sel ? '#fff3c0' : '#f4e6c4';
+          g.fillText(p.capitalOf === f ? `♛ ${p.name}` : p.name, p.x, p.y);
+        }
+        g.restore();
+        info.replaceChildren(
+          h('p', {}, claims > 0
+            ? h('span', {}, `Bled of their fighting men, they will cede up to `, h('b', {}, `${claims} province${claims > 1 ? 's' : ''}`), `. Click their lands on the map to claim them: each must border your land or another claim (or be under siege by your army). Their capital stays theirs.`)
+            : 'They will pay tribute, but they are not yet beaten enough to give up land. Bleed them further and the next embassy will offer more.'),
+          claims > 0 ? h('p', { class: chosen.length ? 'pos' : 'muted' }, chosen.length
+            ? `Claimed (${chosen.length}/${claims}): ${chosen.map((id) => `${s.provinces[id].name} (wealth ${s.provinces[id].wealth})`).join(', ')}`
+            : 'Nothing claimed yet.') : '',
+        );
+      };
+      cv.addEventListener('click', (e) => {
+        const r = cv.getBoundingClientRect();
+        const wx = x0 + ((e.clientX - r.left) / r.width) * W / z;
+        const wy = y0 + ((e.clientY - r.top) / r.height) * H / z;
+        const id = this.map.provAt(wx, wy);
+        if (id < 0 || s.provinces[id]?.owner !== f) return;
+        if (chosen.includes(id)) chosen = validClaims(s, f, chosen.filter((c) => c !== id), claims);
+        else if (chosen.length < claims && claimable(s, f, chosen).some((p) => p.id === id)) chosen = [...chosen, id];
+        draw();
+      });
+      const done = (v: number[] | null) => { hideModal(); this.renderUI(true); resolve(v); };
+      showModal(`🏳 The ${fac.short} sue for peace`, h('div', {},
+        h('p', {}, `Envoys of the ${fac.name} arrive under a white flag. Their realm has run short of fighting men (${manpowerLabel(manpowerRatio(s, f)).toLowerCase()}), and they offer ${tribute} gold in tribute for peace.`),
+        claims > 0 ? cv : null,
+        info,
+        h('p', { class: 'muted' }, 'Accept, and the war ends: sieges against them are lifted and armies in their land go home. Refuse, and you can keep bleeding them.'),
+      ), [
+        { label: 'Refuse', onClick: () => done(null) },
+        ...(claims > 0 ? [{ label: 'Clear claims', onClick: () => { chosen = []; draw(); } }] : []),
+        { label: 'Accept peace', primary: true, onClick: () => done(chosen) },
+      ], { wide: true });
+      draw();
+    });
   }
 
   private battlePrompt(b: BattleInfo): Promise<BattleResult> {

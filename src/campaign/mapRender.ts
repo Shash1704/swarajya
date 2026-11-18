@@ -158,6 +158,11 @@ export class MapRenderer {
     g.stroke();
   }
 
+  /** A province's outline in world coordinates. */
+  pathOf(id: number): Path2D {
+    return this.provPaths[id];
+  }
+
   provAt(wx: number, wy: number): number {
     const x = Math.floor(wx / CELL);
     const y = Math.floor(wy / CELL);
