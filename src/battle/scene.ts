@@ -564,7 +564,10 @@ export class BattleScene implements Scene {
       this.speed = Number(k);
       this.renderUI();
     } else if (k === 'h') {
-      for (const u of this.mySelected()) u.order = { kind: 'hold' };
+      for (const u of this.mySelected()) {
+        u.order = { kind: 'hold' };
+        u.running = false;
+      }
       this.refreshList();
     } else if (k === 'q') {
       this.lineMode = !this.lineMode;
@@ -584,6 +587,8 @@ export class BattleScene implements Scene {
       this.showMini = !this.showMini;
     } else if (this.phase === 'live' && k === 'f') {
       this.feignSelected();
+    } else if (k === 'x') {
+      this.runSelected();
     } else if (this.phase === 'live' && k === 'r') {
       this.rally();
     } else if (FORM_KEYS[k]) {
@@ -677,6 +682,20 @@ export class BattleScene implements Scene {
       return;
     }
     for (const u of horse) this.b.feign(u);
+    this.refreshList();
+  }
+
+  /** Run: the selected regiments go at the double, and whatever they run into, they charge. */
+  private runSelected() {
+    const sel = this.mySelected().filter((u) => UNIT_STATS[u.type].cls !== 'artillery');
+    if (!sel.length) {
+      this.say(this.mySelected().length ? 'Guns cannot run.' : 'Select regiments to run.');
+      return;
+    }
+    const on = !sel.every((u) => u.running);
+    for (const u of sel) this.b.setRunning(u, on);
+    if (!on) this.say('Back to a walk.');
+    this.ordersSig = '';
     this.refreshList();
   }
 
@@ -2092,6 +2111,7 @@ export class BattleScene implements Scene {
           h('li', {}, 'Guard your commander (his standard flies over his regiment). If his regiment breaks, the whole army loses heart.'),
           h('li', {}, 'Mavalas fight best in forest and on hills. Keys: 1/2/3 speed, H hold.'),
           h('li', {}, 'Fog of war: you see only what your regiments see. Light horse scout furthest, high ground helps, and woods and villages hide whoever keeps still in them.'),
+          h('li', {}, 'Run (X): the selected regiments go at the double (horse at the gallop). They tire fast, but whatever they run into, they charge, even archers and matchlock men. Guns cannot run.'),
           h('li', {}, 'Ganimi kava: hide Mavalas or horse in a wood and strike from it for an ambush. Order light horse to feign flight (F) to draw the enemy out of line, then wheel on the stragglers.'),
           h('li', {}, 'Formations: N open, T tight block, L loose order, B spear hedge, G cavalry wedge.'),
           h('li', {}, 'Men tire from marching, running and fighting. Rest them before the clash. Archers and gunners run short and must go back to the baggage at your edge to refill.'),
@@ -2129,7 +2149,7 @@ export class BattleScene implements Scene {
     if (!el) return;
     const sel = this.mySelected();
     const b = this.b;
-    const sig = [...sel.map((u) => `${u.id}${u.formation}${u.feignT > 0}`), this.phase, Math.ceil(b.rallyCd[0]), b.generalLost[0], this.lineMode].join(',');
+    const sig = [...sel.map((u) => `${u.id}${u.formation}${u.feignT > 0}${u.running}`), this.phase, Math.ceil(b.rallyCd[0]), b.generalLost[0], this.lineMode].join(',');
     if (sig === this.ordersSig) return;
     this.ordersSig = sig;
     const forms = new Set<Formation>();
@@ -2150,6 +2170,11 @@ export class BattleScene implements Scene {
           title: 'When on, a right-drag draws a battle line: the selected regiments spread along it, facing the enemy. When off, it draws a march path. Shift+right-drag always draws a line.',
           onclick: () => { this.lineMode = !this.lineMode; this.ordersSig = ''; this.refreshOrders(); },
         }, this.lineMode ? '📏 Line mode (Q)' : '〰 Path mode (Q)'),
+        sel.some((u) => UNIT_STATS[u.type].cls !== 'artillery') ? h('button', {
+          class: `small ${sel.length && sel.every((u) => u.running || UNIT_STATS[u.type].cls === 'artillery') ? 'primary' : ''}`,
+          title: 'Run (or gallop): the regiments move far faster but tire quickly, and when they clash with the enemy it counts as a charge, even for archers and matchlock men, who drop their pieces and go in with the sword. They walk again once they reach the enemy or where they were sent. Press again to walk.',
+          onclick: () => this.runSelected(),
+        }, sel.every((u) => u.running || UNIT_STATS[u.type].cls === 'artillery') ? '🏃 Running (X)' : '🏃 Run (X)') : null,
         horse ? h('button', { class: 'small', disabled: !live, title: 'Gallop away as if beaten, drawing pursuers out of their line, then wheel about.', onclick: () => this.feignSelected() }, '🐎 Feigned flight (F)') : null,
         h('button', {
           class: 'small', disabled: !live || b.generalLost[0] || b.rallyCd[0] > 0,
@@ -2182,7 +2207,7 @@ export class BattleScene implements Scene {
           ondblclick: () => { if (alive) this.centerOn(u.x, u.y); },
         },
         h('div', { class: 'row' },
-          h('span', { class: 'uname' }, symbolEl(u.type, this.s.playerFaction.color, 22), st.short, tierBadge(st.tier)),
+          h('span', { class: 'uname' }, symbolEl(u.type, this.s.playerFaction.color, 22), st.short, tierBadge(st.tier), alive && u.running ? h('span', { title: 'Running: its next clash is a charge' }, ' 🏃') : null),
           h('span', { class: 'muted' }, `${Math.ceil(u.men)}/${u.maxMen} · ${statusOf(u, this.b)}`)),
         bar(m, m > 0.6 ? '#8fd16b' : m > 0.3 ? '#e8c14a' : '#e3604f'),
         );

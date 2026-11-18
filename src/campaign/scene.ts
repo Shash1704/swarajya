@@ -14,7 +14,7 @@ import {
   newGame, PLAYER, type Province, provinceIncome, provincesOf, provinceUnder, RAID_DAYS, recruit, regionOwners,
   seasonOf, setGoal, siegeEquipment, townAt, unitsMen, unitsStrength, upkeep, VICTORY_PROVINCES, wallFactor,
   wallsCost, manpowerLabel, manpowerRatio, manpowerRegen, maxManpower, levyFraction,
-  generalK, generalRank, TRAITS, isCoastal, seaOf, isYours, yourArmy, ORIGINS, followersOf, joinBanner, leaveBanner, villageAt, villageBurnt, villageOwner, keyFort, maxFood, recruitCost, tributeShare, type General,
+  generalK, generalRank, TRAITS, isCoastal, seaOf, isYours, yourArmy, ORIGINS, followersOf, garrisonCap, joinBanner, leaveBanner, villageAt, villageBurnt, villageOwner, keyFort, maxFood, recruitCost, tributeShare, type General,
 } from './state';
 import {
   bribe, bribeCost, build, BUILDINGS, type Building, buildShip, demandChauth, type GameEvent, generalFate, generalLine,
@@ -1679,16 +1679,56 @@ export class CampaignScene implements Scene {
     );
   }
 
-  private unitList(units: CUnit[], color: string): HTMLElement {
+  /** An army's regiments; for an army you command, with buttons to dismiss them or leave them in garrison. */
+  private unitList(units: CUnit[], color: string, army?: Army): HTMLElement {
+    const s = this.state;
+    const t = army ? townAt(s, army) : -1;
+    const town = t >= 0 && s.provinces[t].owner === army!.owner && !s.provinces[t].siege ? s.provinces[t] : null;
+    const room = town ? garrisonCap(town) - town.garrison.length : 0;
     return h('div', { class: 'stack', style: 'margin-top:6px' }, ...units.map((u) => {
       const st = UNIT_STATS[u.type];
+      const last = !!army && army.units.length <= 1;
       return h('div', { class: 'unit-row', title: st.blurb },
         h('div', { class: 'row' },
           h('span', { class: 'uname' }, symbolEl(u.type, color), st.name, tierBadge(st.tier)),
-          h('span', { class: 'muted' }, `${vetRank(u.xp) ? `${'˄'.repeat(vetRank(u.xp))} ${VET_NAMES[vetRank(u.xp)]} · ` : ''}${Math.round(u.men)}/${st.maxMen}`)),
+          h('span', { class: 'muted' }, `${vetRank(u.xp) ? `${'˄'.repeat(vetRank(u.xp))} ${VET_NAMES[vetRank(u.xp)]} · ` : ''}${Math.round(u.men)}/${st.maxMen}`,
+            ...(army ? [
+              ...(town ? [h('button', {
+                class: 'small unit-act', disabled: room <= 0 || last,
+                title: last ? 'An army needs at least one regiment.' : room <= 0 ? `The garrison of ${town.town} is full.` : `Leave this regiment to garrison ${town.town}.`,
+                onclick: (e: MouseEvent) => { e.stopPropagation(); this.detachUnit(army, u, town); },
+              }, '🏰')] : []),
+              h('button', {
+                class: 'small unit-act', disabled: last,
+                title: last ? 'An army needs at least one regiment.' : 'Dismiss this regiment: its men go home, and most of them return to the realm\'s pool of fighting men. Its upkeep stops.',
+                onclick: (e: MouseEvent) => { e.stopPropagation(); this.detachUnit(army, u, null); },
+              }, '✕'),
+            ] : []))),
         bar(u.men / st.maxMen),
       );
     }));
+  }
+
+  /** Takes a regiment out of an army: into a town's garrison, or dismissed home. */
+  private detachUnit(a: Army, u: CUnit, town: Province | null) {
+    const s = this.state;
+    if (a.units.length <= 1 || !a.units.includes(u)) return;
+    const st = UNIT_STATS[u.type];
+    const who = a.general.isPlayer ? 'You' : a.general.name;
+    if (town) {
+      if (town.garrison.length >= garrisonCap(town)) return;
+      a.units.splice(a.units.indexOf(u), 1);
+      town.garrison.push(u);
+      log(s, `${who} ${a.general.isPlayer ? 'leave' : 'leaves'} the ${st.name} (${Math.round(u.men)} men) to garrison ${town.town}.`, true);
+    } else {
+      a.units.splice(a.units.indexOf(u), 1);
+      // Dismissed in your own country, most go home and can be called up again; far away, fewer find their way.
+      const here = s.provinces[provinceUnder(s, a, a.node)];
+      const back = Math.round(u.men * (here.owner === a.owner ? 0.8 : 0.4));
+      s.manpower[a.owner] = Math.min(maxManpower(s, a.owner), s.manpower[a.owner] + back);
+      log(s, `${who} ${a.general.isPlayer ? 'dismiss' : 'dismisses'} the ${st.name}: ${Math.round(u.men)} men go home${back ? ` (${back} return to the realm's pool of fighting men)` : ''}.`, true);
+    }
+    this.renderUI(true);
   }
 
   /** Days until the army reaches the end of its route. */
@@ -1765,7 +1805,7 @@ export class CampaignScene implements Scene {
       })(),
       h('div', { style: 'margin:6px 0' }, this.liveText(() => this.statusOf(a))),
       mine || known ? h('div', { class: 'muted' }, this.liveText(() => `Food: ${Math.ceil(a.food)}/${maxFood(a)} days · ${sup === 'fort' ? 'supplied by a fort' : sup === 'home' ? 'in friendly country' : a.food <= 0 ? 'STARVING' : 'living off the land'}${s.day < a.quarantineUntil ? ` · quarantined ${Math.ceil(a.quarantineUntil - s.day)} days` : ''}`)) : null,
-      known ? this.unitList(a.units, f.color) : null,
+      known ? this.unitList(a.units, f.color, mine || (ours && !!s.realm) ? a : undefined) : null,
     ];
     // Characters: talk with a fellow commander, or parley with an army near yours.
     const partner = parleyPartner(s, a);

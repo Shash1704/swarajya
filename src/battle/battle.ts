@@ -114,6 +114,8 @@ export interface BUnit {
   blocked: boolean;
   /** Running or galloping in to close with the enemy this step. */
   rushing: boolean;
+  /** Ordered to run: it moves at the double, tires fast, and whatever it runs into, it charges. */
+  running: boolean;
   /** Seconds left breaking away from a melee: it won't fight back while it pulls clear. */
   disengageT: number;
   /** Battle time of the last disengage, so the AI doesn't flit in and out. */
@@ -662,7 +664,7 @@ export class Battle {
     this.units.push({
       id: this.nextId++, side, type: ref.type, ref, men: ref.men, maxMen: st.maxMen, startMen: ref.men,
       x, y, facing, morale, maxMorale: morale, order: { kind: 'hold' }, state: 'ok',
-      contactTime: 0, chargeT: 0, movingT: 0, calm: 10, fighting: false, moving: false, aimId: -1,
+      contactTime: 0, chargeT: 0, movingT: 0, calm: 10, fighting: false, moving: false, running: false, aimId: -1,
       reload: st.reload * this.rng.range(0.3, 0.8), climbing: false, climbT: 0, blocked: false, rushing: false, disengageT: 0, lastDisengage: -99,
       rallies: 0, fatigue: 0, formation: 'normal', ammo, maxAmmo: ammo, panic: 0, amokT: 0, feignT: 0, luredT: 0, ambushT: 0,
       unseenT: 0, revealedAt: -99, ambushReady: false, rank, dealt: 0,
@@ -939,8 +941,11 @@ export class Battle {
       }
       if (contact) {
         const st = UNIT_STATS[u.type];
-        if (u.contactTime === 0 && u.movingT > 0.4 && (st.charge > 1.1 || st.cls === 'infantry') && !u.climbing) {
-          u.chargeT = st.cls === 'infantry' ? 1.6 : 2.5;
+        // Running in, any regiment charges (guns excepted): even archers and matchlock men drop their
+        // pieces and go in with the sword.
+        const runIn = u.running && u.movingT > 0.1 && st.cls !== 'artillery';
+        if (u.contactTime === 0 && (u.movingT > 0.4 || runIn) && (st.charge > 1.1 || st.cls === 'infantry' || runIn) && !u.climbing) {
+          u.chargeT = st.cls === 'cavalry' || st.cls === 'elephant' ? 2.5 : 1.6;
           // Charging down a slope carries the impetus further.
           u.chargeT *= 1 + downhill(this.height(u) - this.height(contact)) * 0.5;
           const zone = this.attackZone(u, contact);
@@ -953,12 +958,13 @@ export class Battle {
             this.float(u.x, u.y, label, st.cls === 'infantry' ? '#ffd0a0' : '#ffe08a');
             // The shock of impact: the regiment struck wavers at once, worst from the side or behind.
             if (contact.state === 'ok') {
-              const base = (st.cls === 'infantry' ? 5 : 9) * (u.formation === 'wedge' ? 1.4 : 1);
+              const base = (st.cls === 'cavalry' || st.cls === 'elephant' ? 9 : 5) * (u.formation === 'wedge' ? 1.4 : 1) * (runIn ? 1.25 : 1);
               contact.morale -= base * (zone === 'front' ? 1 : zone === 'flank' ? 1.8 : 2.4) * (contact.formation === 'tight' ? 0.6 : 1);
             }
           }
         }
         u.fighting = true;
+        u.running = false; // the run ends in the clash
         if (this.inRiver(u)) u.moraleHit += 3 * dt; // fighting waist-deep in a river
         u.contactTime += dt;
         u.chargeT = Math.max(0, u.chargeT - dt);
@@ -1205,21 +1211,27 @@ export class Battle {
       u.formation = 'normal';
       this.float(u.x, u.y, 'Hedge broken up', '#e8d2b0');
     }
-    const speed = st.speed * this.speedMod(u);
+    const speed = st.speed * this.speedMod(u) * (u.running ? runPace(u) : 1);
     const o = u.order;
     let moving = false;
     let breachSeg = -1;
 
     if (o.kind === 'move') {
       moving = this.travel(u, o.x, o.y, speed, dt, 0);
-      if (!moving && Math.hypot(o.x - u.x, o.y - u.y) < 3) u.order = { kind: 'hold', face: o.face };
+      if (!moving && Math.hypot(o.x - u.x, o.y - u.y) < 3) {
+        u.order = { kind: 'hold', face: o.face };
+        u.running = false; // arrived: back to a walk
+      }
     } else if (o.kind === 'path') {
       const then = o.then !== undefined ? this.get(o.then) : undefined;
       if (then && then.state === 'ok' && dist(u, then) < 90) {
         u.order = { kind: 'attack', target: then.id }; // close enough: go in
       } else {
         const pt = o.pts[o.i];
-        if (!pt) u.order = then && then.state === 'ok' ? { kind: 'attack', target: then.id } : { kind: 'hold' };
+        if (!pt) {
+          u.order = then && then.state === 'ok' ? { kind: 'attack', target: then.id } : { kind: 'hold' };
+          if (u.order.kind === 'hold') u.running = false;
+        }
         else {
           moving = this.travel(u, pt[0], pt[1], speed, dt, 0);
           // Reached it, or stuck short of it against an obstacle or the field's edge: on to the next point.
@@ -1234,12 +1246,12 @@ export class Battle {
       const chase = st.cls === 'cavalry';
       if (!t || t.state === 'dead' || t.state === 'fled' || (t.state === 'routing' && !chase)) {
         u.order = { kind: 'hold' };
-      } else if (st.range > 0 && dist(u, t) <= st.range * this.rangeMod(u) * 0.95 && st.cls !== 'cavalry') {
+      } else if (!u.running && st.range > 0 && dist(u, t) <= st.range * this.rangeMod(u) * 0.95 && st.cls !== 'cavalry') {
         // In range: stand and shoot.
-      } else if (st.skirmish && dist(u, t) <= st.range * 0.9) {
+      } else if (!u.running && st.skirmish && dist(u, t) <= st.range * 0.9) {
         // Horse archers circle at bow range.
       } else {
-        moving = this.travel(u, t.x, t.y, speed * this.rush(u, t), dt, CONTACT - 6);
+        moving = this.travel(u, t.x, t.y, speed * (u.running ? 1 : this.rush(u, t)), dt, CONTACT - 6);
       }
     } else if (o.kind === 'breach' && this.walls) {
       const seg = this.walls.segs[o.seg];
@@ -1281,6 +1293,7 @@ export class Battle {
     }
     u.moving = moving;
     u.movingT = moving ? u.movingT + dt : 0;
+    if (u.running && moving) u.rushing = true; // running tires men as fast as a charge
   }
 
   private batter(u: BUnit, seg: WallSeg, dt: number) {
@@ -1558,7 +1571,7 @@ export class Battle {
         mult *= 1 + (sa.charge - 1) * 0.7 * slope;
       } else {
         // Foot that run in hit harder too, though less than horse.
-        mult *= (sa.cls === 'infantry' ? Math.max(1.35, sa.charge * 1.1) : sa.charge) * slope;
+        mult *= (sa.cls === 'infantry' || sa.cls === 'missile' ? Math.max(1.35, sa.charge * 1.1) : sa.charge) * slope;
       }
     }
     // Once the charge is spent, horse still fight poorly against an unbroken infantry front.
@@ -1922,6 +1935,16 @@ export class Battle {
     return true;
   }
 
+  /** Orders a regiment to run (or to walk again). Guns cannot run. */
+  setRunning(u: BUnit, on: boolean): boolean {
+    if (u.state !== 'ok' || u.running === on) return false;
+    if (on && UNIT_STATS[u.type].cls === 'artillery') return false;
+    u.running = on;
+    if (on && u.formation === 'brace') u.formation = 'normal';
+    if (on) this.float(u.x, u.y, cls(u) === 'cavalry' ? 'At the gallop!' : 'At the run!', '#ffe08a');
+    return true;
+  }
+
   /** Changes a regiment's formation, if its kind can take it up. */
   setFormation(u: BUnit, f: Formation): boolean {
     if (u.state !== 'ok' || !formationsFor(u.type).includes(f) || u.formation === f) return false;
@@ -1961,4 +1984,10 @@ export class Battle {
       }
     }
   }
+}
+
+/** How much faster a regiment moves at the run: horse at the gallop most of all. */
+function runPace(u: BUnit): number {
+  const c = UNIT_STATS[u.type].cls;
+  return c === 'cavalry' ? 1.5 : c === 'elephant' ? 1.25 : 1.4;
 }
